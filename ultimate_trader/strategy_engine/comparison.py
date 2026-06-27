@@ -51,7 +51,8 @@ def run_comparison(
     config: StrategyConfig | None = None,
     old_replay_config: ReplayConfig | None = None,
     new_replay_config: ReplayConfig | None = None,
-) -> ComparisonResult:
+    return_trades: bool = False,
+) -> ComparisonResult | tuple[ComparisonResult, list, list]:
     strategy_config = config or StrategyConfig()
     rcfg_old = old_replay_config or ReplayConfig(
         taker_fee_percent=0.04, slippage_percent=0.02,
@@ -155,7 +156,7 @@ def run_comparison(
         f"Profit factor: {pf_old:.2f} -> {pf_new:.2f}"
     )
 
-    return ComparisonResult(
+    comparison_result = ComparisonResult(
         old_engine="LSM Only", new_engine="Strategy Engine",
         old_trades=len(old_sim.completed_trades), new_trades=len(new_sim.completed_trades),
         old_win_rate=old_metrics["win_rate"], new_win_rate=new_metrics["win_rate"],
@@ -167,3 +168,7 @@ def run_comparison(
         profit_factor_change=pf_change, drawdown_change=dd_change,
         improvement=improvement_desc,
     )
+
+    if return_trades:
+        return comparison_result, old_sim.completed_trades, new_sim.completed_trades
+    return comparison_result
