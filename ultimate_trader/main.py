@@ -107,6 +107,13 @@ from ultimate_trader.historical_replay import (
     ReplayConclusion,
     HistoricalCandle,
 )
+from ultimate_trader.strategy_engine import (
+    StrategyEngine,
+    StrategyConfig,
+    ConfidenceScorer,
+    generate_candidate_report,
+    ALL_FILTERS,
+)
 
 logger = setup_logger()
 
@@ -554,6 +561,32 @@ def main() -> None:
         f"parameter_sweeper={sweeper_ok}, "
         f"models={candle_ok}, "
         f"candle_replayer={replayer_ok}"
+    )
+
+    se_config = StrategyConfig()
+    se_engine = StrategyEngine(se_config)
+    se_scorer = ConfidenceScorer()
+    se_candle = HistoricalCandle(
+        symbol="BTCUSDT", timeframe="15m", timestamp=datetime.utcnow(),
+        open=100.0, high=101.0, low=99.0, close=100.5, volume=1000.0,
+    )
+    se_engine.add_candle(se_candle)
+    se_candidate = se_engine.evaluate(
+        candle=se_candle, direction=TradeDirection.LONG,
+        entry_price=100.5, stop_loss=99.0, target_price=105.0,
+    )
+    se_approx = se_candidate is not None or se_engine.candidates[0].approved is False
+    se_report = generate_candidate_report(se_engine.candidates[0])
+    se_report_ok = "Candidate" in se_report
+    se_filters_ok = len(ALL_FILTERS) == 12
+    se_scorer_ok = len(se_engine.candidates) == 1
+
+    logger.info(
+        f"Strategy Intelligence Engine loaded — "
+        f"filters={se_filters_ok} ({len(ALL_FILTERS)} loaded), "
+        f"scorer={se_scorer_ok}, "
+        f"candidate_evaluated={se_approx}, "
+        f"report={se_report_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
