@@ -53,6 +53,20 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - Event: `LIQUIDITY_SMART_MONEY_COMPLETED`
 - 64 tests passing, integrates with main.py health check
 
+### Phase 2, Prompt 4 — Historical Replay & End-to-End Backtesting Engine
+- `HistoricalCandle` — OHLCV model with symbol, timeframe, timestamp
+- `HistoricalDataLoader` — CSV loading with column validation, sort by timestamp, reject duplicates and missing values
+- `CandleReplayer` — replay candles one by one, no future leakage, rolling window, warmup period
+- `ReplayPipelineRunner` — calls all available engines (LSM, microstructure, orderflow, research, belief, validation, signal) per candle; gracefully skips engines with missing data
+- `TradeSimulator` — simulates trades from TradePlan: entry zone triggers, stop loss/take profit, conservative stop-first when both hit same candle; fees, slippage, funding included; long/short support; expiry after N candles, max holding time
+- `ReplayTrade` — trade outcome model with gross_r, fees_r, slippage_r, funding_r, net_r, exit reason, holding candles
+- `ReplayJournal` — stores every candle, skipped signal, generated plan, executed trade, rejection reason, engine failure
+- `ReplayMetrics` — total_signals, rejected, executed, win_rate, average_r, expectancy_r, profit_factor, max_drawdown_r, consecutive losses, holding time, best/worst trade, rejection rate, conversion rate
+- `ParameterSweeper` — tests parameter sets (confluence_score_threshold, min_rr, max_risk_score, min_confidence, max_uncertainty, stop_distance, target_rr), ranks results, overfit warning for fragile best result
+- `ReplayReport` — report_id, symbol, timeframe, metrics, trades, rejected/engine-skip summaries, optional sweep results; conclusion: EDGE_DETECTED / NO_EDGE / INSUFFICIENT_DATA / NEEDS_MORE_TESTING with explanation
+- Events: `HISTORICAL_REPLAY_STARTED`, `HISTORICAL_REPLAY_COMPLETED`, `REPLAY_TRADE_OPENED`, `REPLAY_TRADE_CLOSED`, `REPLAY_SIGNAL_REJECTED`
+- 6 test files, integrates with main.py health check
+
 ### Prompt 1 — Intelligence Operating Foundation
 - Configuration system, safety, health checks
 - Pydantic schema contracts for all data models
@@ -285,5 +299,6 @@ ultimate_trader/
   execution_engine/          # Trade execution interface
   alerts/                    # Alerting interface
   storage/                   # Database initialization and models
+  historical_replay/         # Historical replay & backtesting engine (Phase 2, Prompt 4)
 tests/                       # Test suite
 ```

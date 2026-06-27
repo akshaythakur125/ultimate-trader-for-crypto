@@ -1,5 +1,6 @@
 import sys
 import uuid
+from datetime import datetime
 
 from ultimate_trader.config.settings import Settings
 from ultimate_trader.core.constants import HypothesisStatus
@@ -93,6 +94,18 @@ from ultimate_trader.signal_engine import (
     DirectionBias,
     StopPlanner,
     TargetPlanner,
+)
+from ultimate_trader.historical_replay import (
+    HistoricalDataLoader,
+    CandleReplayer,
+    TradeSimulator,
+    ReplayJournal,
+    ReplayMetrics,
+    ParameterSweeper,
+    ReplayReport,
+    ReplayConfig,
+    ReplayConclusion,
+    HistoricalCandle,
 )
 
 logger = setup_logger()
@@ -500,6 +513,47 @@ def main() -> None:
         f"premium_discount={pd_ok}, "
         f"displacement={disp_ok}, "
         f"confluence={conf_ok}"
+    )
+
+    hr_dl = HistoricalDataLoader()
+    dl_ok = len(hr_dl.get_candles()) == 0
+
+    hr_cfg = ReplayConfig()
+    hr_ts = TradeSimulator(hr_cfg)
+    ts_ok = len(hr_ts.all_trades) == 0
+
+    hr_journal = ReplayJournal()
+    journal_ok = hr_journal.total_candles == 0
+
+    hr_metrics_when_empty = ReplayMetrics.calculate([], 0, 0)
+    metrics_ok = hr_metrics_when_empty.executed_trades == 0
+
+    hr_replay_config = ReplayConfig()
+    config_ok = hr_replay_config.confluence_score_threshold == 30.0
+
+    hr_sweeper = ParameterSweeper()
+    sweeper_ok = len(hr_sweeper.results) == 0
+
+    candle = HistoricalCandle(
+        symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(),
+        open=100.0, high=101.0, low=99.0, close=100.5, volume=1000.0,
+    )
+    candle_ok = candle.symbol == "BTCUSDT"
+
+    replayer = CandleReplayer([candle], warmup=1)
+    replayer.step()
+    replayer_ok = replayer.available_candles()[-1].close == 100.5
+
+    logger.info(
+        f"Historical Replay & Backtesting Engine loaded — "
+        f"data_loader={dl_ok}, "
+        f"trade_simulator={ts_ok}, "
+        f"journal={journal_ok}, "
+        f"metrics={metrics_ok}, "
+        f"config={config_ok}, "
+        f"parameter_sweeper={sweeper_ok}, "
+        f"models={candle_ok}, "
+        f"candle_replayer={replayer_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
