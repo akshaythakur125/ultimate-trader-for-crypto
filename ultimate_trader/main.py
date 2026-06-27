@@ -7,6 +7,8 @@ from ultimate_trader.core.health import run_health_checks
 from ultimate_trader.core.logger import setup_logger
 from ultimate_trader.core.errors import LiveTradingDisabledError
 from ultimate_trader.core.safety import assert_live_trading_allowed, mask_secret
+from ultimate_trader.cognitive_engine.observation import Observation, ObservationType
+from ultimate_trader.cognitive_engine.reasoning_chain import Reasoner
 from ultimate_trader.market_brain.knowledge_base import MarketKnowledgeBase
 from ultimate_trader.schemas.hypothesis import TradingHypothesis
 from ultimate_trader.storage.database import init_database
@@ -80,6 +82,23 @@ def main() -> None:
     else:
         failed_kb = [k for k, v in kb_health.items() if not v]
         logger.warning(f"Knowledge base health warnings: {failed_kb}")
+
+    reasoner = Reasoner(kb=knowledge_base)
+    chain = reasoner.reason([
+        Observation(
+            observation_id="OBS-HEALTH-001",
+            symbol="BTCUSDT",
+            timeframe="1h",
+            observation_type=ObservationType.PRICE_ACTION,
+            description="Health check observation — no strategy involved.",
+            source="system_health",
+        ),
+    ])
+    logger.info(
+        f"Cognitive Reasoning Engine loaded — "
+        f"chain {chain.chain_id}: bias={chain.preliminary_bias}, "
+        f"confidence={chain.confidence_after:.0f}/100"
+    )
 
     hypothesis = create_sample_hypothesis()
     logger.info(

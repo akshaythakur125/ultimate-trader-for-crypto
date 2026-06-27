@@ -15,7 +15,7 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - Strategy and exchange agnostic — no trading logic
 
 ### Prompt 2 — Market Knowledge Framework
-- 45+ structured market principles across 9 categories
+- 53 structured market principles across 9 categories
 - Auction Market, Liquidity, Order Flow, Volatility, Regime,
   Manipulation, Behavioral, Probability, and Risk theory modules
 - `MarketKnowledgeBase` — queryable principle repository
@@ -23,6 +23,19 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - `KnowledgeBaseQuery` — future modules can ask "what applies?"
 - Reasoning helpers for no-trade, liquidity-manipulation, and
   volatility-expansion conditions
+
+### Prompt 3 — Cognitive Reasoning Engine
+- `Observation` model with 11 observation types
+- `MarketInterpretation` engine mapping observations to meanings
+- `AlternativeHypothesis` generation from observations
+- `EvidenceEvaluator` — scores, separates, detects missing evidence
+- `ContradictionDetector` — 6 generic contradiction rules
+- `UncertaintyEngine` — 8 uncertainty factors assessed
+- `ConfidenceUpdater` — baseline scoring with modifiers
+- `ReasoningChain` — full chain from observation to conclusion
+- `CognitiveDecisionContext` — action recommendation engine
+- `CognitiveReportGenerator` — explainable decision reports
+- Integrates with `MarketKnowledgeBase` from Prompt 2
 
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
@@ -86,6 +99,17 @@ ultimate_trader/
     probability_theory.py    # Probability theory
     microstructure.py        # Microstructure concepts
     knowledge_base.py        # Queryable knowledge base + reasoning context
+  cognitive_engine/          # Cognitive reasoning engine (Prompt 3)
+    observation.py           # Observation model and types
+    interpretation.py        # Market interpretation engine
+    hypothesis_reasoning.py  # Alternative hypothesis generation
+    evidence_evaluator.py    # Evidence scoring and separation
+    contradiction_detector.py# Generic contradiction rules
+    uncertainty_engine.py    # Uncertainty assessment
+    confidence_updater.py    # Confidence scoring system
+    reasoning_chain.py       # Full reasoning orchestrator
+    decision_context.py      # Decision context and next action
+    cognitive_report.py      # Explainable decision reports
   research_engine/           # Hypothesis registry
   data_engine/               # Data provider interface
   perception_engine/         # Market perception interface
