@@ -6,6 +6,22 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 
 ## Prompt Progress
 
+### Phase 2 — Intelligence Upgrade
+
+### Phase 2, Prompt 1 — Market Microstructure Engine
+- `OrderBookSnapshot` — computed properties (best_bid, best_ask, mid_price, spread, spread_bps, bid/ask depth, depth imbalance)
+- `SpreadAnalyzer` — NORMAL / WIDE / UNSTABLE / TRADE_BLOCKING with configurable thresholds
+- `OrderBookDepthAnalyzer` — NORMAL / THIN / IMBALANCED / CRITICAL depth states; liquidity wall detection
+- `OrderBookImbalanceAnalyzer` — score 0–100, LONG/SHORT/NEUTRAL bias, moderate/strong classification
+- `LiquidityVoidDetector` — detects price zones with low resting liquidity between order book levels
+- `PriceImpactEstimator` — slippage estimation, max safe quantity, execution risk (LOW/MEDIUM/HIGH/CRITICAL)
+- `AbsorptionDetector` — detects aggressive buying/selling absorbed near support/resistance, price stuck
+- `SpoofingRiskDetector` — wall flashing, imbalance instability, fake wall placement; risk levels NONE/LOW/MEDIUM/HIGH
+- `MicrostructureState` — aggregates all analyzers into ALLOW/CAUTION/BLOCK trade permission
+- `MicrostructureReport` — readable summary with reasons to avoid
+- Event: `MICROSTRUCTURE_ANALYSIS_COMPLETED`
+- Accepts BingX OrderBook data, publishes events, integrates with main.py health check
+
 ### Prompt 1 — Intelligence Operating Foundation
 - Configuration system, safety, health checks
 - Pydantic schema contracts for all data models

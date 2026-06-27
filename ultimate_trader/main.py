@@ -39,6 +39,18 @@ from ultimate_trader.validation_lab import (
     ValidationGate,
 )
 from ultimate_trader.bingx import BingXClient, BingXNotConfiguredError
+from ultimate_trader.microstructure_engine import (
+    AbsorptionSignal,
+    ExecutionRisk,
+    MicrostructureReport,
+    MicrostructureState,
+    OrderBookDepthAnalyzer,
+    OrderBookImbalanceAnalyzer,
+    OrderBookLevel,
+    OrderBookSnapshot,
+    SpoofingSignal,
+    SpreadAnalyzer,
+)
 from ultimate_trader.paper_trading import PaperAccount, PaperTradeExecutor
 from ultimate_trader.signal_engine import (
     EntryPlanner,
@@ -319,6 +331,35 @@ def main() -> None:
         f"starting_balance={paper_account.starting_balance:.0f} {paper_account.currency}, "
         f"positions=0, "
         f"orders=0"
+    )
+
+    ms_snapshot = OrderBookSnapshot(
+        symbol="BTCUSDT",
+        bids=[OrderBookLevel(price=100.0, quantity=50), OrderBookLevel(price=99.9, quantity=40)],
+        asks=[OrderBookLevel(price=100.1, quantity=50), OrderBookLevel(price=100.2, quantity=40)],
+    )
+    ms_spread = SpreadAnalyzer()
+    ms_depth = OrderBookDepthAnalyzer()
+    ms_imbalance = OrderBookImbalanceAnalyzer()
+    ms_state = MicrostructureState(symbol="BTCUSDT")
+    ms_state.update(
+        spread_state=ms_spread.analyze(ms_snapshot),
+        depth_state=ms_depth.analyze(ms_snapshot),
+        imbalance_bias=ms_imbalance.analyze(ms_snapshot).bias,
+        liquidity_voids=[],
+        absorption=AbsorptionSignal(detected=False),
+        spoofing=SpoofingSignal(detected=False),
+        execution_risk=ExecutionRisk.LOW,
+    )
+    MicrostructureReport.from_state(
+        report_id="MS-HEALTH", symbol="BTCUSDT", state=ms_state,
+    )
+    logger.info(
+        f"Market Microstructure Engine loaded — "
+        f"spread={ms_state.spread_state.value}, "
+        f"depth={ms_state.depth_state.value}, "
+        f"bias={ms_state.imbalance_bias.value}, "
+        f"permission={ms_state.trade_permission.value}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
