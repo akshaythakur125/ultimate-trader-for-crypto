@@ -130,6 +130,11 @@ class Displacement(BaseModel):
 class ConfluenceResult(BaseModel):
     confluence_score: float = 0.0
     directional_bias: DirectionalBias = DirectionalBias.NEUTRAL
+    directional_confidence: float = 0.0
+    reversal_risk_score: float = 0.0
+    continuation_score: float = 0.0
+    conflict_score: float = 0.0
+    reason_for_direction: str = ""
     trade_permission: str = "ALLOW"
     reasons_for: list[str] = Field(default_factory=list)
     reasons_against: list[str] = Field(default_factory=list)

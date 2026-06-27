@@ -167,6 +167,7 @@ def run_audit():
             "direction": td.direction.value,
             "net_r": td.net_r,
             "confidence": td.confidence_score or 60.0,
+            "signal_time": td.signal_time,
         })
     inv_result = tester.test_variants_simple(inverse_trades)
     print(f"  Original:       {inv_result.original_trades} trades, {inv_result.original_stats.get('win_rate',0):.1f}% WR, {inv_result.original_stats.get('expectancy',0):.2f}R")
@@ -207,10 +208,13 @@ def run_audit():
     blocked_quota = 0
     blocked_cooldown = 0
     blocked_confidence = 0
+    daily_trade_counts: dict[str, int] = {}
     for t in inverse_trades:
         direction = t["direction"]
         confidence = t.get("confidence", 60.0)
-        ts = datetime(2025, 1, 1)
+        ts = t.get("signal_time")
+        if ts is None:
+            ts = datetime(2025, 1, 1)
         result = ctrl.check("BTCUSDT", direction, ts, confidence)
         if result.allowed:
             ctrl.record_trade("BTCUSDT", direction, ts, was_loss=t["net_r"] <= 0)
@@ -222,11 +226,26 @@ def run_audit():
                 blocked_cooldown += 1
             elif "confidence" in result.rejection_reason:
                 blocked_confidence += 1
-    print(f"  Original trades:       {original_count}")
-    print(f"  After freq control:    {allowed_count}")
-    print(f"  Blocked (quota):       {blocked_quota}")
-    print(f"  Blocked (cooldown):    {blocked_cooldown}")
-    print(f"  Blocked (confidence):  {blocked_confidence}")
+
+    for t in inverse_trades:
+        ts = t.get("signal_time")
+        if ts is None:
+            ts = datetime(2025, 1, 1)
+        day_key = ts.strftime("%Y-%m-%d")
+        daily_trade_counts[day_key] = daily_trade_counts.get(day_key, 0) + 1
+
+    max_per_day = max(daily_trade_counts.values()) if daily_trade_counts else 0
+    days_above_4 = sum(1 for c in daily_trade_counts.values() if c > 4)
+    days_above_10 = sum(1 for c in daily_trade_counts.values() if c > 10)
+    avg_per_day = original_count / len(daily_trade_counts) if daily_trade_counts else 0
+    print(f"  Original avg trades/day: {avg_per_day:.1f}")
+    print(f"  Max trades/day (raw):    {max_per_day}")
+    print(f"  Days above 4 trades:     {days_above_4}")
+    print(f"  Days above 10 trades:    {days_above_10}")
+    print(f"  After freq control:      {allowed_count} trades")
+    print(f"  Blocked (quota):         {blocked_quota}")
+    print(f"  Blocked (cooldown):      {blocked_cooldown}")
+    print(f"  Blocked (confidence):    {blocked_confidence}")
     print()
 
     # ---- Full Report ----
