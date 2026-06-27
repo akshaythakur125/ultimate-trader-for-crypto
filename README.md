@@ -37,6 +37,22 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - Event: `INSTITUTIONAL_ORDERFLOW_COMPLETED`
 - 125 tests passing, integrates with main.py health check
 
+### Phase 2, Prompt 3 — Liquidity Mapping & Smart Money Engine
+- `Candle` — OHLCV model with symbol, timeframe, timestamp
+- `SwingDetector` — swing highs/lows, equal highs/lows (configurable lookback and equality threshold)
+- `LiquidityPoolDetector` — buy-side/sell-side liquidity pools from equal highs/lows and swing points; stop clusters from volume spikes; swept/unswept zone tracking
+- `SweepDetector` — buy-side/sell-side sweeps with reclaim detection, failed sweep detection, displacement integration
+- `MarketStructureEngine` — BOS (Break of Structure), CHoCH (Change of Character), MSS (Market Structure Shift), trend continuation, structure failure, range, compression before expansion
+- `FairValueGapDetector` — bullish/bearish FVG, gap size in bps, mitigation/fill status tracking
+- `OrderBlockDetector` — bullish/bearish order blocks from FVGs, breaker blocks from mitigated OBs, strength scoring (body ratio, volume, direction alignment)
+- `PremiumDiscountEngine` — dealing range from swing extremes, premium/discount zones, equilibrium, optimal trade entry zone
+- `DisplacementEngine` — strong/weak/volume-supported/fake displacement detection, displacement after sweep
+- `ConfluenceEngine` — scores liquidity, structure, FVG, order blocks, premium/discount, displacement, order-flow bias, microstructure bias; produces score 0–100, directional bias, trade permission, reasons for/against
+- `LiquiditySmartMoneyReport` — aggregates all sub-analyzers into ALLOW/CAUTION/BLOCK permission with final summary
+- Accepts OHLCV candles from BingX client, microstructure reports, institutional orderflow reports
+- Event: `LIQUIDITY_SMART_MONEY_COMPLETED`
+- 64 tests passing, integrates with main.py health check
+
 ### Prompt 1 — Intelligence Operating Foundation
 - Configuration system, safety, health checks
 - Pydantic schema contracts for all data models

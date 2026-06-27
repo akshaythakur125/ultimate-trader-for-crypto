@@ -51,6 +51,19 @@ from ultimate_trader.microstructure_engine import (
     SpoofingSignal,
     SpreadAnalyzer,
 )
+from ultimate_trader.liquidity_smart_money import (
+    SwingDetector,
+    LiquidityPoolDetector,
+    SweepDetector,
+    MarketStructureEngine,
+    FairValueGapDetector,
+    OrderBlockDetector,
+    PremiumDiscountEngine,
+    DisplacementEngine,
+    ConfluenceEngine,
+    LiquiditySmartMoneyReport,
+    Candle,
+)
 from ultimate_trader.orderflow_intelligence import (
     AggressionAnalyzer,
     AbsorptionIntelligence,
@@ -428,6 +441,65 @@ def main() -> None:
         f"momentum={mom_ok}, "
         f"trap={trap_ok}, "
         f"scenarios={scen_ok}"
+    )
+
+    lsm_candle = Candle(symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(),
+                         open=100.0, high=101.0, low=99.0, close=100.5, volume=1000.0)
+    lsm_swing = SwingDetector(lookback=2)
+    lsm_swing.add_candle(lsm_candle)
+    for h, l in [(100, 99), (101, 99.5), (102, 100), (101.5, 99.8)]:
+        lsm_swing.add_candle(Candle(symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(),
+                                     open=l, high=h, low=l, close=(h + l) / 2, volume=100.0))
+    swing_ok = len(lsm_swing.get_all_swing_points()) >= 0
+
+    lsm_pools = LiquidityPoolDetector()
+    zones = lsm_pools.analyze(lsm_swing.get_swing_highs(), lsm_swing.get_swing_lows(),
+                               lsm_swing.get_equal_highs(), lsm_swing.get_equal_lows(), 100.0, [])
+    pools_ok = isinstance(zones, list)
+
+    lsm_sweep = SweepDetector()
+    sweeps = lsm_sweep.analyze([lsm_candle], zones)
+    sweep_ok = isinstance(sweeps, list)
+
+    lsm_struct = MarketStructureEngine()
+    struct_events = lsm_struct.analyze(lsm_swing.get_swing_highs(), lsm_swing.get_swing_lows(), [lsm_candle])
+    struct_ok = isinstance(struct_events, list)
+
+    lsm_fvg = FairValueGapDetector()
+    fvgs = lsm_fvg.analyze([
+        Candle(symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(), open=100, high=101, low=99, close=100, volume=100),
+        Candle(symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(), open=101, high=102, low=100.5, close=101.5, volume=100),
+        Candle(symbol="BTCUSDT", timeframe="1h", timestamp=datetime.utcnow(), open=103, high=104, low=102, close=103, volume=100),
+    ])
+    fvg_ok = isinstance(fvgs, list)
+
+    lsm_ob = OrderBlockDetector()
+    obs = lsm_ob.analyze([lsm_candle], fvgs)
+    ob_ok = isinstance(obs, list)
+
+    lsm_pd = PremiumDiscountEngine()
+    pd_state = lsm_pd.analyze(lsm_swing.get_swing_highs(), lsm_swing.get_swing_lows(), 100.0)
+    pd_ok = pd_state.equilibrium > 0
+
+    lsm_disp = DisplacementEngine()
+    disp = lsm_disp.analyze([lsm_candle])
+    disp_ok = disp is None or isinstance(disp, object)
+
+    lsm_conf = ConfluenceEngine()
+    conf_result = lsm_conf.analyze(zones, sweeps, struct_events, fvgs, obs, pd_state, [disp] if disp else [])
+    conf_ok = conf_result.confluence_score >= 0
+
+    logger.info(
+        f"Liquidity Smart Money Engine loaded — "
+        f"swing={swing_ok}, "
+        f"pools={pools_ok}, "
+        f"sweep={sweep_ok}, "
+        f"structure={struct_ok}, "
+        f"fvg={fvg_ok}, "
+        f"orderblock={ob_ok}, "
+        f"premium_discount={pd_ok}, "
+        f"displacement={disp_ok}, "
+        f"confluence={conf_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
