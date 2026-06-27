@@ -14,6 +14,12 @@ from ultimate_trader.memory_engine.case_library import CaseLibrary
 from ultimate_trader.memory_engine.confidence_calibrator import ConfidenceCalibrator
 from ultimate_trader.memory_engine.pattern_signature import PatternSignature
 from ultimate_trader.memory_engine.similarity_engine import SimilarityEngine
+from ultimate_trader.belief_engine.bayesian_updater import BayesianUpdater
+from ultimate_trader.belief_engine.expected_value import ExpectedValueCalculator
+from ultimate_trader.belief_engine.probability_calibrator import ProbabilityCalibrator
+from ultimate_trader.belief_engine.scenario_probability import ScenarioProbabilityEngine
+from ultimate_trader.belief_engine.decision_thresholds import DecisionThresholds
+from ultimate_trader.belief_engine.risk_adjusted_utility import RiskAdjustedUtilityEngine
 from ultimate_trader.metacognition_engine.metacognitive_report import (
     MetacognitiveReportGenerator,
 )
@@ -142,6 +148,43 @@ def main() -> None:
         f"case_library={case_library.count()} cases, "
         f"similarity_ok={sim_ok}, "
         f"calibrator_ok={cal_ok}"
+    )
+
+    bayesian_updater = BayesianUpdater()
+    posterior = bayesian_updater.update(prior=0.5, likelihood_if_true=0.8, likelihood_if_false=0.2)
+    bayes_ok = posterior > 0.5
+
+    scenario_engine = ScenarioProbabilityEngine()
+    belief_state = scenario_engine.initialize_default_beliefs("BTCUSDT", "1h")
+    scenario_ok = belief_state.dominant_belief is not None
+
+    ev_calc = ExpectedValueCalculator()
+    ev_result = ev_calc.calculate(0.6, 3.0, 0.4, 1.0)
+    ev_ok = ev_result.is_positive_ev
+
+    utility_engine = RiskAdjustedUtilityEngine()
+    util_result = utility_engine.calculate(raw_expected_value_r=1.0)
+    util_ok = util_result.utility_grade.value in ("GOOD", "EXCELLENT", "MARGINAL")
+
+    prob_calibrator = ProbabilityCalibrator()
+    calib_result = prob_calibrator.calibrate(raw_probability=0.8, similar_cases_count=3)
+    calib_ok = calib_result.sufficient_sample_size is False
+
+    thresholds = DecisionThresholds()
+    thresh_result = thresholds.evaluate(
+        expected_value_r=1.0, utility_grade="GOOD", no_trade_probability=0.1,
+        uncertainty_score=40.0, estimated_win_probability=0.6, required_win_rate=0.33,
+    )
+    thresh_ok = thresh_result.mathematically_acceptable is True
+
+    logger.info(
+        f"Bayesian Belief Engine loaded — "
+        f"bayes_ok={bayes_ok}, "
+        f"scenarios_ok={scenario_ok}, "
+        f"ev_ok={ev_ok}, "
+        f"utility_ok={util_ok}, "
+        f"calibrator_ok={calib_ok}, "
+        f"thresholds_ok={thresh_ok}"
     )
 
     hypothesis = create_sample_hypothesis()

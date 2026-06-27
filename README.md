@@ -59,6 +59,18 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - `ConfidenceCalibrator` — adjusts confidence/risk using historical analogs; marks insufficient memory
 - `MemoryReport` — aggregates similar cases, outcomes, success/failure patterns, regime warnings, calibration
 
+### Prompt 6 — Bayesian Belief & Expected Value Engine
+- `MarketBelief` — represents one possible market scenario (6 competing beliefs with prior/posterior probabilities)
+- `BeliefState` — manages all competing beliefs, normalizes probabilities, calculates entropy/conflict/no-trade probability
+- `EvidenceLikelihood` — models how evidence supports or contradicts a specific belief
+- `BayesianUpdater` — full Bayesian update: posterior = prior * likelihood ratio, with reliability-weighted evidence
+- `ScenarioProbabilityEngine` — initializes 6 default beliefs (Breakout, Liquidity Sweep, False Breakout, Reversal, Range, Chop/No Trade), updates from evidence, rejects below threshold
+- `ExpectedValueCalculator` — EV = p(win)×avg_win_R − p(loss)×avg_loss_R; computes breakeven win rate and margin of safety
+- `RiskAdjustedUtilityEngine` — penalizes EV for uncertainty, drawdown, contradictions, and weak memory support; grades EXCELLENT→NO_TRADE
+- `ProbabilityCalibrator` — pulls probabilities toward historical win rates, adjusts for sample size, memory support/warnings
+- `DecisionThresholds` — 5-gate check: positive EV, utility grade, no-trade dominance, uncertainty, breakeven requirement
+- `BeliefReport` — aggregates belief state, EV, utility, calibration, and thresholds into final recommendation
+
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.
@@ -152,6 +164,17 @@ ultimate_trader/
     regime_memory.py         # Regime performance tracking
     confidence_calibrator.py # Confidence calibration from history
     memory_report.py         # Memory retrieval report
+  belief_engine/             # Bayesian belief & expected value (Prompt 6)
+    market_belief.py         # Market belief model
+    belief_state.py          # Competing belief state manager
+    evidence_likelihood.py   # Evidence likelihood model
+    bayesian_updater.py      # Bayesian update logic
+    scenario_probability.py  # Scenario probability engine
+    expected_value.py        # Expected value calculator
+    risk_adjusted_utility.py # Risk-adjusted utility engine
+    probability_calibrator.py# Probability calibration from history
+    decision_thresholds.py   # Decision threshold evaluation
+    belief_report.py         # Belief engine report
   research_engine/           # Hypothesis registry
   data_engine/               # Data provider interface
   perception_engine/         # Market perception interface
