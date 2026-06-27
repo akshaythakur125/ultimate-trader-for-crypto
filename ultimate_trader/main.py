@@ -7,6 +7,7 @@ from ultimate_trader.core.health import run_health_checks
 from ultimate_trader.core.logger import setup_logger
 from ultimate_trader.core.errors import LiveTradingDisabledError
 from ultimate_trader.core.safety import assert_live_trading_allowed, mask_secret
+from ultimate_trader.market_brain.knowledge_base import MarketKnowledgeBase
 from ultimate_trader.schemas.hypothesis import TradingHypothesis
 from ultimate_trader.storage.database import init_database
 
@@ -67,6 +68,18 @@ def main() -> None:
         logger.info(f"BingX API key configured: {mask_secret(settings.BINGX_API_KEY)}")
     if settings.BINGX_SECRET_KEY:
         logger.info(f"BingX secret key configured: {mask_secret(settings.BINGX_SECRET_KEY)}")
+
+    knowledge_base = MarketKnowledgeBase()
+    kb_health = knowledge_base.health_check()
+    if all(kb_health.values()):
+        logger.info(
+            f"Market Knowledge Framework loaded — "
+            f"{knowledge_base.principle_count} principles across "
+            f"{len(kb_health)} categories"
+        )
+    else:
+        failed_kb = [k for k, v in kb_health.items() if not v]
+        logger.warning(f"Knowledge base health warnings: {failed_kb}")
 
     hypothesis = create_sample_hypothesis()
     logger.info(

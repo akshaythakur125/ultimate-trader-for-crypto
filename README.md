@@ -4,14 +4,27 @@
 
 Ultimate Trader is not a scanner, not a single trading strategy, and not a normal bot. It is a full intelligent trading system designed to behave like a professional trading desk — observing markets, generating hypotheses, analyzing regime and liquidity, interpreting order flow, making probabilistic decisions, managing risk, backtesting, learning, and controlling execution.
 
-## Important: This is Prompt 1 of 10
+## Prompt Progress
 
-Prompt 1 builds only the **Intelligence Operating Foundation**:
+### Prompt 1 — Intelligence Operating Foundation
+- Configuration system, safety, health checks
+- Pydantic schema contracts for all data models
+- Abstract interfaces for all 12 intelligence engines
+- Reasoning and confidence assessment models
+- SQLite database with 11 ORM tables
+- Strategy and exchange agnostic — no trading logic
 
-- No strategy exists yet
-- No BingX connection yet
-- No live trading yet
-- No buy/sell rules exist
+### Prompt 2 — Market Knowledge Framework
+- 45+ structured market principles across 9 categories
+- Auction Market, Liquidity, Order Flow, Volatility, Regime,
+  Manipulation, Behavioral, Probability, and Risk theory modules
+- `MarketKnowledgeBase` — queryable principle repository
+- `MarketReasoningContext` — condition-to-principle mapping
+- `KnowledgeBaseQuery` — future modules can ask "what applies?"
+- Reasoning helpers for no-trade, liquidity-manipulation, and
+  volatility-expansion conditions
+
+**Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.
 
@@ -61,6 +74,18 @@ ultimate_trader/
   core/                      # Logger, errors, safety, health, constants
   schemas/                   # All Pydantic data models
   intelligence/              # Core intelligence (reasoning, confidence)
+  market_brain/              # Market knowledge framework (Prompt 2)
+    market_principles.py     # 45+ principles across 9 categories
+    auction_theory.py        # Auction market theory
+    liquidity_theory.py      # Liquidity theory
+    orderflow_theory.py      # Order flow theory (via volatility_theory)
+    volatility_theory.py     # Volatility theory
+    regime_theory.py         # Regime theory
+    manipulation_theory.py   # Manipulation theory
+    behavioral_theory.py     # Behavioral theory
+    probability_theory.py    # Probability theory
+    microstructure.py        # Microstructure concepts
+    knowledge_base.py        # Queryable knowledge base + reasoning context
   research_engine/           # Hypothesis registry
   data_engine/               # Data provider interface
   perception_engine/         # Market perception interface
