@@ -51,6 +51,24 @@ from ultimate_trader.microstructure_engine import (
     SpoofingSignal,
     SpreadAnalyzer,
 )
+from ultimate_trader.orderflow_intelligence import (
+    AggressionAnalyzer,
+    AbsorptionIntelligence,
+    ExhaustionDetector,
+    IcebergDetector,
+    DeltaDivergenceDetector,
+    FlowMomentumAnalyzer,
+    TrapDetector,
+    OrderFlowScenarioEngine,
+    InstitutionalOrderFlowReport,
+    TradeFlowBuffer,
+    TradePrint,
+    AggressorSide,
+    AggressionBias,
+    AbsorptionState,
+    ExhaustionState,
+    TrapRisk,
+)
 from ultimate_trader.paper_trading import PaperAccount, PaperTradeExecutor
 from ultimate_trader.signal_engine import (
     EntryPlanner,
@@ -360,6 +378,56 @@ def main() -> None:
         f"depth={ms_state.depth_state.value}, "
         f"bias={ms_state.imbalance_bias.value}, "
         f"permission={ms_state.trade_permission.value}"
+    )
+
+    trade_flow_buf = TradeFlowBuffer()
+    trade_flow_buf.add_trade(TradePrint(symbol="BTCUSDT", price=100.0, quantity=1.0, aggressor_side=AggressorSide.BUYER, trade_value=100.0))
+    flow_ok = trade_flow_buf.get_window("BTCUSDT").trade_count == 1
+
+    of_aggression = AggressionAnalyzer()
+    of_window = trade_flow_buf.get_window("BTCUSDT")
+    of_aggr_result = of_aggression.analyze(of_window)
+    aggr_ok = of_aggr_result.buy_aggression_score > 0
+
+    of_absorption = AbsorptionIntelligence()
+    of_abs_result = of_absorption.analyze(of_window, AggressionBias.BALANCED)
+    abs_ok = not of_abs_result.absorption_detected
+
+    of_exhaustion = ExhaustionDetector()
+    of_exh_result = of_exhaustion.analyze(of_window)
+    exh_ok = not of_exh_result.exhaustion_detected
+
+    of_iceberg = IcebergDetector()
+    of_ice_result = of_iceberg.analyze(of_window)
+    ice_ok = of_ice_result.iceberg_suspected.value == "NONE"
+
+    of_divergence = DeltaDivergenceDetector()
+    of_div_result = of_divergence.analyze(of_window, 100.0)
+    div_ok = not of_div_result.divergence_detected
+
+    of_momentum = FlowMomentumAnalyzer()
+    of_mom_result = of_momentum.analyze(of_window)
+    mom_ok = of_mom_result.flow_momentum_score == 50.0
+
+    of_trap = TrapDetector()
+    of_trap_result = of_trap.analyze(of_window, AggressionBias.BALANCED, AbsorptionState.NO_ABSORPTION, "NO_DIVERGENCE")
+    trap_ok = not of_trap_result.trap_detected
+
+    of_scenarios = OrderFlowScenarioEngine()
+    of_scen_result = of_scenarios.analyze(of_window, AggressionBias.BALANCED, AbsorptionState.NO_ABSORPTION, ExhaustionState.NO_EXHAUSTION, TrapRisk.LOW_TRAP_RISK)
+    scen_ok = of_scen_result.dominant_scenario == "no_edge_balanced_flow"
+
+    logger.info(
+        f"Institutional Order Flow Intelligence loaded — "
+        f"flow={flow_ok}, "
+        f"aggression={aggr_ok}, "
+        f"absorption={abs_ok}, "
+        f"exhaustion={exh_ok}, "
+        f"iceberg={ice_ok}, "
+        f"divergence={div_ok}, "
+        f"momentum={mom_ok}, "
+        f"trap={trap_ok}, "
+        f"scenarios={scen_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")

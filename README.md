@@ -22,6 +22,21 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - Event: `MICROSTRUCTURE_ANALYSIS_COMPLETED`
 - Accepts BingX OrderBook data, publishes events, integrates with main.py health check
 
+### Phase 2, Prompt 2 — Institutional Order Flow Intelligence
+- `TradePrint` — trade data model with side, aggressor_side, quantity, price, trade_value
+- `TradeFlowBuffer` — rolling trade window with buy/sell volume, cumulative delta, large trade counting
+- `AggressionAnalyzer` — buy/sell aggression scores (0–100), BUYER_AGGRESSION/SELLER_AGGRESSION/BALANCED bias, large trade pressure (normal/elevated/very_high)
+- `AbsorptionIntelligence` — detects buying/selling absorbed when dominant aggression fails to move price against passive institutional participant
+- `ExhaustionDetector` — detects fading buyer/seller aggression over consecutive windows, exhaustion score 0–100
+- `IcebergDetector` — groups trades by price proximity, scores repeat-level patterns for NONE/LOW/MODERATE/HIGH suspicion
+- `DeltaDivergenceDetector` — price vs cumulative delta direction mismatch, bullish/bearish divergence with weak/moderate/strong strength
+- `FlowMomentumAnalyzer` — acceleration/deceleration, persistence, reversal risk, momentum score 0–100
+- `TrapDetector` — long/short trap detection using aggression + absorption mismatch, divergence, or weak breakout/breakdown; BLOCK_TRADE/CAUTION/WAIT actions
+- `OrderFlowScenarioEngine` — 9 competing scenarios (genuine accumulation/distribution, passive absorption, squeeze, exhaustion reversal, fake breakout, no edge) with probability estimates and invalidation conditions
+- `InstitutionalOrderFlowReport` — aggregates all analysis into ALLOW/CAUTION/BLOCK trade permission with reasons to avoid and support
+- Event: `INSTITUTIONAL_ORDERFLOW_COMPLETED`
+- 125 tests passing, integrates with main.py health check
+
 ### Prompt 1 — Intelligence Operating Foundation
 - Configuration system, safety, health checks
 - Pydantic schema contracts for all data models
