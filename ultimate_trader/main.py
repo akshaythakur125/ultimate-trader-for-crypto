@@ -38,6 +38,8 @@ from ultimate_trader.validation_lab import (
     MonteCarloSimulator,
     ValidationGate,
 )
+from ultimate_trader.bingx import BingXClient, BingXNotConfiguredError
+from ultimate_trader.paper_trading import PaperAccount, PaperTradeExecutor
 from ultimate_trader.signal_engine import (
     EntryPlanner,
     NoSafeEntryError,
@@ -293,6 +295,30 @@ def main() -> None:
         f"target_ok={target_ok}, "
         f"rr_ok={rr_ok}, "
         f"signal_gate_ok={sig_gate_ok}"
+    )
+
+    bingx_client = BingXClient(
+        api_key=settings.BINGX_API_KEY,
+        secret_key=settings.BINGX_SECRET_KEY,
+    )
+    bingx_configured = settings.BINGX_API_KEY is not None
+    bingx_ok = bingx_client.health_check() if bingx_configured else False
+    bingx_status = "configured" if bingx_configured else "not configured"
+    logger.info(
+        f"BingX Client loaded — "
+        f"status={bingx_status}, "
+        f"health_check={bingx_ok}, "
+        f"symbols=BTCUSDT,ETHUSDT"
+    )
+
+    paper_account = PaperAccount(starting_balance=100_000.0)
+    paper_executor = PaperTradeExecutor(account=paper_account)
+    paper_ok = paper_executor.account.balance == 100_000.0
+    logger.info(
+        f"Paper Trading Engine loaded — "
+        f"starting_balance={paper_account.starting_balance:.0f} {paper_account.currency}, "
+        f"positions=0, "
+        f"orders=0"
     )
 
     logger.info("Ultimate Trader initialized successfully")
