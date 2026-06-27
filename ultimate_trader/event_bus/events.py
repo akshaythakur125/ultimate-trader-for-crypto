@@ -1,0 +1,38 @@
+import uuid
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+
+class EventType(str, Enum):
+    MARKET_OBSERVATION_CREATED = "MARKET_OBSERVATION_CREATED"
+    COGNITIVE_REASONING_COMPLETED = "COGNITIVE_REASONING_COMPLETED"
+    METACOGNITION_COMPLETED = "METACOGNITION_COMPLETED"
+    MEMORY_REPORT_CREATED = "MEMORY_REPORT_CREATED"
+    BELIEF_UPDATED = "BELIEF_UPDATED"
+    HYPOTHESIS_GENERATED = "HYPOTHESIS_GENERATED"
+    HYPOTHESIS_FALSIFIED = "HYPOTHESIS_FALSIFIED"
+    HYPOTHESIS_REJECTED = "HYPOTHESIS_REJECTED"
+    HYPOTHESIS_SHORTLISTED = "HYPOTHESIS_SHORTLISTED"
+    RESEARCH_REPORT_CREATED = "RESEARCH_REPORT_CREATED"
+    VALIDATION_STARTED = "VALIDATION_STARTED"
+    VALIDATION_COMPLETED = "VALIDATION_COMPLETED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    VALIDATION_PASSED = "VALIDATION_PASSED"
+    SIGNAL_CANDIDATE_CREATED = "SIGNAL_CANDIDATE_CREATED"
+    SIGNAL_REJECTED = "SIGNAL_REJECTED"
+    RISK_BLOCKED = "RISK_BLOCKED"
+    PAPER_TRADE_CREATED = "PAPER_TRADE_CREATED"
+    LIVE_TRADE_BLOCKED = "LIVE_TRADE_BLOCKED"
+
+
+class BaseEvent(BaseModel):
+    event_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    event_type: EventType
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source_module: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    correlation_id: Optional[str] = None
+    parent_event_id: Optional[str] = None

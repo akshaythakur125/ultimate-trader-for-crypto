@@ -71,6 +71,41 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - `DecisionThresholds` — 5-gate check: positive EV, utility grade, no-trade dominance, uncertainty, breakeven requirement
 - `BeliefReport` — aggregates belief state, EV, utility, calibration, and thresholds into final recommendation
 
+### Prompt 7 — Multi-Hypothesis Research Engine
+- `HypothesisGenerator` — 12 hypothesis families (Breakout Continuation, Liquidity Sweep Reversal/Continuation, False Breakout, Short/Long Squeeze, Range Continuation, Mean Reversion, Trend Exhaustion, Volatility Expansion, Chop/No Trade, No Edge)
+- `ResearchHypothesis` — structured hypothesis with direction bias, evidence requirements, failure modes, regime/liquidity/orderflow dependencies
+- `HypothesisCompetitionEngine` — scores and selects winner among competing hypotheses
+- `FalsificationEngine` — 7 Popperian falsification questions to test hypothesis integrity
+- `ExplanatoryPowerScorer` — rates how well a hypothesis explains current market conditions
+- `PredictivePowerScorer` — rates falsifiability and specificity of predictions
+- `RobustnessChecker` — 6 structural checks (evidence, falsifiability, regime specificity, failure awareness, RR reasonableness)
+- `OverfitGuard` — flags overfit risk with flags and recommendations
+- `HypothesisRanker` — composites all scores into ordered rank
+- Pipeline: Generator → Falsification → Competition → Scorers → Rank → Report
+
+### Prompt 8 — Event Bus + Scientific Validation Engine
+**Event Bus Foundation:**
+- `BaseEvent` — 19 event types covering the full intelligence pipeline
+- `EventBus` — sync pub/sub with wildcard support and fault isolation
+- `EventStore` — JSON-persisted event storage with type and correlation-id queries
+- `publish_system_event()` — helper for system-wide event publishing
+
+**Scientific Validation Engine:**
+- `TradingExperiment` — structured experiment definition with status tracking
+- `DatasetSplitter` — non-overlapping train/validation/OOS splits with walk-forward windows
+- `BacktestProtocol` — minimum trades, fee/slippage/funding inclusion, rejection rules
+- `TradeResult` & `PerformanceMetrics` — full trade/performance model (win rate, expectancy, profit factor, drawdown, Sharpe-like ratio, consecutive losses, false signal rate)
+- `TransactionCostModel` — configurable taker/maker fees, slippage, funding with net R calculation
+- `WalkForwardValidator` — multi-window performance consistency with decay detection
+- `OutOfSampleValidator` — validation vs OOS degradation check
+- `MonteCarloSimulator` — 1000+ simulations, worst-case drawdown, probability of ruin, confidence intervals
+- `SensitivityAnalysis` — higher fees, higher slippage, lower win rate, lower RR scenarios
+- `ABTestingEngine` — compares two hypotheses, prefers simpler model when performance is similar
+- `ValidationGate` — 9-gate check: minimum trades, positive expectancy, profit factor >1.2, drawdown limits, walk-forward, OOS, Monte Carlo, sensitivity, overfit; grades EXCELLENT/GOOD/MARGINAL/FAILED
+- `ValidationReport` — aggregates all results with recommended next action
+- Validation uses the event bus (publishes VALIDATION_STARTED, COMPLETED, FAILED, PASSED)
+- `eligible_for_live_trading` always disabled
+
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.

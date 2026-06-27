@@ -25,6 +25,19 @@ from ultimate_trader.metacognition_engine.metacognitive_report import (
 )
 from ultimate_trader.schemas.hypothesis import TradingHypothesis
 from ultimate_trader.storage.database import init_database
+from ultimate_trader.event_bus import (
+    EventBus,
+    EventStore,
+    EventType,
+    get_default_bus,
+    get_default_store,
+)
+from ultimate_trader.validation_lab import (
+    DatasetSplitter,
+    WalkForwardValidator,
+    MonteCarloSimulator,
+    ValidationGate,
+)
 
 logger = setup_logger()
 
@@ -187,10 +200,53 @@ def main() -> None:
         f"thresholds_ok={thresh_ok}"
     )
 
+    event_bus = get_default_bus()
+    event_store = get_default_store()
+    bus_ok = isinstance(event_bus, EventBus)
+    store_ok = isinstance(event_store, EventStore)
+    bus_events = [et.value for et in EventType]
+    logger.info(
+        f"Event Bus loaded — "
+        f"bus_ok={bus_ok}, "
+        f"store_ok={store_ok}, "
+        f"event_types={len(bus_events)}"
+    )
+
+    splitter = DatasetSplitter()
+    wf_validator = WalkForwardValidator()
+    mc_simulator = MonteCarloSimulator()
+    gate = ValidationGate()
+
+    from datetime import datetime, timedelta
+    split = splitter.split(
+        start_date=datetime(2023, 1, 1),
+        end_date=datetime(2024, 1, 1),
+    )
+    split_ok = splitter.validate_no_overlap(split)
+    wf_ok = not wf_validator.evaluate([[], []]).passed
+    mc_ok = not mc_simulator.simulate([]).passed
+    gate_ok = not gate.evaluate(
+        metrics=type("_", (), {"total_trades": 0, "expectancy_r": 0, "profit_factor": 0,
+                               "max_daily_drawdown_percent": 0})(),
+        walk_forward_result=type("_", (), {"passed": False})(),
+        out_of_sample_result=type("_", (), {"passed": False})(),
+        monte_carlo_result=type("_", (), {"passed": False, "probability_of_ruin": 0})(),
+        sensitivity_result=type("_", (), {"passed": False, "scenarios_tested": 0,
+                                          "scenarios_passed": 0})(),
+    ).passed
+
     hypothesis = create_sample_hypothesis()
     logger.info(
         f"Sample hypothesis created: {hypothesis.hypothesis_id} "
         f"({hypothesis.name}) — status: {hypothesis.status.value}"
+    )
+
+    logger.info(
+        f"Scientific Validation Engine loaded — "
+        f"splitter_ok={split_ok}, "
+        f"walk_forward_ok={wf_ok}, "
+        f"monte_carlo_ok={mc_ok}, "
+        f"validation_gate_ok={gate_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
