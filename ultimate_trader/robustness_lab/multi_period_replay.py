@@ -83,7 +83,7 @@ class MultiPeriodReplay:
             )
             pr.verdict = self._verdict(pr)
             self._results.append(pr)
-            print(f"  {label}: {pr.total_trades}t, WR {pr.win_rate*100:.1f}%, EV {pr.expectancy:.2f}R, PF {pr.profit_factor:.2f}, {pr.avg_trades_per_day:.1f}/d, DD {pr.max_drawdown:.2f}R — {pr.verdict}")
+            print(f"  {label}: {pr.total_trades}t, WR {pr.win_rate*100:.1f}%, EV {pr.expectancy:.2f}R, PF {pr.profit_factor:.2f}, {pr.avg_trades_per_day:.1f}/d, DD {pr.max_drawdown:.2f}R - {pr.verdict}")
 
     def _verdict(self, pr: PeriodResult) -> str:
         if pr.total_trades < 5:

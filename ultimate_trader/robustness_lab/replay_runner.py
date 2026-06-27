@@ -103,15 +103,21 @@ def ensure_data(symbol: str, timeframe: str, days: int = 90) -> list[HistoricalC
     if os.path.exists(path):
         return load_candles_from_csv(path)
     api_symbol = symbol.replace("USDT", "-USDT")
-    print(f"  Downloading {api_symbol} {timeframe} ({days}d)...")
-    try:
-        items = _fetch_klines(api_symbol, timeframe, days=days)
-        count = _items_to_csv(items, symbol, timeframe, path)
-        print(f"  Saved {count} candles to {os.path.basename(path)}")
-        return load_candles_from_csv(path)
-    except Exception as e:
-        print(f"  Cannot download {symbol} {timeframe}: {e}")
-        return []
+    for attempt_days in [days, 60, 30, 14, 7]:
+        print(f"  Downloading {api_symbol} {timeframe} ({attempt_days}d)...")
+        try:
+            items = _fetch_klines(api_symbol, timeframe, days=attempt_days)
+            if not items:
+                print(f"  No data available for {attempt_days}d range")
+                continue
+            count = _items_to_csv(items, symbol, timeframe, path)
+            print(f"  Saved {count} candles to {os.path.basename(path)}")
+            return load_candles_from_csv(path)
+        except Exception as e:
+            print(f"  Cannot download {symbol} {timeframe}: {e}")
+            continue
+    print(f"  Giving up on {symbol} {timeframe}")
+    return []
 
 
 def run_selective_replay(

@@ -27,10 +27,10 @@ class RobustnessReport:
         if not multi_period_results:
             lines.append("  NONE")
         for pr in multi_period_results:
-            lines.append(f"  {pr.label} ({pr.start} → {pr.end}): "
+            lines.append(f"  {pr.label} ({pr.start} -> {pr.end}): "
                          f"{pr.total_trades}t, WR {pr.win_rate*100:.1f}%, "
                          f"EV {pr.expectancy:.2f}R, PF {pr.profit_factor:.2f}, "
-                         f"{pr.avg_trades_per_day:.1f}/d, DD {pr.max_drawdown:.1f}R — {pr.verdict}")
+                         f"{pr.avg_trades_per_day:.1f}/d, DD {pr.max_drawdown:.1f}R - {pr.verdict}")
 
         lines.append(f"\nC. Symbol Robustness\n{'-' * 40}")
         any_symbol = any(sr.data_available for sr in symbol_results)
@@ -68,7 +68,7 @@ class RobustnessReport:
             lines.append(f"  Worst window:       {min(evs):.2f}R")
             lines.append(f"  Best window:        {max(evs):.2f}R")
             for w in walk_forward_windows:
-                lines.append(f"    {w.test_start}→{w.test_end}: {w.test_trades}t, "
+                lines.append(f"    {w.test_start}->{w.test_end}: {w.test_trades}t, "
                              f"EV {w.test_expectancy:.2f}R, PF {w.test_profit_factor:.2f}, "
                              f"{'PROFITABLE' if w.profitable else 'LOSS'}")
 
