@@ -37,6 +37,28 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - `CognitiveReportGenerator` — explainable decision reports
 - Integrates with `MarketKnowledgeBase` from Prompt 2
 
+### Prompt 4 — Meta-Cognition Engine
+- `SelfCritiqueEngine` — argues for/against decisions, identifies ignored risks
+- `BiasDetector` — 7 bias types (confirmation, overconfidence, forced trade, recency, revenge, crowd, anchoring)
+- `ScenarioSimulator` — 5 alternative scenarios with probability normalization
+- `CounterfactualReasoner` — 7 counterfactual questions about the decision
+- `DecisionAuditor` — 7-score audit with pass/fail and required corrections
+- `OverconfidenceGuard` — purely reductive confidence adjustment
+- `TradeReadinessChecker` — blocks live trading, scores readiness (0–100)
+- `MetacognitiveReportGenerator` — aggregates all audits into final recommendation
+
+### Prompt 5 — Market Memory & Pattern Intelligence Engine
+- `PatternSignature` — compact representation of a market condition (12 categorical fields + numeric feature vector)
+- `MarketCase` — structured historical market situation with outcome tracking
+- `CaseLibrary` — case storage and retrieval (add/get/filter by symbol/regime/outcome/timeframe)
+- `SimilarityEngine` — categorical and numeric similarity scoring (0–100%), finds top similar cases
+- `OutcomeMemory` — win rate, average R:R, expectancy, failure rate calculations; outcome summaries by regime/symbol/timeframe
+- `FailureMemory` — identifies common failure reasons, high-failure regimes, generates failure warnings
+- `SuccessMemory` — identifies common success reasons, high-success regimes, generates success support
+- `RegimeMemory` — tracks best and dangerous regimes, regime warnings
+- `ConfidenceCalibrator` — adjusts confidence/risk using historical analogs; marks insufficient memory
+- `MemoryReport` — aggregates similar cases, outcomes, success/failure patterns, regime warnings, calibration
+
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.
@@ -110,6 +132,26 @@ ultimate_trader/
     reasoning_chain.py       # Full reasoning orchestrator
     decision_context.py      # Decision context and next action
     cognitive_report.py      # Explainable decision reports
+  metacognition_engine/      # Meta-cognition engine (Prompt 4)
+    self_critique.py         # Self-critique engine
+    bias_detector.py         # Bias detection (7 bias types)
+    scenario_simulator.py    # Scenario simulation
+    counterfactual_reasoning.py # Counterfactual reasoning
+    decision_auditor.py      # Decision audit
+    overconfidence_guard.py  # Overconfidence guard
+    trade_readiness.py       # Trade readiness assessment
+    metacognitive_report.py  # Meta-cognitive report
+  memory_engine/             # Market memory & pattern intelligence (Prompt 5)
+    pattern_signature.py     # Pattern signature model
+    market_case.py           # Market case model
+    case_library.py          # Case storage and retrieval
+    similarity_engine.py     # Similarity scoring engine
+    outcome_memory.py        # Outcome analysis
+    failure_memory.py        # Failure pattern tracking
+    success_memory.py        # Success pattern tracking
+    regime_memory.py         # Regime performance tracking
+    confidence_calibrator.py # Confidence calibration from history
+    memory_report.py         # Memory retrieval report
   research_engine/           # Hypothesis registry
   data_engine/               # Data provider interface
   perception_engine/         # Market perception interface

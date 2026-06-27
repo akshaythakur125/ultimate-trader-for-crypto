@@ -10,6 +10,10 @@ from ultimate_trader.core.safety import assert_live_trading_allowed, mask_secret
 from ultimate_trader.cognitive_engine.observation import Observation, ObservationType
 from ultimate_trader.cognitive_engine.reasoning_chain import Reasoner
 from ultimate_trader.market_brain.knowledge_base import MarketKnowledgeBase
+from ultimate_trader.memory_engine.case_library import CaseLibrary
+from ultimate_trader.memory_engine.confidence_calibrator import ConfidenceCalibrator
+from ultimate_trader.memory_engine.pattern_signature import PatternSignature
+from ultimate_trader.memory_engine.similarity_engine import SimilarityEngine
 from ultimate_trader.metacognition_engine.metacognitive_report import (
     MetacognitiveReportGenerator,
 )
@@ -114,6 +118,30 @@ def main() -> None:
         f"biases={bias_count}, "
         f"readiness_score={readiness_score:.0f}/100, "
         f"final_action={report.final_action}"
+    )
+
+    case_library = CaseLibrary()
+    similarity_engine = SimilarityEngine()
+    calibrator = ConfidenceCalibrator()
+
+    health_sig = PatternSignature(
+        signature_id="SIG-HEALTH-001",
+        symbol="BTCUSDT",
+        timeframe="1h",
+        regime_label="trending",
+        liquidity_state="normal",
+        orderflow_state="neutral",
+        volatility_state="normal",
+        trend_state="bullish",
+    )
+    memory_ok = case_library.count() == 0
+    sim_ok = similarity_engine.compute_similarity(health_sig, health_sig) > 99.0
+    cal_ok = calibrator.calibrate(50.0, health_sig, []).insufficient_memory is True
+    logger.info(
+        f"Market Memory Engine loaded — "
+        f"case_library={case_library.count()} cases, "
+        f"similarity_ok={sim_ok}, "
+        f"calibrator_ok={cal_ok}"
     )
 
     hypothesis = create_sample_hypothesis()
