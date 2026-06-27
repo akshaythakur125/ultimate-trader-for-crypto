@@ -106,6 +106,20 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - Validation uses the event bus (publishes VALIDATION_STARTED, COMPLETED, FAILED, PASSED)
 - `eligible_for_live_trading` always disabled
 
+### Prompt 9 — Signal Intelligence & Trade Planning Engine
+- `SignalContext` — structured signal context from validated hypothesis (direction bias, scores, EV, memory/contradiction info)
+- `EntryPlanner` — produces entry zones (LIMIT_ZONE, BREAKOUT_CONFIRMATION, PULLBACK, RECLAIM, RETEST) or NO_SAFE_ENTRY
+- `StopPlanner` — structure/volatility/liquidity/time-based stop placement with distance calculation
+- `TargetPlanner` — TP1/TP2/TP3 based on RR requirements with target realism scoring
+- `RRAnalyzer` — enforces minimum 1:3, preferred 1:5 RR with detailed summary
+- `ExecutionConditionBuilder` — 5 conditions (validation, no-trade, EV, risk, uncertainty) with REQUIRED/WARNING/BLOCKER types
+- `CancellationRuleBuilder` — 8 cancellation rules (price move, invalidation, spread, volatility, no-trade, contradiction, validation, expiry)
+- `PositionSizer` — base 1% risk reduced for uncertainty, contradiction, weak memory, high risk; position size from equity
+- `SignalQualityScorer` — grades A_PLUS/A/B/C/REJECT with strengths/weaknesses
+- `SignalGate` — 9-gate check: validation, EV, confidence, risk, uncertainty, RR, safe entry, quality, conditions; never approves live trading
+- `SignalReport` — final recommendation: ALERT_ONLY, PAPER_TRADE_CANDIDATE, REJECT_SIGNAL, WAIT_FOR_ENTRY, NO_SAFE_ENTRY, HUMAN_REVIEW
+- Event bus integration: SIGNAL_CANDIDATE_CREATED, SIGNAL_REJECTED, LIVE_TRADE_BLOCKED
+
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.

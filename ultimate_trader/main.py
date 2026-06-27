@@ -38,6 +38,17 @@ from ultimate_trader.validation_lab import (
     MonteCarloSimulator,
     ValidationGate,
 )
+from ultimate_trader.signal_engine import (
+    EntryPlanner,
+    NoSafeEntryError,
+    RRAnalyzer,
+    SignalContext,
+    SignalGate,
+    SignalGateResult,
+    DirectionBias,
+    StopPlanner,
+    TargetPlanner,
+)
 
 logger = setup_logger()
 
@@ -247,6 +258,41 @@ def main() -> None:
         f"walk_forward_ok={wf_ok}, "
         f"monte_carlo_ok={mc_ok}, "
         f"validation_gate_ok={gate_ok}"
+    )
+
+    signal_ctx = SignalContext(
+        context_id="SC-HEALTH",
+        symbol="BTCUSDT",
+        timeframe="1h",
+        validated_hypothesis_id="RH-HEALTH",
+        direction_bias=DirectionBias.LONG,
+        current_price=100.0,
+        confidence_score=60.0,
+        risk_score=30.0,
+        uncertainty_score=20.0,
+        expected_value_r=2.0,
+        validation_passed=True,
+        volatility_score=30.0,
+    )
+    entry_planner = EntryPlanner()
+    stop_planner = StopPlanner()
+    target_planner = TargetPlanner()
+    rr_analyzer = RRAnalyzer()
+    signal_gate = SignalGate()
+
+    entry_ok = entry_planner.plan_entry(signal_ctx).entry_type.value != "NO_SAFE_ENTRY"
+    stop_ok = stop_planner.plan_stop(signal_ctx, 100.0).stop_loss_price != 0
+    target_ok = target_planner.plan_targets(signal_ctx, 100.0, 99.0).expected_reward_r > 0
+    rr_ok = rr_analyzer.analyze(100.0, 99.0, 105.0).meets_preferred_rr
+    sig_gate_ok = signal_gate.evaluate(signal_ctx).approved_for_alert is False
+
+    logger.info(
+        f"Signal Intelligence Engine loaded — "
+        f"entry_ok={entry_ok}, "
+        f"stop_ok={stop_ok}, "
+        f"target_ok={target_ok}, "
+        f"rr_ok={rr_ok}, "
+        f"signal_gate_ok={sig_gate_ok}"
     )
 
     logger.info("Ultimate Trader initialized successfully")
