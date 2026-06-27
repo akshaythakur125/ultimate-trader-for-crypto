@@ -4,8 +4,9 @@ from ultimate_trader.liquidity_smart_money.models import Candle, FVG, OrderBlock
 
 
 class OrderBlockDetector:
-    def __init__(self, lookback: int = 10):
+    def __init__(self, lookback: int = 10, max_blocks: int = 100):
         self.lookback = lookback
+        self.max_blocks = max_blocks
         self._blocks: list[OrderBlock] = []
 
     def analyze(self, candles: list[Candle], fvgs: list[FVG]) -> list[OrderBlock]:
@@ -45,7 +46,9 @@ class OrderBlockDetector:
                 new_blocks.append(ob)
 
         self._update_mitigation(candles)
-        self._detect_breaker_blocks(candles)
+        self._detect_breaker_blocks(candles, new_blocks)
+        if len(self._blocks) > self.max_blocks:
+            self._blocks[:] = self._blocks[-self.max_blocks:]
         return new_blocks
 
     def _block_exists(self, high: float, low: float) -> bool:
@@ -97,10 +100,10 @@ class OrderBlockDetector:
                         block.is_mitigated = True
                         break
 
-    def _detect_breaker_blocks(self, candles: list[Candle]):
-        if len(self._blocks) < 2:
+    def _detect_breaker_blocks(self, candles: list[Candle], new_blocks: Optional[list[OrderBlock]] = None):
+        if not new_blocks:
             return
-        for i, block in enumerate(self._blocks):
+        for block in new_blocks:
             if block.ob_type == "BULLISH_OB" and block.is_mitigated:
                 for c in candles:
                     if c.high > block.price_high:
