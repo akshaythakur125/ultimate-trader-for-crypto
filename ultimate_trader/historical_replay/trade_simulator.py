@@ -138,9 +138,13 @@ class TradeSimulator:
             raw_r = (trade.entry_price - exit_price) / abs(trade.entry_price - trade.stop_loss) if trade.stop_loss != trade.entry_price else 0.0
 
         trade.gross_r = raw_r
-        trade.fees_r = self._config.taker_fee_percent * 2 * abs(trade.entry_price) / abs(trade.entry_price - trade.stop_loss) if trade.stop_loss != trade.entry_price else 0.0
-        trade.slippage_r = self._config.slippage_percent / abs(trade.entry_price - trade.stop_loss) * abs(trade.entry_price) if trade.stop_loss != trade.entry_price else 0.0
-        trade.funding_r = self._config.funding_per_candle_percent * trade.holding_candles * abs(trade.entry_price) / abs(trade.entry_price - trade.stop_loss) if trade.stop_loss != trade.entry_price else 0.0
+        stop_range = abs(trade.entry_price - trade.stop_loss) if trade.stop_loss != trade.entry_price else 1.0
+        fee_rate = self._config.taker_fee_percent / 100.0
+        slip_rate = self._config.slippage_percent / 100.0
+        fund_rate = self._config.funding_per_candle_percent / 100.0
+        trade.fees_r = fee_rate * 2 * abs(trade.entry_price) / stop_range if trade.stop_loss != trade.entry_price else 0.0
+        trade.slippage_r = slip_rate * abs(trade.entry_price) / stop_range if trade.stop_loss != trade.entry_price else 0.0
+        trade.funding_r = fund_rate * trade.holding_candles * abs(trade.entry_price) / stop_range if trade.stop_loss != trade.entry_price else 0.0
         trade.net_r = raw_r - trade.fees_r - trade.slippage_r - trade.funding_r
 
         return trade
