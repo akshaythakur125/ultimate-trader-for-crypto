@@ -81,6 +81,9 @@ class StrategyCandidate(BaseModel):
     filters_passed: list[str] = Field(default_factory=list)
     filters_failed: list[str] = Field(default_factory=list)
     filters_unavailable: list[str] = Field(default_factory=list)
+    directional_components: dict[str, float] = Field(default_factory=dict)
+    directional_vote: str = ""
+    conflict_severity: str = "NONE"
     created_at: datetime = Field(default_factory=lambda: datetime.utcnow())
 
 

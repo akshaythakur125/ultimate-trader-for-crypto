@@ -66,10 +66,16 @@ def build_trade_diagnostics(
     conf = 0.0
     passed: list[str] = []
     failed: list[str] = []
+    directional_components: dict[str, float] = {}
+    directional_vote = ""
+    conflict_severity = "NONE"
     if strategy_candidate is not None:
         conf = getattr(strategy_candidate, "total_confidence", 0.0)
         passed = list(getattr(strategy_candidate, "filters_passed", []))
         failed = list(getattr(strategy_candidate, "filters_failed", []))
+        directional_components = dict(getattr(strategy_candidate, "directional_components", {}))
+        directional_vote = str(getattr(strategy_candidate, "directional_vote", ""))
+        conflict_severity = str(getattr(strategy_candidate, "conflict_severity", "NONE"))
 
     return TradeDiagnostics(
         trade_id=getattr(trade, "trade_id", f"TD-{datetime.utcnow().timestamp()}"),
@@ -98,4 +104,7 @@ def build_trade_diagnostics(
         confidence_score=conf,
         filters_passed=passed,
         filters_failed=failed,
+        directional_components=directional_components,
+        directional_vote=directional_vote,
+        conflict_severity=conflict_severity,
     )

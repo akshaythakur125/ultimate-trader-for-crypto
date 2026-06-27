@@ -85,6 +85,19 @@ class StrategyEngine:
             else:
                 rejection_reason = f"Confidence {total_confidence:.1f} < {self._config.confidence_threshold}"
 
+        directional_components: dict[str, float] = {}
+        directional_vote = direction.value if direction else ""
+        conflict_severity = "NONE"
+        if lsm_data:
+            for key in ("sweep_bias", "structure_bias", "fvg_bias", "order_block_bias",
+                        "premium_discount_bias", "displacement_bias", "microstructure_bias",
+                        "orderflow_bias", "trend_bias"):
+                val = lsm_data.get(key)
+                if val is not None:
+                    directional_components[key] = val
+            directional_components["confluence_score"] = lsm_data.get("confluence_score", 0.0)
+            conflict_severity = lsm_data.get("conflict_severity", "NONE")
+
         candidate = StrategyCandidate(
             candidate_id=f"SC-{uuid.uuid4().hex[:8].upper()}",
             symbol=candle.symbol,
@@ -101,6 +114,9 @@ class StrategyEngine:
             filters_passed=filters_passed,
             filters_failed=filters_failed,
             filters_unavailable=filters_unavailable,
+            directional_components=directional_components,
+            directional_vote=directional_vote,
+            conflict_severity=conflict_severity,
         )
 
         self._candidates.append(candidate)

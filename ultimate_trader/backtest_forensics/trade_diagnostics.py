@@ -45,6 +45,9 @@ class TradeDiagnostics(BaseModel):
     confidence_score: float = 0.0
     filters_passed: list[str] = Field(default_factory=list)
     filters_failed: list[str] = Field(default_factory=list)
+    directional_components: dict[str, float] = Field(default_factory=dict)
+    directional_vote: str = ""
+    conflict_severity: str = "NONE"
 
     def holding_time_minutes(self) -> float:
         if self.entry_time and self.exit_time:
