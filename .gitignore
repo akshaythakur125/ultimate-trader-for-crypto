@@ -26,6 +26,12 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Downloaded market data
+data/historical/*.csv
+
+# Keep data directory with gitkeep
+!data/historical/.gitkeep
+
 # Testing
 htmlcov/
 .coverage
