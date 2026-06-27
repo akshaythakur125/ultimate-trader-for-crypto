@@ -10,6 +10,9 @@ from ultimate_trader.core.safety import assert_live_trading_allowed, mask_secret
 from ultimate_trader.cognitive_engine.observation import Observation, ObservationType
 from ultimate_trader.cognitive_engine.reasoning_chain import Reasoner
 from ultimate_trader.market_brain.knowledge_base import MarketKnowledgeBase
+from ultimate_trader.metacognition_engine.metacognitive_report import (
+    MetacognitiveReportGenerator,
+)
 from ultimate_trader.schemas.hypothesis import TradingHypothesis
 from ultimate_trader.storage.database import init_database
 
@@ -98,6 +101,19 @@ def main() -> None:
         f"Cognitive Reasoning Engine loaded — "
         f"chain {chain.chain_id}: bias={chain.preliminary_bias}, "
         f"confidence={chain.confidence_after:.0f}/100"
+    )
+
+    metacognitive_report_gen = MetacognitiveReportGenerator()
+    report = metacognitive_report_gen.generate(chain)
+    audit_passed = report.decision_audit.audit_passed if report.decision_audit else False
+    bias_count = len(report.bias_detection.detected_biases) if report.bias_detection else 0
+    readiness_score = report.trade_readiness.readiness_score if report.trade_readiness else 0.0
+    logger.info(
+        f"Meta-Cognition Engine loaded — "
+        f"audit_passed={audit_passed}, "
+        f"biases={bias_count}, "
+        f"readiness_score={readiness_score:.0f}/100, "
+        f"final_action={report.final_action}"
     )
 
     hypothesis = create_sample_hypothesis()
