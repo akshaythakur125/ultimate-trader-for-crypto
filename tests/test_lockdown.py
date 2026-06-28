@@ -337,7 +337,78 @@ def test_launch_check_handles_none_config():
     assert result["verdict"] in ("PASS", "BLOCKED"), "crash instead of verdict"
 
 
-# --- Test 11: run_with_timeout ---
+# --- Test 11: _determine_operator_verdict never TIMEOUT ---
+
+def test_determine_verdict_never_timeout():
+    """_determine_operator_verdict must never return TIMEOUT."""
+    from production_replay.operator import _determine_operator_verdict
+    verdicts = []
+    # All configs timed out
+    all_results = [
+        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 30m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+    ]
+    dry_result = {"total_trades": 0, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {"paper_unlock_blocked": True, "live_unlock_blocked": True}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert "TIMEOUT" not in v, f"verdict must not contain TIMEOUT: {v}"
+    assert v in ("ERROR", "INSUFFICIENT_TRADES", "READY_FOR_PAPER")
+
+
+def test_determine_verdict_all_timeout_is_error():
+    """When all configs time out, verdict must be ERROR."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 30m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+    ]
+    dry_result = {"total_trades": 0, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert v == "ERROR"
+
+
+def test_determine_verdict_partial_timeout_is_insufficient_trades():
+    """When some configs complete but total < 100, verdict is INSUFFICIENT_TRADES."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 30m", "status": "COMPLETED", "trades": 30},
+    ]
+    dry_result = {"total_trades": 30, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert v == "INSUFFICIENT_TRADES"
+
+
+def test_determine_verdict_ready_for_paper():
+    """When trades >= 100 and gates pass, verdict must be READY_FOR_PAPER."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "COMPLETED", "trades": 50},
+        {"label": "BTC 30m", "status": "COMPLETED", "trades": 50},
+    ]
+    dry_result = {"total_trades": 100, "verdict": "READY_FOR_PAPER", "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert v == "READY_FOR_PAPER"
+
+
+def test_determine_verdict_mixed_timeout_reads_trade_verdict():
+    """When some timeout but trades exist, verdict follows trade-based result."""
+    from production_replay.operator import _determine_operator_verdict
+    # One config timed out, one completed, but trades < 100
+    all_results = [
+        {"label": "SOL 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 15m", "status": "COMPLETED", "trades": 40},
+    ]
+    dry_result = {"total_trades": 40, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert "TIMEOUT" not in v
+
+
+# --- Test 12: run_with_timeout ---
 
 def test_run_with_timeout_completes():
     """run_with_timeout must return result when func finishes in time."""
@@ -382,24 +453,13 @@ def test_operator_quick_mode_parsing():
         assert op_mod.operator_run  # module loaded okay
 
 
-# --- Test 14: Partial timeout handling ---
-
-def test_operator_partial_timeout_does_not_crash():
-    """operator_run must not crash when a single config times out."""
-    from production_replay.operator import operator_run
-    # Verifies the function signature and structure handles partial results
-    import inspect
-    source = inspect.getsource(operator_run)
-    assert "TimeoutError" in source or "TIMEOUT" in source
-    assert "continuing" in source or "PARTIAL_TIMEOUT" in source
-
+# --- Test 15: Partial timeout handling ---
 
 def test_operator_continues_after_timeout():
     """operator_run must continue remaining configs after a timeout."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
-    # Should have try/except with continue for each config
     assert "except TimeoutError" in source
     assert "continuing" in source
 
@@ -410,13 +470,23 @@ def test_operator_writes_summary_on_partial_failure():
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
-    # Verify all three files are always written
     assert SUMMARY_FILE in source or "summary" in source.lower()
     assert TEXT_REPORT in source or "text_report" in source.lower() or "dry_forward_report" in source
     assert JSON_REPORT in source or "json_report" in source.lower() or "dry_forward_report.json" in source
 
 
-# --- Test 15: FAST_DAILY mode ---
+def test_operator_source_has_no_timeout_verdict():
+    """_determine_operator_verdict must never return a TIMEOUT verdict."""
+    from production_replay.operator import _determine_operator_verdict
+    import inspect
+    source = inspect.getsource(_determine_operator_verdict)
+    # Check that no return statement uses TIMEOUT (docstring may mention it)
+    lines_with_return = [l for l in source.split("\n") if l.strip().startswith("return")]
+    for line in lines_with_return:
+        assert "TIMEOUT" not in line, f"verdict return contains TIMEOUT: {line.strip()}"
+
+
+# --- Test 16: FAST_DAILY mode ---
 
 def test_fast_daily_uses_data_days_180():
     """FAST_DAILY must use 180 data_days instead of 365."""
@@ -436,7 +506,7 @@ def test_fast_daily_flag_accepted():
     assert "fast_daily: bool = True" in source or "fast_daily=True" in source
 
 
-# --- Test 16: --config flag ---
+# --- Test 17: --config flag ---
 
 def test_config_flag_parsing():
     """--config flag must parse config labels correctly."""
@@ -457,7 +527,7 @@ def test_config_flag_invalid_does_not_crash():
     assert len(result) == 1
 
 
-# --- Test 17: --unlimited flag ---
+# --- Test 18: --unlimited flag ---
 
 def test_unlimited_flag_provides_365d():
     """--unlimited must set fast_daily=False and use 365d."""
@@ -469,7 +539,7 @@ def test_unlimited_flag_provides_365d():
     assert "unlimited" in source
 
 
-# --- Test 18: ensure_data fast_daily passthrough ---
+# --- Test 19: ensure_data fast_daily passthrough ---
 
 def test_ensure_data_accepts_fast_daily():
     """ensure_data must accept fast_daily parameter."""
@@ -479,7 +549,7 @@ def test_ensure_data_accepts_fast_daily():
     assert "fast_daily" in sig.parameters
 
 
-# --- Test 19: Live/paper remain disabled in report ---
+# --- Test 20: Live/paper remain disabled in report ---
 
 def test_dry_forward_report_live_paper_disabled():
     """dry_forward report must always have live/paper disabled."""
@@ -500,7 +570,7 @@ def test_operator_source_no_live_trading():
     assert "live_trading" not in source or "DISABLED" in source or "False" in source or "disabled" in source.lower()
 
 
-# --- Test 20: _interval_minutes ---
+# --- Test 21: _interval_minutes ---
 
 def test_interval_minutes_15m():
     """15m -> 15."""

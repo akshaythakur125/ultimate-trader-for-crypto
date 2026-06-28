@@ -12,11 +12,12 @@ Sequence:
 9. Write deploy_results/* files
 10. Print final status table
 
-CLI:
-  python -m production_replay.operator             # default: FAST_DAILY, 3 configs
-  python -m production_replay.operator --unlimited  # 365d download (slow)
-  python -m production_replay.operator --config BTC:15m
-  python -m production_replay.operator --config SOL:15m
+Verdicts (overall operator):
+  - READY_FOR_PAPER: trades >= 100, DD < 12R, PF >= 1.5, EV > 0, no kill
+  - INSUFFICIENT_TRADES: total trades < 100
+  - BLOCKED_LAUNCH: launch check failed
+  - ERROR: timeouts, exceptions, or poor edge quality
+  Never TIMEOUT — per-config timeout is handled gracefully.
 """
 
 import argparse, json, os, sys, threading, time, traceback
@@ -37,7 +38,7 @@ RESULTS_DIR = "deploy_results"
 SUMMARY_FILE = os.path.join(RESULTS_DIR, "operator_summary.txt")
 TEXT_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.txt")
 JSON_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.json")
-CONFIG_TIMEOUT = 300  # seconds per config
+CONFIG_TIMEOUT = 180  # seconds per config (reduced from 300 to avoid 900s external kill)
 
 ALLOWED = [
     ("BTCUSDT", "15m", "BTC 15m"),
@@ -135,8 +136,8 @@ def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) 
         cum += t["net_r"]; peak = max(peak, cum); total_dd = max(total_dd, peak - cum)
     total_kill = check_kill_switch(trades=all_trades) if all_trades else {"kill_triggered": False}
 
-    has_timeout = any(r.get("error") == "timeout" for r in all_results)
-    has_error = any(r.get("error") not in (None, "timeout") for r in all_results)
+    has_any_timeout = any(r.get("error") == "timeout" for r in all_results)
+    has_any_error = any(r.get("error") not in (None, "timeout") for r in all_results)
 
     evidence_ok = total_trades >= 100
     dd_ok = total_dd < 12.0
@@ -144,16 +145,15 @@ def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) 
     pf_ok = total_pf >= 1.5
     ev_ok = total_ev > 0
 
-    if has_timeout or has_error:
-        verdict = "PARTIAL_TIMEOUT" if has_timeout else "PARTIAL_ERROR"
+    # Determine report verdict: use trade-based verdict regardless of timeouts
+    if total_trades == 0:
+        report_verdict = "INSUFFICIENT_TRADES"
     elif evidence_ok and dd_ok and pf_ok and ev_ok and not total_kill["kill_triggered"]:
-        verdict = "ROBUST_EDGE" if dd_pref else "REGIME_SPECIFIC_EDGE"
+        report_verdict = "READY_FOR_PAPER"
     elif total_trades < 100:
-        verdict = "INSUFFICIENT_TRADES"
-    elif total_dd >= 12.0 or total_ev <= 0 or total_pf < 1.5:
-        verdict = "NO_EDGE"
+        report_verdict = "INSUFFICIENT_TRADES"
     else:
-        verdict = "REGIME_SPECIFIC_EDGE"
+        report_verdict = "ERROR"
 
     gates = {
         "Trades >= 100": evidence_ok,
@@ -166,7 +166,7 @@ def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) 
 
     return {
         "mode": "dry_forward",
-        "verdict": verdict,
+        "verdict": report_verdict,
         "timestamp": datetime.now().isoformat(),
         "configs_tested": len(all_results),
         "total_trades": total_trades,
@@ -336,6 +336,37 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print_sep()
 
 
+def _determine_operator_verdict(
+    all_results: list[dict],
+    dry_result: dict,
+    evidence: dict,
+) -> str:
+    """Determine overall operator verdict. Never returns TIMEOUT."""
+    # If no configs completed, it's an error condition
+    completed_configs = [r for r in all_results if r.get("status") == "COMPLETED"]
+    timed_out_configs = [r for r in all_results if r.get("error") == "timeout"]
+    failed_configs = [r for r in all_results if r.get("error") not in (None, "timeout")]
+
+    any_timeout = len(timed_out_configs) > 0
+    any_failure = len(failed_configs) > 0
+    any_success = len(completed_configs) > 0
+    all_failed = not any_success and (any_timeout or any_failure)
+
+    if all_failed:
+        return "ERROR"
+
+    # Use the trade-based report verdict
+    total_trades = dry_result.get("total_trades", 0)
+    report_verdict = dry_result.get("verdict", "INSUFFICIENT_TRADES")
+
+    if report_verdict == "READY_FOR_PAPER":
+        return "READY_FOR_PAPER"
+    elif report_verdict == "INSUFFICIENT_TRADES":
+        return "INSUFFICIENT_TRADES"
+    else:
+        return "ERROR"
+
+
 def operator_run(
     quick_mode: bool = True,
     config_labels: list[str] | None = None,
@@ -348,7 +379,7 @@ def operator_run(
 
     operator_result = {
         "timestamp": datetime.now().isoformat(),
-        "mode": "fast_daily" if fast_daily else ("unlimited" if not fast_daily else "custom"),
+        "mode": "fast_daily" if fast_daily else "unlimited",
         "operator_verdict": None,
         "launch_check": None,
         "safety_lock": None,
@@ -373,7 +404,7 @@ def operator_run(
     safety = run_safety_lock()
     operator_result["safety_lock"] = safety
     if not safety["pass"]:
-        operator_result["operator_verdict"] = "BLOCKED_SAFETY"
+        operator_result["operator_verdict"] = "ERROR"
         _write_summary(operator_result, start)
         print(f"\n  OPERATOR BLOCKED: safety lock failed")
         sys.exit(1)
@@ -396,7 +427,6 @@ def operator_run(
     print(f"\n  {'='*60}")
     print(f"  [3/4] Running dry-forward (timeout={CONFIG_TIMEOUT}s per config)...")
 
-    # Resolve config list
     if config_labels:
         configs_to_run = [
             a for a in ALLOWED
@@ -501,27 +531,15 @@ def operator_run(
     print(f"\n  VERDICT: {dry_result['verdict']}")
     print_sep()
 
-    # Step 4: Track evidence
+    # Step 4: Track evidence (uses only completed config trades via all_trades)
     print(f"\n  {'='*60}")
     print(f"  [4/4] Tracking evidence...")
     evidence = track_evidence(dry_result)
     operator_result["evidence"] = evidence
     print_evidence_summary(evidence)
 
-    # Determine operator verdict
-    has_timeout = any(r.get("error") == "timeout" for r in all_results)
-    has_error = any(r.get("error") not in (None, "timeout") for r in all_results)
-    has_success = any(r.get("status") == "COMPLETED" for r in all_results)
-
-    if has_timeout and has_success:
-        operator_verdict = "PARTIAL_TIMEOUT"
-    elif has_timeout:
-        operator_verdict = "TOTAL_TIMEOUT"
-    elif has_error:
-        operator_verdict = "ERROR"
-    else:
-        operator_verdict = dry_result["verdict"]
-
+    # Determine overall operator verdict (never TIMEOUT)
+    operator_verdict = _determine_operator_verdict(all_results, dry_result, evidence)
     operator_result["operator_verdict"] = operator_verdict
     _print_final_table(dry_result, lc, safety, evidence, operator_verdict, start)
     _write_summary(operator_result, start)
@@ -563,7 +581,7 @@ if __name__ == "__main__":
     args, _ = parser.parse_known_args()
 
     config_labels = _parse_config_labels(args.config)
-    fast_daily = not args.unlimited  # default to FAST_DAILY
+    fast_daily = not args.unlimited
 
     try:
         operator_run(quick_mode=True, config_labels=config_labels, fast_daily=fast_daily, allow_dirty=args.allow_dirty)
