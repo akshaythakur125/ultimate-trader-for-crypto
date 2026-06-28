@@ -37,3 +37,10 @@ htmlcov/
 .coverage
 .coverage.*
 .pytest_cache/
+
+# Generated validation results
+phase5_results/
+phase6_results/
+phase7_results/
+deploy_results/
+!deploy_results/.gitkeep
