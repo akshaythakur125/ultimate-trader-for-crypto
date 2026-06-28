@@ -301,3 +301,37 @@ def test_run_operator_bat_exists():
     assert os.path.exists("run_operator.bat")
     content = open("run_operator.bat").read()
     assert "operator.py" in content
+
+
+# --- Test 10: Launch check handles None configs safely ---
+
+def test_launch_check_handles_none_allowed_configs():
+    """Launch check must not crash when allowed_configs is None."""
+    from production_replay.launch_check import run_launch_check
+    config = {
+        "live_trading": False, "paper_trading": False, "dry_run": True,
+        "allowed_configs": None,
+        "blocked_configs": None,
+    }
+    result = run_launch_check(config)
+    assert result["verdict"] in ("PASS", "BLOCKED"), "crash instead of verdict"
+    assert "no_blocked_configs" in result["gates"]
+    assert result["gates"]["no_blocked_configs"]["status"] == "PASS"
+
+
+def test_launch_check_handles_missing_allowed_configs():
+    """Launch check must not crash when allowed_configs key is missing."""
+    from production_replay.launch_check import run_launch_check
+    config = {
+        "live_trading": False, "paper_trading": False, "dry_run": True,
+    }
+    result = run_launch_check(config)
+    assert result["verdict"] in ("PASS", "BLOCKED"), "crash instead of verdict"
+    assert "no_blocked_configs" in result["gates"]
+
+
+def test_launch_check_handles_none_config():
+    """Launch check must not crash when config itself is None."""
+    from production_replay.launch_check import run_launch_check
+    result = run_launch_check(None)
+    assert result["verdict"] in ("PASS", "BLOCKED"), "crash instead of verdict"

@@ -121,8 +121,10 @@ def check_bias_audit(report: dict) -> tuple[bool, str]:
 
 def run_launch_check(config: dict | None = None) -> dict[str, Any]:
     """Run all launch checks. Returns dict with gates, overall PASS/FAIL, and reason."""
-    if config is None:
+    if config is None or not isinstance(config, dict):
         config = load_config()
+    if not isinstance(config, dict):
+        config = {}
 
     gates = {}
 
@@ -148,10 +150,16 @@ def run_launch_check(config: dict | None = None) -> dict[str, Any]:
     }
 
     # Gate 4: no blocked configs running
-    allowed = config.get("allowed_configs", [])
-    blocked = config.get("blocked_configs", [])
-    allowed_symbol_tf = {(a["symbol"], a["timeframe"]) for a in allowed}
-    blocked_symbol_tf = {(b["symbol"], b["timeframe"]) for b in blocked}
+    allowed = config.get("allowed_configs") or []
+    blocked = config.get("blocked_configs") or []
+    allowed_symbol_tf = set()
+    for a in allowed:
+        if isinstance(a, dict) and "symbol" in a and "timeframe" in a:
+            allowed_symbol_tf.add((a["symbol"], a["timeframe"]))
+    blocked_symbol_tf = set()
+    for b in blocked:
+        if isinstance(b, dict) and "symbol" in b and "timeframe" in b:
+            blocked_symbol_tf.add((b["symbol"], b["timeframe"]))
     conflict = blocked_symbol_tf & allowed_symbol_tf
     gates["no_blocked_configs"] = {
         "status": "PASS" if not conflict else "FAIL",
