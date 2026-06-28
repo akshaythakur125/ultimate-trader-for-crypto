@@ -119,8 +119,11 @@ def check_bias_audit(report: dict) -> tuple[bool, str]:
     return False, f"bias audit status: {bias.get('status')}"
 
 
-def run_launch_check(config: dict | None = None) -> dict[str, Any]:
-    """Run all launch checks. Returns dict with gates, overall PASS/FAIL, and reason."""
+def run_launch_check(config: dict | None = None, allow_dirty: bool = False) -> dict[str, Any]:
+    """Run all launch checks. Returns dict with gates, overall PASS/FAIL, and reason.
+    
+    If allow_dirty=True, the git_tree_clean gate is skipped (passes automatically).
+    """
     if config is None or not isinstance(config, dict):
         config = load_config()
     if not isinstance(config, dict):
@@ -199,8 +202,11 @@ def run_launch_check(config: dict | None = None) -> dict[str, Any]:
                 config_issues.append(f"{label}: not found in latest report")
     gates["allowed_configs_valid"] = {"status": "PASS" if config_ok else "FAIL", "issues": config_issues}
 
-    # Gate 6: git tree clean
-    git_ok, git_msg = check_git_clean()
+    # Gate 6: git tree clean (skipped if allow_dirty=True)
+    if allow_dirty:
+        git_ok, git_msg = True, "git check skipped (allow_dirty=True)"
+    else:
+        git_ok, git_msg = check_git_clean()
     gates["git_tree_clean"] = {"status": "PASS" if git_ok else "FAIL", "detail": git_msg}
 
     # Gate 7: bias audit

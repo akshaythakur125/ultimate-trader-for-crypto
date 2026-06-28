@@ -101,7 +101,7 @@ def load_candles_from_csv(path: str) -> list[HistoricalCandle]:
     return candles
 
 
-def ensure_data(symbol: str, timeframe: str, days: int = 90) -> list[HistoricalCandle]:
+def ensure_data(symbol: str, timeframe: str, days: int = 90, fast_daily: bool = False) -> list[HistoricalCandle]:
     path = _csv_path(symbol, timeframe)
     if os.path.exists(path):
         candles = load_candles_from_csv(path)
@@ -112,7 +112,9 @@ def ensure_data(symbol: str, timeframe: str, days: int = 90) -> list[HistoricalC
             return candles
         print(f"  [CACHE] Cached {os.path.basename(path)} has {len(candles)} candles ({actual_days}d), need {days}d — re-downloading", flush=True)
     api_symbol = symbol.replace("USDT", "-USDT")
-    for attempt_days in [365, days, 180, 90, 60, 30, 14, 7]:
+    # In FAST_DAILY mode, skip 365d attempt — only try up to 180d
+    attempt_list = [days] if fast_daily else list(dict.fromkeys([365, days, 180, 90, 60, 30, 14, 7]))  # deduplicate
+    for attempt_days in attempt_list:
         print(f"  [NET] Downloading {api_symbol} {timeframe} ({attempt_days}d)...", flush=True)
         try:
             items = _fetch_klines(api_symbol, timeframe, days=attempt_days)

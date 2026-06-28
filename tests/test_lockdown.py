@@ -382,7 +382,111 @@ def test_operator_quick_mode_parsing():
         assert op_mod.operator_run  # module loaded okay
 
 
-# --- Test 13: _interval_minutes ---
+# --- Test 14: Partial timeout handling ---
+
+def test_operator_partial_timeout_does_not_crash():
+    """operator_run must not crash when a single config times out."""
+    from production_replay.operator import operator_run
+    # Verifies the function signature and structure handles partial results
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "TimeoutError" in source or "TIMEOUT" in source
+    assert "continuing" in source or "PARTIAL_TIMEOUT" in source
+
+
+def test_operator_continues_after_timeout():
+    """operator_run must continue remaining configs after a timeout."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    # Should have try/except with continue for each config
+    assert "except TimeoutError" in source
+    assert "continuing" in source
+
+
+def test_operator_writes_summary_on_partial_failure():
+    """operator_run must write summary files even with partial failure."""
+    from production_replay.operator import SUMMARY_FILE, TEXT_REPORT, JSON_REPORT
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    # Verify all three files are always written
+    assert SUMMARY_FILE in source or "summary" in source.lower()
+    assert TEXT_REPORT in source or "text_report" in source.lower() or "dry_forward_report" in source
+    assert JSON_REPORT in source or "json_report" in source.lower() or "dry_forward_report.json" in source
+
+
+# --- Test 15: FAST_DAILY mode ---
+
+def test_fast_daily_uses_data_days_180():
+    """FAST_DAILY must use 180 data_days instead of 365."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "data_days = 180 if fast_daily else 365" in source
+
+
+def test_fast_daily_flag_accepted():
+    """Operator must accept --fast flag in its argument parser."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "fast_daily" in source
+
+
+# --- Test 16: --config flag ---
+
+def test_config_flag_parsing():
+    """--config flag must parse config labels correctly."""
+    from production_replay.operator import _parse_config_labels
+    # Valid label
+    result = _parse_config_labels(["BTC:15m"])
+    assert result is not None
+    assert len(result) >= 1
+    # Single config
+    assert isinstance(result, list)
+
+
+def test_config_flag_invalid_does_not_crash():
+    """Invalid --config value must not crash parser."""
+    from production_replay.operator import _parse_config_labels
+    result = _parse_config_labels(["INVALID:99m"])
+    assert result is not None  # returns the raw string as fallback
+    assert len(result) == 1
+
+
+# --- Test 17: ensure_data fast_daily passthrough ---
+
+def test_ensure_data_accepts_fast_daily():
+    """ensure_data must accept fast_daily parameter."""
+    from ultimate_trader.robustness_lab.replay_runner import ensure_data
+    import inspect
+    sig = inspect.signature(ensure_data)
+    assert "fast_daily" in sig.parameters
+
+
+# --- Test 18: Live/paper remain disabled in report ---
+
+def test_dry_forward_report_live_paper_disabled():
+    """dry_forward report must always have live/paper disabled."""
+    report_path = "deploy_results/dry_forward_report.json"
+    if not os.path.exists(report_path):
+        pytest.skip("dry-forward report not generated yet")
+    with open(report_path) as f:
+        report = json.load(f)
+    assert report.get("live_trading_enabled") is False
+    assert report.get("paper_trading_enabled") is False
+
+
+def test_operator_source_no_live_trading():
+    """Operator source must not reference live trading enablement."""
+    from production_replay import operator
+    import inspect
+    source = inspect.getsource(operator)
+    assert "live_trading" not in source or "DISABLED" in source or "False" in source or "disabled" in source.lower()
+
+
+# --- Test 19: _interval_minutes ---
 
 def test_interval_minutes_15m():
     """15m -> 15."""

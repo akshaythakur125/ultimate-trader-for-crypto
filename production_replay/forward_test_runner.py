@@ -48,6 +48,7 @@ def run_forward_test(
     dry_run: bool = True,
     output_dir: str = "phase5_results",
     risk_controls: dict[str, dict] | None = None,
+    fast_daily: bool = False,
 ) -> dict[str, Any]:
     """Execute forward test on the frozen configuration.
 
@@ -57,6 +58,7 @@ def run_forward_test(
         data_days: Days of historical data to load.
         dry_run: If True (default), logs intent but does not execute.
         output_dir: Directory for output files.
+        fast_daily: If True, use 180d cache and skip 365d download.
 
     Returns:
         Dict with trade_diagnostics, rejection_summary, window_metrics, and
@@ -72,7 +74,7 @@ def run_forward_test(
     t_start = time.time()
 
     print(f"  [DATA] Loading {data_days}d of {symbol} {timeframe}...", flush=True)
-    candles = ensure_data(symbol, timeframe, days=data_days)
+    candles = ensure_data(symbol, timeframe, days=data_days, fast_daily=fast_daily)
     if not candles:
         print(f"  [DATA] No candles loaded for {symbol} {timeframe}", flush=True)
         return {"status": "failed", "error": "no data"}
