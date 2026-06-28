@@ -42,54 +42,48 @@ Not safe for live deployment yet.
    launch_check.py blocks any flip, validation_gate.py hardcodes
    eligible_for_live_trading=False.
 
-## Daily Operator Checklist
+## Daily Operating Procedure
 
-Run this every day to monitor the system. Each step takes 3-5 minutes total.
+### 1. Pull latest repo
+```
+git pull
+```
 
-### Step 1: Confirm tree is clean
+### 2. Run operator
 ```
-git status
+python production_replay/operator.py
 ```
-Expected: `nothing to commit, working tree clean`
-If dirty, commit or stash changes before proceeding.
+This single command runs safety lock, launch check, dry-forward,
+evidence tracker, generates all reports, and prints the final status table.
 
-### Step 2: Run launch check
-```
-python production_replay/launch_check.py
-```
-Expected: `PASS` on all 8 gates.
-If any gate FAILS, investigate before running dry-forward.
+Alternatively double-click `run_operator.bat` (Windows).
 
-### Step 3: Run dry-forward validation
-```
-python production_replay/run_dry_forward.py
-```
-Expected: completes in 3-5 minutes with output for each allowed config.
-Monitor the CONSOLIDATED REPORT at the end.
-
-### Step 4: Inspect results
-Check the following files after the run:
+### 3. Inspect generated files
 
 | File | What to check |
 |------|---------------|
+| `deploy_results/operator_summary.txt` | Full session summary (all steps) |
 | `deploy_results/dry_forward_report.json` | Verdict, gates, per-config metrics |
+| `deploy_results/dry_forward_report.txt` | Human-readable text report |
 | `deploy_results/BTCUSDT_15m/forward_test_result.json` | BTC 15m individual trades |
 | `deploy_results/BTCUSDT_30m/forward_test_result.json` | BTC 30m individual trades |
 | `deploy_results/SOLUSDT_15m/forward_test_result.json` | SOL 15m individual trades |
 
-### Step 5: Confirm no live/paper execution
-Check these are still false:
-```
-grep -E "live_trading|paper_trading|dry_run" production_replay/config_locked.yaml
-```
-Expected: `live_trading: false`, `paper_trading: false`, `dry_run: true`
+### 4. Do not enable paper/live trading until gates pass
 
-### Step 6: Record result
-Log the verdict in a running diary:
-```
-echo "[$(date)] Verdict: INSUFFICIENT_TRADES | 95 trades, DD 7.74R, Kill OK"
-```
-Compare against previous day to spot degradation early.
+The operator blocks itself if safety locks are compromised. Do not
+manually override config_locked.yaml or launch_check.py.
+
+### 5. Required unlock conditions for paper trading
+
+All must be true:
+- >= 100 valid dry-forward trades
+- >= 30 calendar days of dry-forward logs
+- No kill-switch trigger
+- PF >= 1.5
+- WR >= 35%
+- DD < 12.0R
+- Bias audit pass
 
 ## Interpreting Results
 
@@ -106,22 +100,26 @@ Compare against previous day to spot degradation early.
 
 ## Commands
 
-### Run dry-forward validation (daily)
+### Run daily operator (recommended)
 ```
-python production_replay/run_dry_forward.py
+python production_replay/operator.py
 ```
-Output: `deploy_results/dry_forward_report.json`
+Outputs: `deploy_results/dry_forward_report.json`,
+`deploy_results/dry_forward_report.txt`,
+`deploy_results/operator_summary.txt`
 
-### Run launch check (before any config change)
-```
-python production_replay/launch_check.py
-```
-Blocks deployment if: live/paper enabled, dry_run disabled, blocked
-configs active, dirty git tree, missing report, or failed bias audit.
+### Run individual checks (debugging)
 
-### Run full validation suite
 ```
-python -m pytest tests/test_production_replay.py tests/test_lockdown.py -v
+python production_replay/safety_lock.py           # verify locks engaged
+python production_replay/launch_check.py          # check all 8 gates
+python production_replay/run_dry_forward.py       # run dry-forward only
+python production_replay/evidence_tracker.py      # check evidence status
+```
+
+### Run full test suite
+```
+python -m pytest tests/ -v
 ```
 
 ## Gates Required Before Paper Trading
