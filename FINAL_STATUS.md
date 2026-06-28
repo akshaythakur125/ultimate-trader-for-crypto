@@ -1,7 +1,7 @@
 # Final Status — ultimate-trader-for-crypto
 
 **Date:** 2026-06-28
-**Commit:** `38c4939`
+**Commit:** `dd28734`
 **Branch:** `main`
 
 ## Frozen Strategy Configuration
@@ -45,23 +45,25 @@ ETHUSDT 15m, XRPUSDT 15m, BNBUSDT 15m (KILL), BTCUSDT 1h, BTCUSDT 5m
 
 ## Test Status
 
-**32/32 tests pass.**
+**1148/1148 tests pass.**
 
-- tests/test_lockdown.py: 12/12 PASS
+- tests/test_lockdown.py: 23/23 PASS (12 original + 11 new)
 - tests/test_production_replay.py: 9/9 PASS
 - tests/test_validation_gate.py: 6/6 PASS
 - tests/test_live_trading_disabled.py: 5/5 PASS
+- All other test files: 1105/1105 PASS
 
 ## Live Trading
 
 **DISABLED.** Hard-locked in config_locked.yaml (live_trading: false),
-launch_check.py (blocks if enabled), and validation_gate.py:125
-(eligible_for_live_trading = False).
+launch_check.py (blocks if enabled), validation_gate.py:125
+(eligible_for_live_trading = False), safety_lock.py (checks for
+forbidden imports and hard-coded False).
 
 ## Paper Trading
 
-**DISABLED.** Hard-locked in config_locked.yaml (paper_trading: false)
-and launch_check.py (blocks if enabled).
+**DISABLED.** Hard-locked in config_locked.yaml (paper_trading: false),
+launch_check.py (blocks if enabled), safety_lock.py (verifies).
 
 ## Evidence Status
 
@@ -70,7 +72,7 @@ and launch_check.py (blocks if enabled).
 
 Not deployable for live or paper because:
 1. 95 trades < 100 minimum evidence gate (Gate A)
-2. 0 calendar days of paper-trading results (Gate B)
+2. 1 calendar day < 30 minimum days gate (Gate B)
 3. Only 3 of 8 tested configs show edge (REGIME_SPECIFIC_EDGE)
 4. Live eligibility hard-coded to False in validation_gate.py
 
@@ -78,27 +80,21 @@ Not deployable for live or paper because:
 
 ## Daily Routine
 
-Run this once per day (takes ~5 minutes):
+Run once per day (takes 3-5 minutes):
 
 ```
-python production_replay/run_dry_forward.py
+python production_replay/operator.py
 ```
 
-Then inspect:
-- `deploy_results/dry_forward_report.json` — consolidated verdict, gates, per-config metrics
-- `deploy_results/BTCUSDT_15m/forward_test_result.json` — individual trades
-- `deploy_results/BTCUSDT_30m/forward_test_result.json`
-- `deploy_results/SOLUSDT_15m/forward_test_result.json`
+Or double-click `run_operator.bat` (Windows).
 
-Record:
-- Total trades and per-config counts
-- Rejection counts per config
-- Kill-switch status (OK / KILL — if KILL, stop and investigate)
-- Minimum evidence gate status
-- Any anomalies in trade PnL, DD, or WR trends
+This single command runs safety lock, launch check, dry-forward,
+and evidence tracker. It generates 3 reports:
+- `deploy_results/dry_forward_report.json`
+- `deploy_results/dry_forward_report.txt`
+- `deploy_results/operator_summary.txt`
 
-Do NOT manually execute trades from this system. The system is in
-dry-run mode only — no orders are placed.
+Inspect `deploy_results/operator_summary.txt` for the full summary.
 
 ---
 
@@ -121,8 +117,25 @@ run launch_check before enabling the paper trading path.
 
 ---
 
-## Command to Run Tomorrow
+## Final Command Checklist
 
 ```
-python production_replay/run_dry_forward.py
+git status                                 # expect: clean
+python -m pytest                           # expect: 1148 passed
+python production_replay/launch_check.py   # expect: PASS (8/8)
+python production_replay/operator.py       # expect: completes, check summary
 ```
+
+### Current State
+
+| Check | Status |
+|-------|--------|
+| git status | clean |
+| Tests | 1148/1148 PASS |
+| launch_check | PASS |
+| Live trading | DISABLED |
+| Paper trading | DISABLED |
+| dry_run | true |
+| Total trades | 95 |
+| Verdict | INSUFFICIENT_TRADES |
+| Daily command | `python production_replay/operator.py` |

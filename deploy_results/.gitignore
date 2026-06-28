@@ -1,0 +1,7 @@
+# Ignore generated daily reports
+*.json
+*.txt
+*.csv
+
+# Keep the directory with .gitkeep
+!.gitkeep

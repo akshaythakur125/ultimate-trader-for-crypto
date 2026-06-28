@@ -44,3 +44,4 @@ phase6_results/
 phase7_results/
 deploy_results/
 !deploy_results/.gitkeep
+!deploy_results/.gitignore
