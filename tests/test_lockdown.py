@@ -363,12 +363,12 @@ def test_run_with_timeout_times_out():
 
 # --- Test 12: Operator --quick/--full flags ---
 
-def test_operator_default_mode_is_quick():
-    """Operator must default to quick mode."""
+def test_operator_default_mode_is_fast_daily():
+    """Operator must default to FAST_DAILY mode (180d cache)."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
-    assert "quick_mode: bool = True" in source or "quick" in source.lower()
+    assert "fast_daily: bool = True" in source
 
 
 def test_operator_quick_mode_parsing():
@@ -427,11 +427,13 @@ def test_fast_daily_uses_data_days_180():
 
 
 def test_fast_daily_flag_accepted():
-    """Operator must accept --fast flag in its argument parser."""
+    """Operator must default to fast_daily=True (180d cache)."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
     assert "fast_daily" in source
+    # Default must be True
+    assert "fast_daily: bool = True" in source or "fast_daily=True" in source
 
 
 # --- Test 16: --config flag ---
@@ -455,7 +457,19 @@ def test_config_flag_invalid_does_not_crash():
     assert len(result) == 1
 
 
-# --- Test 17: ensure_data fast_daily passthrough ---
+# --- Test 17: --unlimited flag ---
+
+def test_unlimited_flag_provides_365d():
+    """--unlimited must set fast_daily=False and use 365d."""
+    from production_replay import operator
+    import inspect
+    source = inspect.getsource(operator)
+    assert "fast_daily = not args.unlimited" in source
+    assert "data_days = 180 if fast_daily else 365" in source
+    assert "unlimited" in source
+
+
+# --- Test 18: ensure_data fast_daily passthrough ---
 
 def test_ensure_data_accepts_fast_daily():
     """ensure_data must accept fast_daily parameter."""
@@ -465,7 +479,7 @@ def test_ensure_data_accepts_fast_daily():
     assert "fast_daily" in sig.parameters
 
 
-# --- Test 18: Live/paper remain disabled in report ---
+# --- Test 19: Live/paper remain disabled in report ---
 
 def test_dry_forward_report_live_paper_disabled():
     """dry_forward report must always have live/paper disabled."""
@@ -486,7 +500,7 @@ def test_operator_source_no_live_trading():
     assert "live_trading" not in source or "DISABLED" in source or "False" in source or "disabled" in source.lower()
 
 
-# --- Test 19: _interval_minutes ---
+# --- Test 20: _interval_minutes ---
 
 def test_interval_minutes_15m():
     """15m -> 15."""

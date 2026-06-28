@@ -1,7 +1,7 @@
 """Operator — single command for daily dry-forward operation.
 
 Sequence:
-1. Parse --quick (default), --config <label>, or --fast mode
+1. Parse args — default is FAST_DAILY (180d cache)
 2. Run safety lock checks
 3. Run launch check
 4. Block immediately if launch_check fails
@@ -13,12 +13,10 @@ Sequence:
 10. Print final status table
 
 CLI:
-  python -m production_replay.operator           # quick mode (all 3)
-  python -m production_replay.operator --quick   # same
+  python -m production_replay.operator             # default: FAST_DAILY, 3 configs
+  python -m production_replay.operator --unlimited  # 365d download (slow)
   python -m production_replay.operator --config BTC:15m
-  python -m production_replay.operator --config BTC:15m --config BTC:30m
   python -m production_replay.operator --config SOL:15m
-  python -m production_replay.operator --fast    # 180d cache, no 365d download
 """
 
 import argparse, json, os, sys, threading, time, traceback
@@ -75,7 +73,6 @@ def print_sep(char="=", width=80):
 
 
 def _compute_config_result(forward_result: dict, label: str) -> dict:
-    """Build a per-config entry dict from a forward_test result."""
     trades = forward_result.get("trade_diagnostics", [])
     wins = sum(1 for t in trades if t["net_r"] > 0)
     wr = 100 * wins / len(trades) if trades else 0
@@ -120,11 +117,11 @@ def _compute_config_result(forward_result: dict, label: str) -> dict:
         "window_breakdown": {k: dict(v) for k, v in sorted(window_stats.items())},
         "rejections": len(rejections),
         "unique_rejected": forward_result.get("total_unique_rejected", 0),
+        "status": "COMPLETED",
     }
 
 
 def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) -> dict:
-    """Build the final consolidated report from per-config results."""
     total_trades = sum(r.get("trades", 0) for r in all_results)
     total_pnl = sum(t["net_r"] for t in all_trades) if all_trades else 0
     total_wins = sum(1 for t in all_trades if t["net_r"] > 0) if all_trades else 0
@@ -138,7 +135,6 @@ def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) 
         cum += t["net_r"]; peak = max(peak, cum); total_dd = max(total_dd, peak - cum)
     total_kill = check_kill_switch(trades=all_trades) if all_trades else {"kill_triggered": False}
 
-    success_results = [r for r in all_results if "error" not in r]
     has_timeout = any(r.get("error") == "timeout" for r in all_results)
     has_error = any(r.get("error") not in (None, "timeout") for r in all_results)
 
@@ -204,13 +200,14 @@ def _write_text_report(report: dict):
         "  Per-Config Results:",
     ]
     for cfg in report.get("per_config", []):
-        kill_mark = "KILL" if cfg.get("kill") else "OK"
-        if "error" in cfg:
-            lines.append(f"    {cfg.get('label', '?'):15s}: ERROR ({cfg.get('error', '?')})")
-        else:
-            lines.append(f"    {cfg.get('label', '?'):15s}: {cfg.get('trades', 0):3d} trades, "
+        status = cfg.get("status", cfg.get("error", "?"))
+        if cfg.get("status") == "COMPLETED":
+            kill_mark = "KILL" if cfg.get("kill") else "OK"
+            lines.append(f"    {cfg.get('label', '?'):15s}: COMPLETED | {cfg.get('trades', 0):3d} trades, "
                          f"WR {cfg.get('wr', 0):5.1f}%, EV {cfg.get('ev', 0):+.3f}R, "
                          f"PF {cfg.get('pf', 0):.2f}, DD {cfg.get('dd', 0):.2f}R, {kill_mark}")
+        else:
+            lines.append(f"    {cfg.get('label', '?'):15s}: {status}")
     lines.append("")
     lines.append("  Gates:")
     gates = report.get("gates", {})
@@ -228,11 +225,12 @@ def _write_text_report(report: dict):
 
 def _write_summary(result: dict, start: float):
     elapsed = time.time() - start
+    mode = result.get("mode", "fast_daily")
     lines = [
         "=" * 72,
         "  OPERATOR SUMMARY",
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"  Mode: {result.get('mode', 'quick')}",
+        f"  Mode: {mode}",
         "=" * 72,
         "",
         f"  Operator Verdict: {result.get('operator_verdict', 'UNKNOWN')}",
@@ -269,6 +267,12 @@ def _write_summary(result: dict, start: float):
         lines.append(f"  PF: {dry.get('total_pf', 0):.2f}")
         lines.append(f"  DD: {dry.get('total_dd_r', 0):.2f}R")
         lines.append(f"  Kill: {'OK' if not dry.get('kill_triggered', True) else 'KILL'}")
+        lines.append("")
+        lines.append("  Per-Config:")
+        for cfg in dry.get("per_config", []):
+            status = cfg.get("status", cfg.get("error", "?"))
+            trades = cfg.get("trades", 0)
+            lines.append(f"    {cfg.get('label', '?'):15s}: {status:12s} | {trades:3d} trades")
     else:
         lines.append("  (not run)")
 
@@ -283,6 +287,10 @@ def _write_summary(result: dict, start: float):
     else:
         lines.append("  (not run)")
 
+    lines.append("")
+    lines.append("--- Safety Status ---")
+    lines.append(f"  Live trading:  {'DISABLED' if not dry or not dry.get('live_trading_enabled', False) else 'ENABLED'}")
+    lines.append(f"  Paper trading: {'DISABLED' if not dry or not dry.get('paper_trading_enabled', False) else 'ENABLED'}")
     lines.append("")
     lines.append("--- Generated Files ---")
     lines.append(f"  {JSON_REPORT}")
@@ -304,7 +312,6 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print_sep()
     print(f"  {'Status':<20s} {'Result':<20s}")
     print("-" * 42)
-    print(f"  {'Mode':<20s} {'QUICK (default)' if dry.get('mode') == 'dry_forward' else 'FULL':<20s}")
     print(f"  {'Launch Check':<20s} {lc.get('verdict', '?'):<20s}")
     print(f"  {'Safety Lock':<20s} {'PASS' if safety.get('pass') else 'FAIL':<20s}")
     print(f"  {'Live Trading':<20s} {'DISABLED':<20s}")
@@ -317,6 +324,12 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print(f"  {'Live Unlock':<20s} {'BLOCKED' if evidence.get('live_unlock_blocked', True) else 'UNLOCKED':<20s}")
     print(f"  {'Elapsed':<20s} {elapsed:.1f}s")
     print("-" * 42)
+    print("  Per-Config:")
+    for cfg in dry.get("per_config", []):
+        status = cfg.get("status", cfg.get("error", "?"))
+        trades = cfg.get("trades", 0)
+        print(f"    {cfg.get('label', '?'):15s}: {status:12s} | {trades:3d} trades")
+    print("-" * 42)
     next_action = evidence.get("paper_unlock_reason", "unknown")
     print(f"  Next action: {next_action}")
     print(f"  Daily cmd:   python -m production_replay.operator")
@@ -326,7 +339,7 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
 def operator_run(
     quick_mode: bool = True,
     config_labels: list[str] | None = None,
-    fast_daily: bool = False,
+    fast_daily: bool = True,
     allow_dirty: bool = False,
 ) -> dict[str, Any]:
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -335,7 +348,7 @@ def operator_run(
 
     operator_result = {
         "timestamp": datetime.now().isoformat(),
-        "mode": "fast_daily" if fast_daily else ("quick" if quick_mode else "custom"),
+        "mode": "fast_daily" if fast_daily else ("unlimited" if not fast_daily else "custom"),
         "operator_verdict": None,
         "launch_check": None,
         "safety_lock": None,
@@ -344,14 +357,13 @@ def operator_run(
     }
 
     print_sep()
-    mode_str = "FAST DAILY (180d)" if fast_daily else ("QUICK" if quick_mode else "CUSTOM")
+    mode_str = "FAST DAILY" if fast_daily else "UNLIMITED"
     status_parts = []
-    if fast_daily:
-        status_parts.append("FAST")
     if allow_dirty:
         status_parts.append("DIRTY")
     status_tag = f" ({', '.join(status_parts)})" if status_parts else ""
     print(f"  OPERATOR — {mode_str} MODE{status_tag}")
+    print(f"  Data days: {data_days}d | Timeout: {CONFIG_TIMEOUT}s per config")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_sep()
 
@@ -435,7 +447,8 @@ def operator_run(
             print(f"  TIMEOUT: {label} exceeded {CONFIG_TIMEOUT}s — continuing")
             all_results.append({
                 "label": label, "symbol": symbol, "timeframe": timeframe,
-                "error": "timeout", "trades": 0, "wr": 0, "ev": 0,
+                "error": "timeout", "status": "TIMEOUT",
+                "trades": 0, "wr": 0, "ev": 0,
                 "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
                 "windows": 0, "rejections": 0, "unique_rejected": 0,
             })
@@ -443,7 +456,8 @@ def operator_run(
             print(f"  ERROR: {label}: {e}")
             all_results.append({
                 "label": label, "symbol": symbol, "timeframe": timeframe,
-                "error": str(e), "trades": 0, "wr": 0, "ev": 0,
+                "error": str(e), "status": "FAILED",
+                "trades": 0, "wr": 0, "ev": 0,
                 "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
                 "windows": 0, "rejections": 0, "unique_rejected": 0,
             })
@@ -464,20 +478,20 @@ def operator_run(
     print_sep()
     print("  CONSOLIDATED REPORT")
     print_sep()
-    header = f"{'Config':<15s} {'Trades':>6s} {'WR%':>5s} {'EV(R)':>8s} {'PF':>6s} {'DD(R)':>7s} {'Kill':>5s}"
+    header = f"{'Config':<15s} {'Status':<12s} {'Trades':>6s} {'WR%':>5s} {'EV(R)':>8s} {'PF':>6s} {'DD(R)':>7s}"
     print(f"\n{header}")
-    print("-" * 60)
+    print("-" * 65)
     for r in all_results:
-        if "error" in r:
-            print(f"{r['label']:<15s} {'ERR':>6s} {'':>5s} {'':>8s} {'':>6s} {'':>7s} {'':>5s}  ({r.get('error', '?')})")
+        status = r.get("status", r.get("error", "?"))
+        if status != "COMPLETED":
+            print(f"{r['label']:<15s} {status:<12s} {'ERR':>6s} {'':>5s} {'':>8s} {'':>6s} {'':>7s}")
         else:
             km = "KILL" if r.get("kill") else "OK"
-            print(f"{r['label']:<15s} {r['trades']:>6d} {r['wr']:>5.1f} {r['ev']:+>8.3f} "
-                  f"{r['pf']:>6.2f} {r['dd']:>7.2f} {km:>5s}")
+            print(f"{r['label']:<15s} {status:<12s} {r['trades']:>6d} {r['wr']:>5.1f} {r['ev']:+>8.3f} "
+                  f"{r['pf']:>6.2f} {r['dd']:>7.2f}")
     total_t = dry_result.get("total_trades", 0)
-    total_k = dry_result.get("kill_triggered", False)
-    print("-" * 60)
-    print(f"{'COMBINED':<15s} {total_t:>6d}")
+    print("-" * 65)
+    print(f"{'COMBINED':<15s} {'':<12s} {total_t:>6d}")
 
     print_sep()
     print("  GATES")
@@ -497,7 +511,7 @@ def operator_run(
     # Determine operator verdict
     has_timeout = any(r.get("error") == "timeout" for r in all_results)
     has_error = any(r.get("error") not in (None, "timeout") for r in all_results)
-    has_success = any("error" not in r for r in all_results)
+    has_success = any(r.get("status") == "COMPLETED" for r in all_results)
 
     if has_timeout and has_success:
         operator_verdict = "PARTIAL_TIMEOUT"
@@ -516,18 +530,15 @@ def operator_run(
 
 
 def _parse_config_labels(args_config: list[str] | None) -> list[str] | None:
-    """Normalize --config values to canonical labels."""
     if not args_config:
         return None
     labels = []
     for c in args_config:
         c = c.strip()
-        # Accept "BTC:15m", "BTC 15m", "BTC15m", "BTC-15m"
         parts = c.replace(":", " ").replace("-", " ").split()
         if len(parts) == 1:
             labels.append(c)
         else:
-            # Try to match against ALLOWED
             matched = False
             for sym, tf, lab in ALLOWED:
                 if parts[0].upper() in sym and parts[1] == tf:
@@ -540,29 +551,22 @@ def _parse_config_labels(args_config: list[str] | None) -> list[str] | None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Daily dry-forward operator")
+    parser = argparse.ArgumentParser(description="Daily dry-forward operator (default: FAST_DAILY)")
     parser.add_argument("--quick", action="store_true", default=True,
                         help="Run all 3 allowed configs (default)")
-    parser.add_argument("--full", action="store_true", default=False,
-                        help="Run all available configs")
+    parser.add_argument("--unlimited", action="store_true", default=False,
+                        help="Use 365d download instead of 180d cache (slow)")
     parser.add_argument("--config", action="append", default=None,
                         help="Specific config(s) to run, e.g. --config BTC:15m")
-    parser.add_argument("--fast", action="store_true", default=False,
-                        help="Use 180d cache, skip 365d download")
     parser.add_argument("--allow-dirty", action="store_true", default=False,
                         help="Skip git tree clean check (for testing)")
     args, _ = parser.parse_known_args()
 
-    # If --full is given, override to full mode (not implemented, just a placeholder)
-    # If --config is given, use those configs
-    # Otherwise default to --quick
-    quick_mode = not args.full
     config_labels = _parse_config_labels(args.config)
-    if config_labels:
-        quick_mode = False  # custom mode
+    fast_daily = not args.unlimited  # default to FAST_DAILY
 
     try:
-        operator_run(quick_mode=quick_mode, config_labels=config_labels, fast_daily=args.fast, allow_dirty=args.allow_dirty)
+        operator_run(quick_mode=True, config_labels=config_labels, fast_daily=fast_daily, allow_dirty=args.allow_dirty)
     except SystemExit:
         raise
     except Exception as e:
