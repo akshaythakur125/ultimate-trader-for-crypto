@@ -181,6 +181,86 @@ Ultimate Trader is not a scanner, not a single trading strategy, and not a norma
 - `SignalReport` — final recommendation: ALERT_ONLY, PAPER_TRADE_CANDIDATE, REJECT_SIGNAL, WAIT_FOR_ENTRY, NO_SAFE_ENTRY, HUMAN_REVIEW
 - Event bus integration: SIGNAL_CANDIDATE_CREATED, SIGNAL_REJECTED, LIVE_TRADE_BLOCKED
 
+---
+### Phase 3 — Strategy & Statistical Proof
+
+### Phase 3, Prompt 1 — A+ Signal Grade & Selective Strategy
+- `SignalQualityScorer` — grades A_PLUS (top 10%), A, B, C, REJECT with specificity/reliability/minimum_grade fields
+- `StrategyConfig` — min_grade filter; selective strategy only accepts A+ signals
+- Trade rate: ~0.8 trades/day (vs ~8/day unrestricted), manual-like selectivity
+- Verified: no early peak, stable per-window performance in walk-forward
+
+### Phase 3, Prompt 2 — RR Rules, Stop & Target Logic
+- `TradePlan` — three take-profit levels (TP1 1.5R, TP2 3.0R, TP3 5.0R) with 40%/30%/30% allocation
+- `StopPlanner` — structure-based stops at 1.5×ATR, volatility-adjusted, 3% hard max
+- Minimum RR: 1:3, preferred: 1:5
+- No SL=TP approach; all stops and targets are structure-derived, not symmetric
+
+### Phase 3, Prompts 3–6 — Confidence, Ranking, Filters, RiskGovernor
+- `ConfidenceGate` — min_directional_confidence, max_conflict_score, max_reversal_risk, min_confluence_score
+- `CandidateRanker` — multi-factor ranking (confluence, confidence, EV, microstructure, orderflow)
+- `DailySelector` — target_trades_per_day=2, hard_max=3, drawdown-sensitive daily loss limit
+- `RiskGovernor` — real-time drawdown control with emergency circuit breaker
+
+### Phase 3, Prompt 7 — Drawdown RiskGovernor & Walk-Forward Validation
+- `RiskGovernorConfig` — drawdown_limit=8.0R, emergency_stop=12.0R, trailing_stop=True
+- Walk-forward 8-window (30d train, 15d test, 15d step): 5/8 profitable, avg EV +0.02R
+- Governor mode (8-fold drawdown control): 33 trades, avg EV +0.25R, PF 2.32
+- Final A+ verdict: OVERFIT_SUSPECTED (DD 12.3R in worst window, WF 62.5% profitable, governor only 33t)
+
+### Phase 3, Prompt 8 — Long-History Walk-Forward Proof
+- 180-day walk-forward (8 windows, 30d/15d/15d): 97 A+ trades, 62.5% profitable, avg EV +0.16R
+- All thresholds frozen: no optimization, no tuning
+- Verified time-causal: train strictly before test in every window
+- Regime gate introduced as potential path to fix DD and concentration
+
+### Phase 3, Prompt 9 — Regime-Aware Selectivity Gate (Final Prompt)
+- `regime_filter/` package: RegimeGate, RegimeGateConfig, RegimeGateDecision, ReferenceProfile, SimilarityScorer, RegimeClassifier
+- 10-dimensional feature extraction from OHLCV + LSM pipeline
+- Percentile-distance similarity scoring (blocks ~10–32% of A+ signals)
+- Time-causal walk-forward: reference built from data strictly before test window
+- No look-ahead bias, no optimization, no threshold fitting
+
+**Primary Validation (30d train, 30d test, 30d step, 4 non-overlapping windows):**
+
+| Metric | A+ alone | +regime gate | Change |
+|---|---|---|---|
+| Unique OOS trades | 114 | 81 | −29% |
+| Profitable windows | 3/4 (75%) | 3/4 (75%) | — |
+| Avg EV | +0.31R | +0.51R | **+65%** |
+| Avg PF | 1.75 | 1.91 | +9% |
+| Max DD | 17.4R | 11.7R | **−33%** |
+| Concentration | 86.9% | 43.3% | **fixed** |
+| Block rate | — | 10–24% | healthy |
+
+**Secondary Sensitivity Test (30d train, 30d test, 15d step, 8 overlapping windows, trades deduplicated):**
+- 128 unique OOS trades with regime gate (above 100), avg EV +0.41R, PF 1.76
+- But only 62.5% profitable windows (below 70% threshold)
+
+**Validation Verdict: INSUFFICIENT_TRADES**
+
+The regime gate improves every quality metric (EV +65%, PF +9%, DD −33%, concentration fixed) and blocks at a healthy 10–32% rate. However:
+
+1. **Unique OOS trades (81) below 100 threshold** — 30% trade suppression from the regime gate leaves an insufficient sample for ROBUST_EDGE in the primary non-overlapping test.
+2. **Max DD (11.7R) above 8.0R threshold** — improved 33% from 17.4R but still excessive.
+3. **Secondary test shows 62.5% profitable windows** — below the 70% threshold even with 128 unique OOS trades.
+
+**Current Best Configuration (frozen):**
+- Grade: A+ only (A_PLUS)
+- Min RR: 1:3
+- Stop: 1.5×ATR (structure-derived, max 3%)
+- Targets: TP1 1.5R (40%), TP2 3.0R (30%), TP3 5.0R (30%)
+- Max trades/day: 3
+- Confidence gate: confluence ≥3, directional_confidence ≥0.4, conflict ≤3, reversal_risk ≤4
+- RiskGovernor: drawdown_limit=8.0R, emergency_stop=12.0R
+- **RegimeGate: similarity_threshold=50, percentile-distance scoring**
+- **Live/paper trading: DISABLED**
+
+**Next Research Direction:**
+- Improve signal quality at source rather than fitting thresholds
+- Test with more historical data (≥360 days) if available to increase OOS trade count
+- No live or paper deployment until OOS trade count exceeds 100 in primary non-overlapping test
+
 **Still no strategy. No BingX connection. No buy/sell rules.**
 
 The purpose is to build a **research-grade system** that can prove statistical edge before risking capital.
