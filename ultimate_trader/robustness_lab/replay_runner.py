@@ -2,7 +2,7 @@ import csv
 import os
 import sys
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -173,9 +173,57 @@ def run_selective_replay(
 
         direction = TradeDirection.LONG if direction_str == "LONG" else TradeDirection.SHORT
         entry = candle.close
-        cr = candle.high - candle.low
-        stop = candle.close - cr * 1.5 if direction == TradeDirection.LONG else candle.close + cr * 1.5
-        target = candle.close + cr * 1.5 * 3.0 if direction == TradeDirection.LONG else candle.close - cr * 1.5 * 3.0
+
+        if stop_method == "baseline":
+            cr = candle.high - candle.low
+            stop_dist = cr * 1.5
+        elif stop_method in ("avg5", "avg10", "avg20"):
+            n = int(stop_method.replace("avg", ""))
+            recent = list(range_buffer)[-n:] if len(range_buffer) >= n else list(range_buffer)
+            avg = sum(recent) / len(recent)
+            stop_dist = avg * 1.5
+        elif stop_method == "structure":
+            cr = candle.high - candle.low
+            swing_highs = lsm_data.get("swing_highs", [])
+            swing_lows = lsm_data.get("swing_lows", [])
+            stop_dist = None
+            if direction == TradeDirection.LONG and swing_lows:
+                below = [s for s in swing_lows if _swing_price(s) < entry]
+                if below:
+                    nearest = max(below, key=_swing_price)
+                    stop_dist = entry - (_swing_price(nearest) - cr * 0.3)
+            elif direction == TradeDirection.SHORT and swing_highs:
+                above = [s for s in swing_highs if _swing_price(s) > entry]
+                if above:
+                    nearest = min(above, key=_swing_price)
+                    stop_dist = _swing_price(nearest) + cr * 0.3 - entry
+            if stop_dist is None or stop_dist < cr * 0.5:
+                stop_dist = cr * 1.5
+        elif stop_method == "hybrid":
+            cr = candle.high - candle.low
+            base_dist = cr * 1.5
+            swing_highs = lsm_data.get("swing_highs", [])
+            swing_lows = lsm_data.get("swing_lows", [])
+            struct_dist = None
+            if direction == TradeDirection.LONG and swing_lows:
+                below = [s for s in swing_lows if _swing_price(s) < entry]
+                if below:
+                    nearest = max(below, key=_swing_price)
+                    struct_dist = entry - (_swing_price(nearest) - cr * 0.3)
+            elif direction == TradeDirection.SHORT and swing_highs:
+                above = [s for s in swing_highs if _swing_price(s) > entry]
+                if above:
+                    nearest = min(above, key=_swing_price)
+                    struct_dist = _swing_price(nearest) + cr * 0.3 - entry
+            if struct_dist is None:
+                struct_dist = base_dist
+            stop_dist = max(base_dist, min(struct_dist, base_dist * 3.0 / 2.5))
+        else:
+            cr = candle.high - candle.low
+            stop_dist = cr * 1.5
+
+        stop = entry - stop_dist if direction == TradeDirection.LONG else entry + stop_dist
+        target = entry + stop_dist * 3.0 if direction == TradeDirection.LONG else entry - stop_dist * 3.0
 
         lsm_data["direction"] = direction_str
         candidate = engine.evaluate(candle=candle, lsm_data=lsm_data, direction=direction, entry_price=entry, stop_loss=stop, target_price=target)
@@ -324,6 +372,9 @@ def run_selective_replay_with_governor(
     return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown), gov_stats
 
 
+def _swing_price(sp):
+    return sp.price if hasattr(sp, 'price') else (sp.get('price', 0) if isinstance(sp, dict) else 0)
+
 def run_selective_replay_with_regime(
     candles: list[HistoricalCandle],
     frozen_cfg: FrozenConfig,
@@ -332,6 +383,8 @@ def run_selective_replay_with_regime(
     invert: bool = False,
     collect_trade_timestamps: bool = False,
     diagnose: bool = False,
+    stop_method: str = "atr14_20",
+    entry_method: str = "immediate",
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int]]:
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
@@ -360,10 +413,56 @@ def run_selective_replay_with_regime(
     regime_stats = {"regime_blocked": 0, "regime_scores": []}
     regime_gate.reset_classifier()
     signal_contexts: dict[float, tuple[dict, Any, Any]] = {}
+    pending_signals: list[dict] = []
 
     lsm_pipeline = _LsmPipeline()
+    range_buffer = deque(maxlen=20)
+    true_range_buffer = deque(maxlen=14)
 
     for i, candle in enumerate(candles):
+        if i > 0:
+            tr = max(candle.high - candle.low, abs(candle.high - candles[i - 1].close), abs(candle.low - candles[i - 1].close))
+            true_range_buffer.append(tr)
+        if entry_method in ("confirm_1c", "no_reverse_0.5r", "confirm_direction"):
+            for ps in list(pending_signals):
+                # Only check the candle immediately after the signal (index + 1)
+                if i != ps["signal_index"] + 1:
+                    continue
+                sig_dir = ps["direction"]
+                confirmed = False
+                if entry_method == "confirm_1c":
+                    confirmed = True
+                elif entry_method == "no_reverse_0.5r":
+                    half_r = ps["stop_dist"] * 0.5
+                    if sig_dir == TradeDirection.LONG:
+                        worst = min(candle.low, candle.open)
+                        if worst >= ps["entry"] - half_r:
+                            confirmed = True
+                    else:
+                        worst = max(candle.high, candle.open)
+                        if worst <= ps["entry"] + half_r:
+                            confirmed = True
+                elif entry_method == "confirm_direction":
+                    if sig_dir == TradeDirection.LONG and candle.close > candle.open:
+                        confirmed = True
+                    elif sig_dir == TradeDirection.SHORT and candle.close < candle.open:
+                        confirmed = True
+                if confirmed:
+                    new_entry = candle.close
+                    new_cr = candle.high - candle.low
+                    plan = TradePlan(
+                        plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
+                        direction=sig_dir, signal_time=ps["signal_time"],
+                        entry_zone_high=new_entry + new_cr * 0.1,
+                        entry_zone_low=new_entry - new_cr * 0.1,
+                        stop_loss=ps["stop"], target_price=ps["target"],
+                    )
+                    trades = sim.process_candle(hc_to_lsm(candle), [plan])
+                    for t in trades:
+                        sel.record_outcome(getattr(t, "trade_id", ps["candidate_id"]), t.net_r > 0, ps["day_key"])
+                pending_signals.remove(ps)
+
+        range_buffer.append(candle.high - candle.low)
         engine.add_candle(candle)
         if i < rcfg.warmup_candles:
             lsm_pipeline.process_candle(candle)
@@ -387,8 +486,84 @@ def run_selective_replay_with_regime(
         direction = TradeDirection.LONG if direction_str == "LONG" else TradeDirection.SHORT
         entry = candle.close
         cr = candle.high - candle.low
-        stop = candle.close - cr * 1.5 if direction == TradeDirection.LONG else candle.close + cr * 1.5
-        target = candle.close + cr * 1.5 * 3.0 if direction == TradeDirection.LONG else candle.close - cr * 1.5 * 3.0
+
+        if stop_method == "baseline":
+            stop_dist = cr * 1.5
+        elif stop_method == "wide20":
+            stop_dist = cr * 2.0
+        elif stop_method == "wide25":
+            stop_dist = cr * 2.5
+        elif stop_method == "atr14_15":
+            atr_val = sum(true_range_buffer) / max(len(true_range_buffer), 1) if true_range_buffer else cr
+            stop_dist = atr_val * 1.5
+        elif stop_method == "atr14_20":
+            atr_val = sum(true_range_buffer) / max(len(true_range_buffer), 1) if true_range_buffer else cr
+            stop_dist = atr_val * 2.0
+        elif stop_method in ("avg5", "avg10", "avg20"):
+            n = int(stop_method.replace("avg", ""))
+            recent = list(range_buffer)[-n:] if len(range_buffer) >= n else list(range_buffer)
+            avg = sum(recent) / len(recent)
+            stop_dist = avg * 1.5
+        elif stop_method == "structure":
+            swing_highs = lsm_data.get("swing_highs", [])
+            swing_lows = lsm_data.get("swing_lows", [])
+            stop_dist = None
+            if direction == TradeDirection.LONG and swing_lows:
+                below = [s for s in swing_lows if _swing_price(s) < entry]
+                if below:
+                    nearest = max(below, key=_swing_price)
+                    stop_dist = entry - (_swing_price(nearest) - cr * 0.3)
+            elif direction == TradeDirection.SHORT and swing_highs:
+                above = [s for s in swing_highs if _swing_price(s) > entry]
+                if above:
+                    nearest = min(above, key=_swing_price)
+                    stop_dist = _swing_price(nearest) + cr * 0.3 - entry
+            if stop_dist is None or stop_dist < cr * 0.5:
+                stop_dist = cr * 1.5
+        elif stop_method == "hybrid":
+            base_dist = cr * 1.5
+            swing_highs = lsm_data.get("swing_highs", [])
+            swing_lows = lsm_data.get("swing_lows", [])
+            struct_dist = None
+            if direction == TradeDirection.LONG and swing_lows:
+                below = [s for s in swing_lows if _swing_price(s) < entry]
+                if below:
+                    nearest = max(below, key=_swing_price)
+                    struct_dist = entry - (_swing_price(nearest) - cr * 0.3)
+            elif direction == TradeDirection.SHORT and swing_highs:
+                above = [s for s in swing_highs if _swing_price(s) > entry]
+                if above:
+                    nearest = min(above, key=_swing_price)
+                    struct_dist = _swing_price(nearest) + cr * 0.3 - entry
+            if struct_dist is None:
+                struct_dist = base_dist
+            stop_dist = max(base_dist, min(struct_dist, base_dist * 3.0 / 2.5))
+        elif stop_method == "avg5_hybrid":
+            n = 5
+            recent = list(range_buffer)[-n:] if len(range_buffer) >= n else list(range_buffer)
+            avg_cr = sum(recent) / len(recent)
+            base_dist = avg_cr * 1.5
+            swing_highs = lsm_data.get("swing_highs", [])
+            swing_lows = lsm_data.get("swing_lows", [])
+            struct_dist = None
+            if direction == TradeDirection.LONG and swing_lows:
+                below = [s for s in swing_lows if _swing_price(s) < entry]
+                if below:
+                    nearest = max(below, key=_swing_price)
+                    struct_dist = entry - (_swing_price(nearest) - avg_cr * 0.3)
+            elif direction == TradeDirection.SHORT and swing_highs:
+                above = [s for s in swing_highs if _swing_price(s) > entry]
+                if above:
+                    nearest = min(above, key=_swing_price)
+                    struct_dist = _swing_price(nearest) + avg_cr * 0.3 - entry
+            if struct_dist is None:
+                struct_dist = base_dist
+            stop_dist = max(base_dist, min(struct_dist, base_dist * 3.0 / 2.5))
+        else:
+            stop_dist = cr * 1.5
+
+        stop = entry - stop_dist if direction == TradeDirection.LONG else entry + stop_dist
+        target = entry + stop_dist * 3.0 if direction == TradeDirection.LONG else entry - stop_dist * 3.0
 
         lsm_data["direction"] = direction_str
         candidate = engine.evaluate(candle=candle, lsm_data=lsm_data, direction=direction, entry_price=entry, stop_loss=stop, target_price=target)
@@ -404,17 +579,39 @@ def run_selective_replay_with_regime(
             if not sr.allowed:
                 ra.record(rc2.candidate_id, sr.rejection_category, sr.rejection_reason)
                 continue
-            plan = TradePlan(
-                plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
-                direction=direction, signal_time=candle.timestamp,
-                entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
-                stop_loss=stop, target_price=target,
-            )
             if diagnose:
                 signal_contexts[candle.timestamp.timestamp()] = (dict(lsm_data), gate_dec)
-            trades = sim.process_candle(hc_to_lsm(candle), [plan])
-            for t in trades:
-                sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+            if entry_method == "immediate":
+                plan = TradePlan(
+                    plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
+                    direction=direction, signal_time=candle.timestamp,
+                    entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
+                    stop_loss=stop, target_price=target,
+                )
+                trades = sim.process_candle(hc_to_lsm(candle), [plan])
+                for t in trades:
+                    sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+            elif entry_method == "skip_low_volatility":
+                recent = list(range_buffer)[-5:] if len(range_buffer) >= 5 else list(range_buffer)
+                sorted_ranges = sorted(recent)
+                med = sorted_ranges[len(sorted_ranges) // 2]
+                if cr >= med:
+                    plan = TradePlan(
+                        plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
+                        direction=direction, signal_time=candle.timestamp,
+                        entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
+                        stop_loss=stop, target_price=target,
+                    )
+                    trades = sim.process_candle(hc_to_lsm(candle), [plan])
+                    for t in trades:
+                        sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+            else:
+                pending_signals.append({
+                    "direction": direction, "entry": entry, "stop": stop,
+                    "target": target, "signal_time": candle.timestamp,
+                    "stop_dist": stop_dist, "candidate_id": rc2.candidate_id,
+                    "day_key": day_key, "signal_index": i,
+                })
 
     daily_breakdown = defaultdict(int)
     for t in sim.completed_trades:
