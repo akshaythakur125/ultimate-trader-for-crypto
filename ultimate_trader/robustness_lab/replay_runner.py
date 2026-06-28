@@ -331,6 +331,7 @@ def run_selective_replay_with_regime(
     regime_gate: RegimeGate,
     invert: bool = False,
     collect_trade_timestamps: bool = False,
+    diagnose: bool = False,
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int]]:
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
@@ -358,6 +359,7 @@ def run_selective_replay_with_regime(
     ra = RejectionReasonAnalyzer()
     regime_stats = {"regime_blocked": 0, "regime_scores": []}
     regime_gate.reset_classifier()
+    signal_contexts: dict[float, tuple[dict, Any, Any]] = {}
 
     lsm_pipeline = _LsmPipeline()
 
@@ -408,6 +410,8 @@ def run_selective_replay_with_regime(
                 entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
                 stop_loss=stop, target_price=target,
             )
+            if diagnose:
+                signal_contexts[candle.timestamp.timestamp()] = (dict(lsm_data), gate_dec)
             trades = sim.process_candle(hc_to_lsm(candle), [plan])
             for t in trades:
                 sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
@@ -426,6 +430,37 @@ def run_selective_replay_with_regime(
             if ts:
                 timestamps.append(ts.timestamp())
         re_metrics["trade_timestamps"] = timestamps
+    if diagnose:
+        diagnostics = []
+        for t in sim.completed_trades:
+            ts = (getattr(t, "signal_time", None) or getattr(t, "entry_time", None))
+            ctx = signal_contexts.get(ts.timestamp()) if ts else None
+            lsm_ctx, gate_ctx = ctx if ctx else ({}, None)
+            diagnostics.append({
+                "timestamp": ts.isoformat() if ts else "",
+                "direction": t.direction.value if hasattr(t.direction, "value") else str(t.direction),
+                "net_r": t.net_r,
+                "gross_r": t.gross_r,
+                "exit_reason": t.exit_reason.value if hasattr(t.exit_reason, "value") else str(t.exit_reason),
+                "holding_candles": t.holding_candles,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "regime_score": gate_ctx.similarity_score if gate_ctx else None,
+                "regime_allowed": gate_ctx.allowed if gate_ctx else None,
+                "lsm_confluence": lsm_ctx.get("confluence_score"),
+                "lsm_direction": lsm_ctx.get("direction"),
+                "lsm_conflict": lsm_ctx.get("conflict_severity"),
+                "sweep_bias": lsm_ctx.get("sweep_bias"),
+                "structure_bias": lsm_ctx.get("structure_bias"),
+                "fvg_bias": lsm_ctx.get("fvg_bias"),
+                "order_block_bias": lsm_ctx.get("order_block_bias"),
+                "premium_discount_bias": lsm_ctx.get("premium_discount_bias"),
+                "displacement_bias": lsm_ctx.get("displacement_bias"),
+                "microstructure_bias": lsm_ctx.get("microstructure_bias"),
+                "orderflow_bias": lsm_ctx.get("orderflow_bias"),
+                "trend_bias": lsm_ctx.get("trend_bias"),
+            })
+        re_metrics["trade_diagnostics"] = diagnostics
     return re_metrics, ra, dict(daily_breakdown), regime_stats
 
 
