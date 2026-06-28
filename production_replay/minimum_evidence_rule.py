@@ -1,9 +1,10 @@
 """Phase 5 — Minimum evidence rule for forward test readiness.
 
-Enforces two gates before live eligibility:
+Enforces three gates before live eligibility:
 
 - Gate A: 100+ fresh unseen OOS trades from non-overlapping walk-forward windows.
 - Gate B: 30+ calendar days of paper-trading results with acceptable metrics.
+- Gate C: Cumulative peak-to-trough DD must not exceed emergency stop (12.0R).
 
 Returns PASS / BLOCKED with reason.
 """
@@ -18,6 +19,7 @@ MIN_PAPER_TRADES = 25  # minimum trades during paper period
 MAX_ACCEPTABLE_DD_R = 10.0
 MIN_ACCEPTABLE_PF = 1.2
 MIN_ACCEPTABLE_WR = 35.0
+EMERGENCY_STOP_R = 12.0
 
 
 def check_minimum_evidence(
@@ -123,6 +125,26 @@ def check_minimum_evidence(
             "reason": "paper-trading results not provided",
         }
         findings.append("BLOCKED gate B: no paper-trading data")
+
+    # --- Gate C: Cumulative peak-to-trough DD must not exceed emergency stop ---
+    with open(result_path) as f:
+        data = json.load(f)
+    cum_dd = data.get("cumulative_max_dd_r", 0)
+    if cum_dd >= EMERGENCY_STOP_R:
+        gates["gate_c"] = {
+            "status": "BLOCKED",
+            "cumulative_dd_r": cum_dd,
+            "threshold": EMERGENCY_STOP_R,
+            "reason": f"cumulative DD {cum_dd:.1f}R >= {EMERGENCY_STOP_R}R emergency stop",
+        }
+        findings.append(f"BLOCKED gate C: DD {cum_dd:.1f}R >= {EMERGENCY_STOP_R}R")
+    else:
+        gates["gate_c"] = {
+            "status": "PASS",
+            "cumulative_dd_r": cum_dd,
+            "threshold": EMERGENCY_STOP_R,
+        }
+        findings.append(f"PASS gate C: DD {cum_dd:.1f}R < {EMERGENCY_STOP_R}R")
 
     # --- Overall verdict ---
     all_pass = all(g.get("status") == "PASS" for g in gates.values())

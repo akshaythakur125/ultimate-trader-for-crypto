@@ -108,12 +108,12 @@ def run_forward_test(
             d["test_end"] = test_end.isoformat()
         all_trades.extend(metrics.get("trade_diagnostics", []))
 
-        for cat in ra.summary():
-            all_rejections.append({
-                "window": window_label,
-                "category": cat,
-                "reason": ra.summary()[cat],
-            })
+        unique_rejected = len(set(cid for cid, _cat, _reason in ra.reasons))
+        all_rejections.append({
+            "window": window_label,
+            "unique_rejected": unique_rejected,
+            "total_reasons_recorded": len(ra.reasons),
+        })
 
         wm = {
             "window": window_label,
@@ -127,6 +127,17 @@ def run_forward_test(
         }
         window_metrics.append(wm)
 
+    # Cumulative peak-to-trough DD across all trades (primary risk metric)
+    cum = 0.0
+    peak = 0.0
+    cum_dd = 0.0
+    for t in all_trades:
+        cum += t.get("net_r", 0)
+        peak = max(peak, cum)
+        cum_dd = max(cum_dd, peak - cum)
+
+    total_unique_rejected = sum(r.get("unique_rejected", 0) for r in all_rejections)
+
     result = {
         "status": "completed",
         "dry_run": False,
@@ -136,6 +147,8 @@ def run_forward_test(
         "entry_method": ENTRY_METHOD,
         "windows": len(window_metrics),
         "total_trades": len(all_trades),
+        "total_unique_rejected": total_unique_rejected,
+        "cumulative_max_dd_r": round(cum_dd, 2),
         "window_metrics": window_metrics,
         "trade_diagnostics": all_trades,
         "rejection_summary": all_rejections,
