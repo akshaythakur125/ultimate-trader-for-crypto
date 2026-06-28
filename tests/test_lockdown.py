@@ -6,7 +6,7 @@ Verifies:
 3. Paper trading cannot be enabled accidentally
 4. Launch check blocks dirty git tree
 5. Launch check blocks missing report
-6. Launch check accepts only BTC15m, BTC30m, SOL15m in dry-run mode
+6. Launch check accepts only BTC15m, BTC30m in dry-run mode
 """
 
 import json, os, sys, tempfile
@@ -35,12 +35,12 @@ def test_blocked_configs_not_in_allowed():
     assert not overlap, f"blocked configs appear in allowed: {overlap}"
 
 
-def test_only_three_allowed_configs():
+def test_only_two_allowed_configs():
     from production_replay.launch_check import load_config
     config = load_config()
     allowed = config.get("allowed_configs", [])
-    assert len(allowed) == 3, f"expected 3 allowed configs, got {len(allowed)}"
-    expected = {("BTCUSDT", "15m"), ("BTCUSDT", "30m"), ("SOLUSDT", "15m")}
+    assert len(allowed) == 2, f"expected 2 allowed configs, got {len(allowed)}"
+    expected = {("BTCUSDT", "15m"), ("BTCUSDT", "30m")}
     actual = {(a["symbol"], a["timeframe"]) for a in allowed}
     assert actual == expected, f"allowed mismatch: {actual - expected} unexpected, {expected - actual} missing"
 
@@ -179,7 +179,7 @@ def test_dry_forward_report_structure():
     assert report["paper_trading_enabled"] is False
     assert report["mode"] == "dry_forward"
     assert report["verdict"] in ("ROBUST_EDGE", "REGIME_SPECIFIC_EDGE", "INSUFFICIENT_TRADES", "NO_EDGE", "READY_FOR_PAPER", "ERROR")
-    assert len(report["per_config"]) == 3, "expected 3 allowed configs"
+    assert len(report["per_config"]) == 2, "expected 2 allowed configs"
 
 
 # --- Test 5: Operator ---

@@ -50,7 +50,7 @@ TOTAL_TIMEOUT = 240  # total operator hard cap
 ALLOWED = [
     ("BTCUSDT", "15m", "BTC 15m"),
     ("BTCUSDT", "30m", "BTC 30m"),
-    ("SOLUSDT", "15m", "SOL 15m"),
+    ("SOLUSDT", "15m", "SOL 15m"),  # available via --config SOL:15m or --unlimited
 ]
 
 RISK_CFG = {"consecutive_loss_cap": {"max_losses": 6}}
@@ -413,6 +413,7 @@ def operator_run(
     status_tag = f" ({', '.join(status_parts)})" if status_parts else ""
     print(f"  OPERATOR — {mode_str} MODE{status_tag}")
     print(f"  Cache-only, no download | {CONFIG_TIMEOUT}s per config | Total cap {TOTAL_TIMEOUT}s")
+    print(f"  Default configs: BTC 15m, BTC 30m (SOL 15m via --config)")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_sep()
 
@@ -455,7 +456,8 @@ def operator_run(
             print(f"  Available: {[f'{s}:{tf}' for s,tf,_ in ALLOWED]}")
             sys.exit(1)
     else:
-        configs_to_run = ALLOWED
+        # Default: only VM-reliable configs (SOL 15m is too slow for daily)
+        configs_to_run = [a for a in ALLOWED if a[2] != "SOL 15m"]
 
     all_results: list[dict] = []
     all_trades: list[dict] = []
@@ -589,7 +591,7 @@ def _parse_config_labels(args_config: list[str] | None) -> list[str] | None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Daily dry-forward operator (default: VM_FAST)")
     parser.add_argument("--quick", action="store_true", default=True,
-                        help="Run all 3 allowed configs (default)")
+                        help="Run default configs (BTC 15m, BTC 30m)")
     parser.add_argument("--unlimited", action="store_true", default=False,
                         help="Use 365d download instead of cache (slow)")
     parser.add_argument("--config", action="append", default=None,

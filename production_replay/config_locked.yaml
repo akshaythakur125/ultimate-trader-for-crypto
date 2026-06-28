@@ -10,8 +10,6 @@ allowed_configs:
     timeframe: 15m
   - symbol: BTCUSDT
     timeframe: 30m
-  - symbol: SOLUSDT
-    timeframe: 15m
 
 blocked_configs:
   - symbol: ETHUSDT
