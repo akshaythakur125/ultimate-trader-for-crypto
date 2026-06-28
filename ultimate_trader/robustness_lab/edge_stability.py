@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 EDGE_CLASSES = [
     "ROBUST_EDGE",
+    "REGIME_SPECIFIC_EDGE",
     "PROMISING_BUT_UNPROVEN",
     "UNSTABLE_EDGE",
     "NO_EDGE",
@@ -30,6 +31,15 @@ class EdgeClassification:
     after_governor_pf: float = 0.0
     after_governor_trades_per_day: float = 0.0
     max_symbol_profit_pct: float = 100.0
+    regime_gated_ev: float = 0.0
+    regime_gated_pf: float = 0.0
+    regime_gated_trades: int = 0
+    regime_gated_dd: float = 0.0
+    regime_gov_ev: float = 0.0
+    regime_gov_pf: float = 0.0
+    regime_gov_trades: int = 0
+    regime_gov_dd: float = 0.0
+    regime_block_pct: float = 0.0
 
     def governor_verdict(self) -> str:
         if self.total_governor_trades < 50:
@@ -54,6 +64,8 @@ class EdgeStabilityAnalyzer:
         after_governor_metrics: Optional[dict] = None,
         governor_walk_forward_windows: Optional[list] = None,
         max_symbol_profit_pct: float = 100.0,
+        regime_gated_metrics: Optional[dict] = None,
+        regime_governor_metrics: Optional[dict] = None,
     ) -> EdgeClassification:
         ec = EdgeClassification()
         ec.total_out_of_sample_trades = total_oos_trades
@@ -136,6 +148,19 @@ class EdgeStabilityAnalyzer:
         if after_governor_metrics:
             ec.governor_max_drawdown = after_governor_metrics.get("max_drawdown", 0)
 
+        if regime_gated_metrics:
+            ec.regime_gated_ev = regime_gated_metrics.get("expectancy", 0)
+            ec.regime_gated_pf = regime_gated_metrics.get("profit_factor", 0)
+            ec.regime_gated_trades = regime_gated_metrics.get("total_trades", 0)
+            ec.regime_gated_dd = regime_gated_metrics.get("max_drawdown", 0)
+
+        if regime_governor_metrics:
+            ec.regime_gov_ev = regime_governor_metrics.get("expectancy", 0)
+            ec.regime_gov_pf = regime_governor_metrics.get("profit_factor", 0)
+            ec.regime_gov_trades = regime_governor_metrics.get("total_trades", 0)
+            ec.regime_gov_dd = regime_governor_metrics.get("max_drawdown", 0)
+            ec.regime_block_pct = regime_governor_metrics.get("regime_block_pct", 0)
+
         # ---- Minimum evidence rules ----
         wf_profitable_ratio = ec.windows_profitable / max(ec.windows_total, 1)
 
@@ -159,6 +184,21 @@ class EdgeStabilityAnalyzer:
                     f"DD={ec.max_drawdown:.1f}R, "
                     f"WF profitable={ec.windows_profitable}/{ec.windows_total}, "
                     f"best symbol <=50% of profit"
+                )
+                return ec
+
+        # REGIME_SPECIFIC_EDGE: A+ alone looks overfit, but regime gate recovers edge
+        if ec.regime_gov_trades >= 20 and ec.regime_gov_ev > 0 and ec.regime_gov_pf > 1.2:
+            if regime_gated_metrics and regime_gated_metrics.get("total_trades", 0) >= 50:
+                ec.verdict = "REGIME_SPECIFIC_EDGE"
+                ec.reason = (
+                    f"A+ alone overfit ({ec.max_drawdown:.1f}R DD, "
+                    f"{ec.windows_profitable}/{ec.windows_total} WF), "
+                    f"but regime gate stabilizes: "
+                    f"EV={ec.regime_gated_ev:.2f}R, PF={ec.regime_gated_pf:.2f}, "
+                    f"DD={ec.regime_gated_dd:.1f}R, "
+                    f"gov={ec.regime_gov_trades}t EV={ec.regime_gov_ev:.2f}R, "
+                    f"blocked={ec.regime_block_pct:.0f}%"
                 )
                 return ec
 

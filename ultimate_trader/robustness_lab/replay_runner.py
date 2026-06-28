@@ -19,6 +19,7 @@ from ultimate_trader.selectivity_engine import CandidateRanker, DailySelector, D
 from ultimate_trader.strategy_engine.engine import StrategyEngine
 from ultimate_trader.strategy_engine.models import StrategyConfig
 from ultimate_trader.drawdown_control import RiskGovernor, RiskGovernorConfig
+from ultimate_trader.regime_filter import RegimeGate, RegimeGateConfig
 
 
 BINGX_API = "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
@@ -312,6 +313,217 @@ def run_selective_replay_with_governor(
             daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
 
     return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown), gov_stats
+
+
+def run_selective_replay_with_regime(
+    candles: list[HistoricalCandle],
+    frozen_cfg: FrozenConfig,
+    rcfg: ReplayConfig,
+    regime_gate: RegimeGate,
+    invert: bool = False,
+) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int]]:
+    strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
+    engine = StrategyEngine(strat_cfg)
+    sim = TradeSimulator(rcfg)
+    ranker = CandidateRanker()
+    qg_cfg = QualityGateConfig(
+        min_confluence_score=frozen_cfg.min_confluence_score,
+        min_directional_confidence=frozen_cfg.min_directional_confidence,
+        max_conflict_score=frozen_cfg.max_conflict_score,
+        max_reversal_risk_score=frozen_cfg.max_reversal_risk_score,
+        max_risk_score=frozen_cfg.max_risk_score,
+        min_rr=frozen_cfg.min_rr,
+        allowed_grades=set(frozen_cfg.allowed_grades),
+    )
+    qg = QualityGate(qg_cfg)
+    ds_cfg = DailySelectorConfig(
+        target_trades_per_day=frozen_cfg.target_trades_per_day,
+        hard_max_per_day=frozen_cfg.hard_max_per_day,
+        same_symbol_cooldown_minutes=frozen_cfg.same_symbol_cooldown_minutes,
+        same_direction_cooldown_minutes=frozen_cfg.same_direction_cooldown_minutes,
+        loss_threshold_increase=frozen_cfg.loss_threshold_increase,
+        max_losses_per_day=frozen_cfg.max_losses_per_day,
+    )
+    sel = DailySelector(qg, ds_cfg)
+    ra = RejectionReasonAnalyzer()
+    regime_stats = {"regime_blocked": 0, "regime_scores": []}
+    regime_gate.reset_classifier()
+
+    lsm_pipeline = _LsmPipeline()
+
+    for i, candle in enumerate(candles):
+        engine.add_candle(candle)
+        if i < rcfg.warmup_candles:
+            lsm_pipeline.process_candle(candle)
+            continue
+
+        lsm_data, conf_result = lsm_pipeline.process_candle(candle)
+        direction_str = lsm_data.get("direction", "NEUTRAL")
+
+        if invert:
+            direction_str = "SHORT" if direction_str == "LONG" else ("LONG" if direction_str == "SHORT" else "NEUTRAL")
+
+        if direction_str == "NEUTRAL":
+            continue
+
+        gate_dec = regime_gate.check(candle, lsm_data, conf_result)
+        regime_stats["regime_scores"].append(gate_dec.similarity_score)
+        if not gate_dec.allowed:
+            regime_stats["regime_blocked"] += 1
+            continue
+
+        direction = TradeDirection.LONG if direction_str == "LONG" else TradeDirection.SHORT
+        entry = candle.close
+        cr = candle.high - candle.low
+        stop = candle.close - cr * 1.5 if direction == TradeDirection.LONG else candle.close + cr * 1.5
+        target = candle.close + cr * 1.5 * 3.0 if direction == TradeDirection.LONG else candle.close - cr * 1.5 * 3.0
+
+        lsm_data["direction"] = direction_str
+        candidate = engine.evaluate(candle=candle, lsm_data=lsm_data, direction=direction, entry_price=entry, stop_loss=stop, target_price=target)
+        if candidate is None:
+            continue
+
+        rc = ranker.rank(candidate, conf_result)
+        sel.register_candidate(rc)
+        day_key = candle.timestamp.strftime("%Y-%m-%d")
+        results = sel.select_for_day(day_key)
+
+        for rc2, sr in results:
+            if not sr.allowed:
+                ra.record(rc2.candidate_id, sr.rejection_category, sr.rejection_reason)
+                continue
+            plan = TradePlan(
+                plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
+                direction=direction, signal_time=candle.timestamp,
+                entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
+                stop_loss=stop, target_price=target,
+            )
+            trades = sim.process_candle(hc_to_lsm(candle), [plan])
+            for t in trades:
+                sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+
+    daily_breakdown = defaultdict(int)
+    for t in sim.completed_trades:
+        ts = getattr(t, "signal_time", None) or getattr(t, "entry_time", None)
+        if ts:
+            daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
+
+    return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown), regime_stats
+
+
+def run_selective_replay_with_regime_governor(
+    candles: list[HistoricalCandle],
+    frozen_cfg: FrozenConfig,
+    rcfg: ReplayConfig,
+    regime_gate: RegimeGate,
+    gov_cfg: Optional[RiskGovernorConfig] = None,
+    invert: bool = False,
+) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int], dict[str, int]]:
+    strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
+    engine = StrategyEngine(strat_cfg)
+    sim = TradeSimulator(rcfg)
+    ranker = CandidateRanker()
+    qg_cfg = QualityGateConfig(
+        min_confluence_score=frozen_cfg.min_confluence_score,
+        min_directional_confidence=frozen_cfg.min_directional_confidence,
+        max_conflict_score=frozen_cfg.max_conflict_score,
+        max_reversal_risk_score=frozen_cfg.max_reversal_risk_score,
+        max_risk_score=frozen_cfg.max_risk_score,
+        min_rr=frozen_cfg.min_rr,
+        allowed_grades=set(frozen_cfg.allowed_grades),
+    )
+    qg = QualityGate(qg_cfg)
+    ds_cfg = DailySelectorConfig(
+        target_trades_per_day=frozen_cfg.target_trades_per_day,
+        hard_max_per_day=frozen_cfg.hard_max_per_day,
+        same_symbol_cooldown_minutes=frozen_cfg.same_symbol_cooldown_minutes,
+        same_direction_cooldown_minutes=frozen_cfg.same_direction_cooldown_minutes,
+        loss_threshold_increase=frozen_cfg.loss_threshold_increase,
+        max_losses_per_day=frozen_cfg.max_losses_per_day,
+    )
+    sel = DailySelector(qg, ds_cfg)
+    ra = RejectionReasonAnalyzer()
+    gov = RiskGovernor(gov_cfg or RiskGovernorConfig())
+    gov_stats = {"daily_loss": 0, "weekly_loss": 0, "drawdown_mode": 0, "rolling_perf": 0, "consecutive_losses": 0}
+    regime_stats = {"regime_blocked": 0, "regime_scores": []}
+    regime_gate.reset_classifier()
+
+    lsm_pipeline = _LsmPipeline()
+
+    for i, candle in enumerate(candles):
+        engine.add_candle(candle)
+        if i < rcfg.warmup_candles:
+            lsm_pipeline.process_candle(candle)
+            continue
+
+        lsm_data, conf_result = lsm_pipeline.process_candle(candle)
+        direction_str = lsm_data.get("direction", "NEUTRAL")
+
+        if invert:
+            direction_str = "SHORT" if direction_str == "LONG" else ("LONG" if direction_str == "SHORT" else "NEUTRAL")
+
+        if direction_str == "NEUTRAL":
+            continue
+
+        gate_dec = regime_gate.check(candle, lsm_data, conf_result)
+        regime_stats["regime_scores"].append(gate_dec.similarity_score)
+        if not gate_dec.allowed:
+            regime_stats["regime_blocked"] += 1
+            continue
+
+        direction = TradeDirection.LONG if direction_str == "LONG" else TradeDirection.SHORT
+        entry = candle.close
+        cr = candle.high - candle.low
+        stop = candle.close - cr * 1.5 if direction == TradeDirection.LONG else candle.close + cr * 1.5
+        target = candle.close + cr * 1.5 * 3.0 if direction == TradeDirection.LONG else candle.close - cr * 1.5 * 3.0
+
+        lsm_data["direction"] = direction_str
+        candidate = engine.evaluate(candle=candle, lsm_data=lsm_data, direction=direction, entry_price=entry, stop_loss=stop, target_price=target)
+        if candidate is None:
+            continue
+
+        rc = ranker.rank(candidate, conf_result)
+        sel.register_candidate(rc)
+        day_key = candle.timestamp.strftime("%Y-%m-%d")
+        results = sel.select_for_day(day_key)
+
+        for rc2, sr in results:
+            if not sr.allowed:
+                ra.record(rc2.candidate_id, sr.rejection_category, sr.rejection_reason)
+                continue
+            grade = rc2.rank_grade if hasattr(rc2, "rank_grade") else rc.grade
+            dec = gov.check_state(candle.timestamp, grade=grade)
+            if not dec.allowed:
+                if "daily loss" in dec.rejection_reason:
+                    gov_stats["daily_loss"] += 1
+                elif "weekly loss" in dec.rejection_reason:
+                    gov_stats["weekly_loss"] += 1
+                elif "consecutive" in dec.rejection_reason:
+                    gov_stats["consecutive_losses"] += 1
+                elif "EV" in dec.rejection_reason or "PF" in dec.rejection_reason:
+                    gov_stats["rolling_perf"] += 1
+                else:
+                    gov_stats["drawdown_mode"] += 1
+                continue
+            plan = TradePlan(
+                plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
+                direction=direction, signal_time=candle.timestamp,
+                entry_zone_high=entry + cr * 0.1, entry_zone_low=entry - cr * 0.1,
+                stop_loss=stop, target_price=target,
+            )
+            trades = sim.process_candle(hc_to_lsm(candle), [plan])
+            for t in trades:
+                sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+                if t.net_r != 0.0:
+                    gov.evaluate(t, grade=grade)
+
+    daily_breakdown = defaultdict(int)
+    for t in sim.completed_trades:
+        ts = getattr(t, "signal_time", None) or getattr(t, "entry_time", None)
+        if ts:
+            daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
+
+    return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown), gov_stats, regime_stats
 
 
 def compute_metrics(trades: list) -> dict[str, Any]:

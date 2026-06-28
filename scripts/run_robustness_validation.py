@@ -20,7 +20,9 @@ from ultimate_trader.robustness_lab import (
     FrozenConfig, MultiPeriodReplay, SymbolRobustness, TimeframeRobustness,
     WalkForwardReplay, EdgeStabilityAnalyzer, RobustnessReport,
     ensure_data, run_selective_replay, run_selective_replay_with_governor,
+    run_selective_replay_with_regime, run_selective_replay_with_regime_governor,
 )
+from ultimate_trader.regime_filter import RegimeGate, RegimeGateConfig, RegimeClassifier, SimilarityScorer, ReferenceProfile
 
 
 ALL_PAIRS = [
@@ -119,6 +121,18 @@ def main():
     wf_gov = WalkForwardReplay(frozen)
     wf_gov.run(symbol="BTCUSDT", timeframe="15m", run_governor=True)
 
+    # ---- 6b. Walk-Forward: A+ + regime gate ----
+    print("\nE3. Walk-Forward Replay (A+ + regime gate)", flush=True)
+    print("=" * 50, flush=True)
+    wf_reg = WalkForwardReplay(frozen)
+    wf_reg.run(symbol="BTCUSDT", timeframe="15m", run_regime=True)
+
+    # ---- 6c. Walk-Forward: A+ + regime + governor ----
+    print("\nE4. Walk-Forward Replay (A+ + regime + governor)", flush=True)
+    print("=" * 50, flush=True)
+    wf_reg_gov = WalkForwardReplay(frozen)
+    wf_reg_gov.run(symbol="BTCUSDT", timeframe="15m", run_regime_governor=True)
+
     # ---- 7. Run A+ + governor on full dataset for aggregate metrics ----
     print("\nF. A+ + Governor Full Dataset Replay", flush=True)
     print("=" * 50, flush=True)
@@ -137,6 +151,54 @@ def main():
         print(f"  Blocked: {sum(gov_stats.values())} "
               f"(consec={gov_stats['consecutive_losses']}, "
               f"DDmode={gov_stats['drawdown_mode']})", flush=True)
+
+    # ---- 7b. Run A+ + regime gate on full dataset ----
+    print("\nF2. A+ + Regime Gate Full Dataset Replay", flush=True)
+    print("=" * 50, flush=True)
+    regime_gated_metrics = {}
+    if btc_candles:
+        # Use last 60 days (5760 candles of 15m) as the profitable regime reference
+        ref_window = min(5760, len(btc_candles))
+        reg_cfg = RegimeGateConfig(reference_window_candles=ref_window)
+        regime_gate = RegimeGate(reg_cfg)
+        regime_gate.fit(btc_candles)
+        reg_metrics, _, _, reg_stats = run_selective_replay_with_regime(
+            btc_candles, frozen, rcfg, regime_gate,
+        )
+        regime_gated_metrics = reg_metrics
+        scores = reg_stats.get("regime_scores", [])
+        avg_score = sum(scores) / len(scores) if scores else 0
+        print(f"  Trades: {reg_metrics['total_trades']}, WR {reg_metrics['win_rate']*100:.1f}%, "
+              f"EV {reg_metrics['expectancy']:.2f}R, PF {reg_metrics['profit_factor']:.2f}, "
+              f"DD {reg_metrics['max_drawdown']:.1f}R", flush=True)
+        print(f"  Regime blocked: {reg_stats.get('regime_blocked', 0)}, "
+              f"avg score: {avg_score:.1f}, ref window: {ref_window} candles", flush=True)
+
+    # ---- 7c. Run A+ + regime + governor on full dataset ----
+    print("\nF3. A+ + Regime + Governor Full Dataset Replay", flush=True)
+    print("=" * 50, flush=True)
+    regime_governor_metrics = {}
+    if btc_candles:
+        ref_window2 = min(5760, len(btc_candles))
+        reg_cfg2 = RegimeGateConfig(reference_window_candles=ref_window2)
+        regime_gate2 = RegimeGate(reg_cfg2)
+        regime_gate2.fit(btc_candles)
+        rg_metrics, _, _, rg_gov_stats, rg_stats = run_selective_replay_with_regime_governor(
+            btc_candles, frozen, rcfg, regime_gate2, None,
+        )
+        regime_governor_metrics = rg_metrics
+        total_checked = max(len(rg_stats.get("regime_scores", [])), 1)
+        regime_governor_metrics["regime_block_pct"] = (
+            rg_stats.get("regime_blocked", 0) / total_checked * 100
+        )
+        scores2 = rg_stats.get("regime_scores", [])
+        avg_score2 = sum(scores2) / len(scores2) if scores2 else 0
+        print(f"  Trades: {rg_metrics['total_trades']}, WR {rg_metrics['win_rate']*100:.1f}%, "
+              f"EV {rg_metrics['expectancy']:.2f}R, PF {rg_metrics['profit_factor']:.2f}, "
+              f"DD {rg_metrics['max_drawdown']:.1f}R", flush=True)
+        print(f"  Gov blocked: {sum(rg_gov_stats.values())}, "
+              f"Regime blocked: {rg_stats.get('regime_blocked', 0)}, "
+              f"avg score: {avg_score2:.1f}", flush=True)
 
     # ---- 8. Compute symbol concentration ----
     max_symbol_pct = compute_symbol_concentration(sr_class.results)
@@ -161,6 +223,8 @@ def main():
         after_governor_metrics=after_gov_metrics,
         governor_walk_forward_windows=wf_gov.governor_windows,
         max_symbol_profit_pct=max_symbol_pct,
+        regime_gated_metrics=regime_gated_metrics,
+        regime_governor_metrics=regime_governor_metrics,
     )
 
     # ---- 10. Report ----
@@ -170,6 +234,10 @@ def main():
         dataset_quality_lines=dataset_lines,
         governor_walk_forward_windows=wf_gov.governor_windows,
         after_governor_metrics=after_gov_metrics,
+        regime_gated_metrics=regime_gated_metrics,
+        regime_governor_metrics=regime_governor_metrics,
+        regime_walk_forward_windows=wf_reg.regime_windows,
+        regime_governor_walk_forward_windows=wf_reg_gov.regime_governor_windows,
     )
     print(f"\n{report}", flush=True)
     print(f"\n  Elapsed: {time.time()-t_start:.0f}s", flush=True)

@@ -17,6 +17,10 @@ class RobustnessReport:
         dataset_quality_lines: Optional[list[str]] = None,
         governor_walk_forward_windows: Optional[list] = None,
         after_governor_metrics: Optional[dict] = None,
+        regime_gated_metrics: Optional[dict] = None,
+        regime_governor_metrics: Optional[dict] = None,
+        regime_walk_forward_windows: Optional[list] = None,
+        regime_governor_walk_forward_windows: Optional[list] = None,
     ) -> str:
         lines = []
         lines.append("=" * 70)
@@ -101,6 +105,40 @@ class RobustnessReport:
                 lines.append(f"  Avg max drawdown:   {avg_dd:.1f}R")
             lines.append(f"  Total blocked:      {blocked}")
 
+        lines.append(f"\nE3. Walk-Forward (A+ + regime gate)\n{'-' * 40}")
+        if not regime_walk_forward_windows:
+            lines.append("  No regime windows evaluated")
+        else:
+            evs = [w.test_expectancy for w in regime_walk_forward_windows]
+            profitable = sum(1 for w in regime_walk_forward_windows if w.profitable)
+            blocked = sum(w.regime_blocked for w in regime_walk_forward_windows)
+            lines.append(f"  Windows evaluated:  {len(regime_walk_forward_windows)}")
+            lines.append(f"  Profitable windows: {profitable}/{len(regime_walk_forward_windows)}")
+            lines.append(f"  Avg expectancy:     {sum(evs)/len(evs):.2f}R")
+            lines.append(f"  Worst window:       {min(evs):.2f}R")
+            lines.append(f"  Best window:        {max(evs):.2f}R")
+            if regime_walk_forward_windows:
+                avg_dd = sum(w.test_max_drawdown for w in regime_walk_forward_windows) / len(regime_walk_forward_windows)
+                lines.append(f"  Avg max drawdown:   {avg_dd:.1f}R")
+            lines.append(f"  Regime blocked:     {blocked}")
+
+        lines.append(f"\nE4. Walk-Forward (A+ + regime + governor)\n{'-' * 40}")
+        if not regime_governor_walk_forward_windows:
+            lines.append("  No regime+gov windows evaluated")
+        else:
+            evs = [w.test_expectancy for w in regime_governor_walk_forward_windows]
+            profitable = sum(1 for w in regime_governor_walk_forward_windows if w.profitable)
+            blocked = sum(w.regime_blocked for w in regime_governor_walk_forward_windows)
+            lines.append(f"  Windows evaluated:  {len(regime_governor_walk_forward_windows)}")
+            lines.append(f"  Profitable windows: {profitable}/{len(regime_governor_walk_forward_windows)}")
+            lines.append(f"  Avg expectancy:     {sum(evs)/len(evs):.2f}R")
+            lines.append(f"  Worst window:       {min(evs):.2f}R")
+            lines.append(f"  Best window:        {max(evs):.2f}R")
+            if regime_governor_walk_forward_windows:
+                avg_dd = sum(w.test_max_drawdown for w in regime_governor_walk_forward_windows) / len(regime_governor_walk_forward_windows)
+                lines.append(f"  Avg max drawdown:   {avg_dd:.1f}R")
+            lines.append(f"  Regime blocked:     {blocked}")
+
         lines.append(f"\nF. A+ Selectivity Final Verdict\n{'-' * 40}")
         lines.append(f"  Classification: {edge.verdict}")
         lines.append(f"  Reason:          {edge.reason}")
@@ -124,6 +162,19 @@ class RobustnessReport:
         lines.append(f"  Max DD after gov:  {edge.governor_max_drawdown:.1f}R")
         lines.append(f"  Trades/day:        {edge.after_governor_trades_per_day:.1f}")
 
+        lines.append(f"\nG2. Regime Gate Results (Full Dataset)\n{'-' * 40}")
+        if regime_gated_metrics:
+            lines.append(f"  Trades after gate: {edge.regime_gated_trades}")
+            lines.append(f"  EV after gate:     {edge.regime_gated_ev:.2f}R")
+            lines.append(f"  PF after gate:     {edge.regime_gated_pf:.2f}")
+            lines.append(f"  Max DD after gate: {edge.regime_gated_dd:.1f}R")
+        if regime_governor_metrics:
+            lines.append(f"  Trades after both: {edge.regime_gov_trades}")
+            lines.append(f"  EV after both:     {edge.regime_gov_ev:.2f}R")
+            lines.append(f"  PF after both:     {edge.regime_gov_pf:.2f}")
+            lines.append(f"  Max DD after both: {edge.regime_gov_dd:.1f}R")
+            lines.append(f"  Regime blocked %:  {edge.regime_block_pct:.1f}%")
+
         lines.append(f"\nH. Evidence Summary\n{'-' * 40}")
         if edge.total_out_of_sample_trades >= 200:
             lines.append("  OOS evidence:     SUFFICIENT (200+ trades)")
@@ -133,6 +184,10 @@ class RobustnessReport:
             lines.append("  Governor evidence: SUFFICIENT (50+ trades)")
         else:
             lines.append(f"  Governor evidence: INSUFFICIENT ({edge.total_governor_trades}/50)")
+        if edge.regime_gov_trades >= 20:
+            lines.append("  Regime+gov evidence: SUFFICIENT (20+ trades)")
+        else:
+            lines.append(f"  Regime+gov evidence: INSUFFICIENT ({edge.regime_gov_trades}/20)")
         if edge.avg_profit_factor > 1.2:
             lines.append(f"  Profit factor:    PASS ({edge.avg_profit_factor:.2f} > 1.2)")
         else:
