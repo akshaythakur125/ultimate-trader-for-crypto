@@ -1,0 +1,191 @@
+{
+  "rating": "REGIME_SPECIFIC_EDGE",
+  "reason": "edge confirmed for BTC 15m (baseline), BTC 30m, SOL 15m; fails for BNB 15m, ETH 15m, XRP 15m",
+  "gates": {
+    "total_trades >= 100": true,
+    "cumulative DD < 12.0R": true,
+    "cumulative DD < 8.0R (preferred)": false,
+    "EV > 0 (all configs)": false,
+    "PF > 1.5 (all configs)": false,
+    "kill switch not triggered": false,
+    "no config > 50% profit": true
+  },
+  "results": [
+    {
+      "label": "BNB 15m",
+      "symbol": "BNBUSDT",
+      "timeframe": "15m",
+      "windows": 4,
+      "trades": 11,
+      "wr": 27.3,
+      "ev": -0.093,
+      "pf": 0.89,
+      "cumulative_dd_r": 7.2,
+      "max_consecutive_losses": 6,
+      "kill_triggered": true,
+      "max_window_pnl_pct": 0,
+      "window_count": 4,
+      "total_pnl": -1.03,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": -2.24,
+        "2026-03-29->2026-04-28": -2.19,
+        "2026-04-28->2026-05-28": -1.22,
+        "2026-05-28->2026-06-27": 4.62
+      }
+    },
+    {
+      "label": "BTC 15m (baseline)",
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "windows": 4,
+      "trades": 34,
+      "wr": 50.0,
+      "ev": 0.822,
+      "pf": 2.41,
+      "cumulative_dd_r": 5.92,
+      "max_consecutive_losses": 5,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 77.7,
+      "window_count": 4,
+      "total_pnl": 27.96,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": 8.05,
+        "2026-03-29->2026-04-28": -3.48,
+        "2026-04-28->2026-05-28": 1.67,
+        "2026-05-28->2026-06-27": 21.73
+      }
+    },
+    {
+      "label": "BTC 1h",
+      "symbol": "BTCUSDT",
+      "timeframe": "1h",
+      "windows": 4,
+      "trades": 5,
+      "wr": 40.0,
+      "ev": 0.481,
+      "pf": 1.71,
+      "cumulative_dd_r": 3.37,
+      "max_consecutive_losses": 3,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 73.8,
+      "window_count": 2,
+      "total_pnl": 2.4,
+      "per_window_pnl": {
+        "2026-04-28->2026-05-28": 1.77,
+        "2026-05-28->2026-06-27": 0.63
+      }
+    },
+    {
+      "label": "BTC 30m",
+      "symbol": "BTCUSDT",
+      "timeframe": "30m",
+      "windows": 4,
+      "trades": 25,
+      "wr": 60.0,
+      "ev": 1.241,
+      "pf": 3.73,
+      "cumulative_dd_r": 5.56,
+      "max_consecutive_losses": 5,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 49.1,
+      "window_count": 4,
+      "total_pnl": 31.02,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": -4.35,
+        "2026-03-29->2026-04-28": 7.54,
+        "2026-04-28->2026-05-28": 15.24,
+        "2026-05-28->2026-06-27": 12.59
+      }
+    },
+    {
+      "label": "BTC 5m",
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "windows": 0,
+      "trades": 0,
+      "wr": 0,
+      "ev": 0,
+      "pf": 0,
+      "cumulative_dd_r": 0,
+      "max_consecutive_losses": 0,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 0,
+      "window_count": 0,
+      "total_pnl": 0,
+      "per_window_pnl": {}
+    },
+    {
+      "label": "ETH 15m",
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "windows": 4,
+      "trades": 27,
+      "wr": 33.3,
+      "ev": 0.171,
+      "pf": 1.22,
+      "cumulative_dd_r": 8.35,
+      "max_consecutive_losses": 7,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 119.8,
+      "window_count": 4,
+      "total_pnl": 4.62,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": 1.43,
+        "2026-03-29->2026-04-28": -1.14,
+        "2026-04-28->2026-05-28": 5.54,
+        "2026-05-28->2026-06-27": -1.2
+      }
+    },
+    {
+      "label": "SOL 15m",
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "windows": 4,
+      "trades": 36,
+      "wr": 52.8,
+      "ev": 0.982,
+      "pf": 2.84,
+      "cumulative_dd_r": 7.74,
+      "max_consecutive_losses": 7,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 97.6,
+      "window_count": 4,
+      "total_pnl": 35.35,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": -3.2,
+        "2026-03-29->2026-04-28": 7.0,
+        "2026-04-28->2026-05-28": -2.95,
+        "2026-05-28->2026-06-27": 34.51
+      }
+    },
+    {
+      "label": "XRP 15m",
+      "symbol": "XRPUSDT",
+      "timeframe": "15m",
+      "windows": 4,
+      "trades": 25,
+      "wr": 36.0,
+      "ev": 0.271,
+      "pf": 1.36,
+      "cumulative_dd_r": 7.34,
+      "max_consecutive_losses": 5,
+      "kill_triggered": false,
+      "max_window_pnl_pct": 143.1,
+      "window_count": 4,
+      "total_pnl": 6.78,
+      "per_window_pnl": {
+        "2026-02-27->2026-03-29": -1.06,
+        "2026-03-29->2026-04-28": 2.12,
+        "2026-04-28->2026-05-28": -3.98,
+        "2026-05-28->2026-06-27": 9.7
+      }
+    }
+  ],
+  "summary": {
+    "total_trades": 163,
+    "total_pnl_r": 107.1,
+    "configs_with_trades": 7,
+    "configs_zero_trades": 1
+  },
+  "timestamp": "2026-06-28T15:27:47"
+}
