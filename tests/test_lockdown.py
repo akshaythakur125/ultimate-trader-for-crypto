@@ -12,6 +12,8 @@ Verifies:
 import json, os, sys, tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # --- Test 1: Locked config has live/paper disabled ---
@@ -158,3 +160,23 @@ def test_deployment_readme_exists():
     assert "REGIME_SPECIFIC_EDGE" in content
     assert "live_trading" in content.lower()
     assert "paper_trading" in content.lower()
+    assert "Daily Operator Checklist" in content
+
+
+def test_dry_forward_report_structure():
+    """Verify dry-forward report has all required fields."""
+    report_path = "deploy_results/dry_forward_report.json"
+    if not os.path.exists(report_path):
+        pytest.skip("dry-forward report not generated yet")
+    with open(report_path) as f:
+        report = json.load(f)
+    required = ["mode", "verdict", "total_trades", "total_wr", "total_ev",
+                 "total_pf", "total_dd_r", "kill_triggered",
+                 "live_trading_enabled", "paper_trading_enabled", "gates", "per_config"]
+    for key in required:
+        assert key in report, f"missing field in report: {key}"
+    assert report["live_trading_enabled"] is False
+    assert report["paper_trading_enabled"] is False
+    assert report["mode"] == "dry_forward"
+    assert report["verdict"] in ("ROBUST_EDGE", "REGIME_SPECIFIC_EDGE", "INSUFFICIENT_TRADES", "NO_EDGE")
+    assert len(report["per_config"]) == 3, "expected 3 allowed configs"

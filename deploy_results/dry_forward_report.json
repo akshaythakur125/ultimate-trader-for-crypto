@@ -1,0 +1,147 @@
+{
+  "mode": "dry_forward",
+  "verdict": "INSUFFICIENT_TRADES",
+  "timestamp": "2026-06-28T15:48:05",
+  "configs_tested": 3,
+  "total_trades": 95,
+  "total_wr": 53.7,
+  "total_ev": 0.993,
+  "total_pf": 2.87,
+  "total_dd_r": 7.74,
+  "kill_triggered": false,
+  "live_trading_enabled": false,
+  "paper_trading_enabled": false,
+  "gates": {
+    "Trades >= 100": false,
+    "DD < 12.0R": true,
+    "DD < 8.0R (preferred)": true,
+    "PF >= 1.5": true,
+    "EV > 0": true,
+    "Kill not triggered": true
+  },
+  "per_config": [
+    {
+      "label": "BTC 15m",
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "trades": 34,
+      "wr": 50.0,
+      "ev": 0.822,
+      "pf": 2.41,
+      "dd": 5.92,
+      "kill": false,
+      "elapsed_s": 64.2,
+      "windows": 4,
+      "window_breakdown": {
+        "2026-02-27->2026-03-29": {
+          "trades": 14,
+          "wins": 6,
+          "pnl": 8.047570114910773,
+          "dd": 5.92
+        },
+        "2026-03-29->2026-04-28": {
+          "trades": 3,
+          "wins": 0,
+          "pnl": -3.4811149377946755,
+          "dd": 3.48
+        },
+        "2026-04-28->2026-05-28": {
+          "trades": 2,
+          "wins": 1,
+          "pnl": 1.6685681006915654,
+          "dd": 1.13
+        },
+        "2026-05-28->2026-06-27": {
+          "trades": 15,
+          "wins": 10,
+          "pnl": 21.72806757325312,
+          "dd": 2.37
+        }
+      },
+      "rejections": 4,
+      "unique_rejected": 2287
+    },
+    {
+      "label": "BTC 30m",
+      "symbol": "BTCUSDT",
+      "timeframe": "30m",
+      "trades": 25,
+      "wr": 60.0,
+      "ev": 1.241,
+      "pf": 3.73,
+      "dd": 5.56,
+      "kill": false,
+      "elapsed_s": 14.2,
+      "windows": 4,
+      "window_breakdown": {
+        "2026-02-27->2026-03-29": {
+          "trades": 4,
+          "wins": 0,
+          "pnl": -4.348847687938997,
+          "dd": 4.35
+        },
+        "2026-03-29->2026-04-28": {
+          "trades": 4,
+          "wins": 3,
+          "pnl": 7.542323028484563,
+          "dd": 1.21
+        },
+        "2026-04-28->2026-05-28": {
+          "trades": 11,
+          "wins": 7,
+          "pnl": 15.235682463442464,
+          "dd": 4.68
+        },
+        "2026-05-28->2026-06-27": {
+          "trades": 6,
+          "wins": 5,
+          "pnl": 12.594236709830344,
+          "dd": 1.12
+        }
+      },
+      "rejections": 4,
+      "unique_rejected": 1032
+    },
+    {
+      "label": "SOL 15m",
+      "symbol": "SOLUSDT",
+      "timeframe": "15m",
+      "trades": 36,
+      "wr": 52.8,
+      "ev": 0.982,
+      "pf": 2.84,
+      "dd": 7.74,
+      "kill": false,
+      "elapsed_s": 56.2,
+      "windows": 4,
+      "window_breakdown": {
+        "2026-02-27->2026-03-29": {
+          "trades": 3,
+          "wins": 0,
+          "pnl": -3.201170498620713,
+          "dd": 3.2
+        },
+        "2026-03-29->2026-04-28": {
+          "trades": 8,
+          "wins": 4,
+          "pnl": 6.998057978211429,
+          "dd": 4.54
+        },
+        "2026-04-28->2026-05-28": {
+          "trades": 6,
+          "wins": 1,
+          "pnl": -2.9500657023982284,
+          "dd": 5.83
+        },
+        "2026-05-28->2026-06-27": {
+          "trades": 19,
+          "wins": 14,
+          "pnl": 34.50595309734537,
+          "dd": 1.19
+        }
+      },
+      "rejections": 4,
+      "unique_rejected": 2557
+    }
+  ]
+}
