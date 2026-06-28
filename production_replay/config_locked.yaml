@@ -1,0 +1,39 @@
+# Production-locked configuration for ultimate-trader-for-crypto
+# Do not edit manually. Changes must go through validation (Phase 5-7).
+---
+live_trading: false
+paper_trading: false
+dry_run: true
+
+allowed_configs:
+  - symbol: BTCUSDT
+    timeframe: 15m
+  - symbol: BTCUSDT
+    timeframe: 30m
+  - symbol: SOLUSDT
+    timeframe: 15m
+
+blocked_configs:
+  - symbol: ETHUSDT
+    timeframe: 15m
+  - symbol: XRPUSDT
+    timeframe: 15m
+  - symbol: BNBUSDT
+    timeframe: 15m
+  - symbol: BTCUSDT
+    timeframe: 1h
+  - symbol: BTCUSDT
+    timeframe: 5m
+
+stop_method: atr14_20
+entry_method: immediate
+regime_gate: enabled
+risk_control: consec_loss_6
+
+# Acceptance gates
+min_ev_R: 0.0
+min_pf: 1.5
+max_dd_R_preferred: 8.0
+max_dd_R_absolute: 12.0
+min_total_oos_trades_before_paper: 100
+min_paper_days_before_live: 30
