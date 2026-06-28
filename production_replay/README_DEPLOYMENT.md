@@ -51,7 +51,7 @@ git pull
 
 ### 2. Run operator
 ```
-python production_replay/operator.py
+python -m production_replay.operator
 ```
 This single command runs safety lock, launch check, dry-forward,
 evidence tracker, generates all reports, and prints the final status table.
@@ -102,7 +102,7 @@ All must be true:
 
 ### Run daily operator (recommended)
 ```
-python production_replay/operator.py
+python -m production_replay.operator
 ```
 Outputs: `deploy_results/dry_forward_report.json`,
 `deploy_results/dry_forward_report.txt`,

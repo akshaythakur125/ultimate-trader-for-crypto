@@ -20,7 +20,7 @@ to generate income. Do not use it for real trading.
 ## Daily Command
 
 ```
-python production_replay/operator.py
+python -m production_replay.operator
 ```
 
 Or double-click `run_operator.bat` (Windows). Takes 3-5 minutes.

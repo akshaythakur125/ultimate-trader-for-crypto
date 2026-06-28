@@ -2,7 +2,7 @@
 echo ========================================================================
 echo  Starting Daily Operator...
 echo ========================================================================
-python production_replay/operator.py
+python -m production_replay.operator
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo  WARNING: Operator encountered an error. Check output above.

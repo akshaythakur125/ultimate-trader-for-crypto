@@ -83,7 +83,7 @@ Not deployable for live or paper because:
 Run once per day (takes 3-5 minutes):
 
 ```
-python production_replay/operator.py
+python -m production_replay.operator
 ```
 
 Or double-click `run_operator.bat` (Windows).
@@ -123,7 +123,7 @@ run launch_check before enabling the paper trading path.
 git status                                 # expect: clean
 python -m pytest                           # expect: 1148 passed
 python production_replay/launch_check.py   # expect: PASS (8/8)
-python production_replay/operator.py       # expect: completes, check summary
+python -m production_replay.operator       # expect: completes, check summary
 ```
 
 ### Current State
@@ -138,4 +138,4 @@ python production_replay/operator.py       # expect: completes, check summary
 | dry_run | true |
 | Total trades | 95 |
 | Verdict | INSUFFICIENT_TRADES |
-| Daily command | `python production_replay/operator.py` |
+| Daily command | `python -m production_replay.operator` |

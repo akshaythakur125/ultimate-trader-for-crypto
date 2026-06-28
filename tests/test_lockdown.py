@@ -300,7 +300,7 @@ def test_operator_summary_has_required_fields():
 def test_run_operator_bat_exists():
     assert os.path.exists("run_operator.bat")
     content = open("run_operator.bat").read()
-    assert "operator.py" in content
+    assert "production_replay.operator" in content
 
 
 # --- Test 10: Launch check handles None configs safely ---
