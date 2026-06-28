@@ -104,23 +104,41 @@ def load_candles_from_csv(path: str) -> list[HistoricalCandle]:
 def ensure_data(symbol: str, timeframe: str, days: int = 90) -> list[HistoricalCandle]:
     path = _csv_path(symbol, timeframe)
     if os.path.exists(path):
-        return load_candles_from_csv(path)
+        candles = load_candles_from_csv(path)
+        min_expected = int(days * 24 * 60 / _interval_minutes(timeframe) * 0.9)
+        actual_days = (candles[-1].timestamp - candles[0].timestamp).days if len(candles) > 1 else 0
+        if len(candles) >= min_expected and actual_days >= days * 0.9:
+            print(f"  [CACHE] Using cached {os.path.basename(path)} ({len(candles)} candles, {actual_days}d)", flush=True)
+            return candles
+        print(f"  [CACHE] Cached {os.path.basename(path)} has {len(candles)} candles ({actual_days}d), need {days}d — re-downloading", flush=True)
     api_symbol = symbol.replace("USDT", "-USDT")
     for attempt_days in [365, days, 180, 90, 60, 30, 14, 7]:
-        print(f"  Downloading {api_symbol} {timeframe} ({attempt_days}d)...")
+        print(f"  [NET] Downloading {api_symbol} {timeframe} ({attempt_days}d)...", flush=True)
         try:
             items = _fetch_klines(api_symbol, timeframe, days=attempt_days)
             if not items:
-                print(f"  No data available for {attempt_days}d range")
+                print(f"  [NET] No data available for {attempt_days}d range", flush=True)
                 continue
             count = _items_to_csv(items, symbol, timeframe, path)
-            print(f"  Saved {count} candles to {os.path.basename(path)}")
+            print(f"  [NET] Saved {count} candles to {os.path.basename(path)}", flush=True)
             return load_candles_from_csv(path)
         except Exception as e:
-            print(f"  Cannot download {symbol} {timeframe}: {e}")
+            print(f"  [NET] Cannot download {symbol} {timeframe}: {e}", flush=True)
             continue
-    print(f"  Giving up on {symbol} {timeframe}")
+    print(f"  [NET] Giving up on {symbol} {timeframe}", flush=True)
     return []
+
+
+def _interval_minutes(timeframe: str) -> int:
+    unit = timeframe[-1]
+    value = int(timeframe[:-1]) if len(timeframe) > 1 else 1
+    if unit == "m":
+        return value
+    if unit == "h":
+        return value * 60
+    if unit == "d":
+        return value * 1440
+    return 1
 
 
 def run_selective_replay(

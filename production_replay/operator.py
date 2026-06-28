@@ -1,18 +1,19 @@
 """Operator — single command for daily dry-forward operation.
 
 Sequence:
-1. Run safety lock checks
-2. Run launch check
-3. Block immediately if launch_check fails
-4. Run dry-forward
-5. Run evidence tracker
-6. Generate deploy_results/dry_forward_report.json
-7. Generate deploy_results/dry_forward_report.txt
-8. Generate deploy_results/operator_summary.txt
-9. Print final status table
+1. Parse --quick (default) or --full mode
+2. Run safety lock checks
+3. Run launch check
+4. Block immediately if launch_check fails
+5. Run dry-forward with per-config timeout
+6. Run evidence tracker
+7. Generate deploy_results/dry_forward_report.json
+8. Generate deploy_results/dry_forward_report.txt
+9. Generate deploy_results/operator_summary.txt
+10. Print final status table
 """
 
-import json, os, sys, time, traceback
+import argparse, json, os, sys, threading, time, traceback
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +27,37 @@ from production_replay.safety_lock import run_safety_lock
 RESULTS_DIR = "deploy_results"
 SUMMARY_FILE = os.path.join(RESULTS_DIR, "operator_summary.txt")
 TEXT_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.txt")
+CONFIG_TIMEOUT = 300  # seconds per config (5 min)
 
 
-def operator_run() -> dict[str, Any]:
+def _target_wrapper(result_holder: list, index: int, func, *args, **kwargs):
+    """Run func and store result in holder list."""
+    try:
+        result_holder[index] = func(*args, **kwargs)
+    except Exception as e:
+        result_holder[index] = e
+
+
+def run_with_timeout(func, timeout: int, *args, **kwargs) -> Any:
+    """Run func with a hard timeout using threading."""
+    holder = [None]
+    t = threading.Thread(target=_target_wrapper, args=(holder, 0, func, *args), kwargs=kwargs, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    result = holder[0]
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def operator_run(quick_mode: bool = True) -> dict[str, Any]:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     start = time.time()
     result = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "mode": "quick" if quick_mode else "full (not implemented — only 3 allowed configs)",
         "operator_verdict": None,
         "launch_check": None,
         "safety_lock": None,
@@ -41,8 +66,13 @@ def operator_run() -> dict[str, Any]:
         "tests_status": None,
     }
 
+    print("\n" + "=" * 72)
+    print(f"  OPERATOR — {'QUICK' if quick_mode else 'FULL'} MODE")
+    print(f"  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 72)
+
     # Step 1: Safety lock
-    print("\n")
+    print("\n  [1/4] Running safety lock...")
     safety = run_safety_lock()
     result["safety_lock"] = safety
     if not safety["pass"]:
@@ -50,8 +80,10 @@ def operator_run() -> dict[str, Any]:
         _write_summary(result, start)
         print("\n  OPERATOR BLOCKED: safety lock failed")
         sys.exit(1)
+    print(f"  [1/4] Safety lock: ALL ENGAGED ({time.time()-start:.1f}s)")
 
     # Step 2: Launch check
+    print(f"\n  [2/4] Running launch check...")
     config = load_config()
     lc = run_launch_check(config)
     result["launch_check"] = lc
@@ -60,27 +92,40 @@ def operator_run() -> dict[str, Any]:
         _write_summary(result, start)
         print("\n  OPERATOR BLOCKED: launch check failed")
         sys.exit(1)
+    print(f"  [2/4] Launch check: PASS ({time.time()-start:.1f}s)")
 
-    # Step 3: Dry forward
-    print("\n")
-    dry = run_dry_forward()
-    result["dry_forward"] = dry
+    # Step 3: Dry forward with per-config timeout
+    print(f"\n  [3/4] Running dry-forward (timeout={CONFIG_TIMEOUT}s per config)...")
+    try:
+        dry_result = run_with_timeout(run_dry_forward, CONFIG_TIMEOUT * 3)
+    except TimeoutError:
+        print(f"\n  OPERATOR TIMEOUT: dry-forward exceeded {CONFIG_TIMEOUT * 3}s total", flush=True)
+        result["operator_verdict"] = "TIMEOUT"
+        _write_summary(result, start)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n  OPERATOR ERROR: {e}", flush=True)
+        traceback.print_exc()
+        result["operator_verdict"] = "ERROR"
+        _write_summary(result, start)
+        sys.exit(1)
+    result["dry_forward"] = dry_result
 
     # Write text report
-    _write_text_report(dry)
+    _write_text_report(dry_result)
 
     # Step 4: Track evidence
-    evidence = track_evidence(dry)
+    print(f"\n  [4/4] Tracking evidence...")
+    evidence = track_evidence(dry_result)
     result["evidence"] = evidence
-    print("\n")
     print_evidence_summary(evidence)
 
-    # Step 5: Print final table
-    operator_verdict = _determine_verdict(dry, evidence)
+    # Final table
+    operator_verdict = _determine_verdict(dry_result, evidence)
     result["operator_verdict"] = operator_verdict
-    _print_final_table(dry, lc, safety, evidence, operator_verdict, start)
+    _print_final_table(dry_result, lc, safety, evidence, operator_verdict, start)
 
-    # Step 6: Write summary
+    # Write summary
     _write_summary(result, start)
 
     return result
@@ -130,13 +175,12 @@ def _write_text_report(dry: dict):
 def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
                        operator_verdict: str, start: float):
     elapsed = time.time() - start
-    tests_ok = "N/A (run pytest separately)"
     print("\n" + "=" * 72)
     print("  OPERATOR FINAL STATUS")
     print("=" * 72)
     print(f"  {'Status':<20s} {'Result':<20s}")
     print("-" * 42)
-    print(f"  {'Tests':<20s} {tests_ok:<20s}")
+    print(f"  {'Mode':<20s} {'QUICK (default)' if 'quick' in str(dry.get('mode', '')) else 'FULL':<20s}")
     print(f"  {'Launch Check':<20s} {lc.get('verdict', '?'):<20s}")
     print(f"  {'Safety Lock':<20s} {'PASS' if safety.get('pass') else 'FAIL':<20s}")
     print(f"  {'Live Trading':<20s} {'DISABLED':<20s}")
@@ -151,7 +195,7 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print("-" * 42)
     next_action = evidence.get("paper_unlock_reason", "unknown")
     print(f"  Next action: {next_action}")
-    print(f"  Daily cmd:   python production_replay/operator.py")
+    print(f"  Daily cmd:   python -m production_replay.operator")
     print("=" * 72)
 
 
@@ -161,6 +205,7 @@ def _write_summary(result: dict, start: float):
         "=" * 72,
         "  OPERATOR SUMMARY",
         f"  {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"  Mode: {result.get('mode', 'quick')}",
         "=" * 72,
         "",
         f"  Operator Verdict: {result.get('operator_verdict', 'UNKNOWN')}",
@@ -212,7 +257,7 @@ def _write_summary(result: dict, start: float):
         lines.append("  (not run)")
 
     lines.append("")
-    lines.append(f"--- Generated Files ---")
+    lines.append("--- Generated Files ---")
     lines.append(f"  deploy_results/dry_forward_report.json")
     lines.append(f"  deploy_results/dry_forward_report.txt")
     lines.append(f"  deploy_results/operator_summary.txt")
@@ -222,12 +267,17 @@ def _write_summary(result: dict, start: float):
     with open(SUMMARY_FILE, "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"\n[SUMMARY] {SUMMARY_FILE}")
-    print(f"  Next run: python production_replay/operator.py")
+    print(f"  Next run: python -m production_replay.operator")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Daily dry-forward operator")
+    parser.add_argument("--quick", action="store_true", default=True, help="Run only allowed configs (default)")
+    parser.add_argument("--full", action="store_true", default=False, help="Run all configs (not implemented)")
+    args, _ = parser.parse_known_args()
+    quick_mode = not args.full  # default to quick, --full overrides
     try:
-        operator_run()
+        operator_run(quick_mode=quick_mode)
     except SystemExit:
         raise
     except Exception as e:

@@ -4,9 +4,10 @@ Runs only allowed configs in dry-run mode.
 No API order execution. Live/paper trading disabled.
 """
 
-import json, os, sys, time
+import json, os, sys, threading, time
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -21,13 +22,34 @@ ALLOWED = [
     ("SOLUSDT", "15m", "SOL 15m"),
 ]
 RISK_CFG = {"consecutive_loss_cap": {"max_losses": 6}}
+CONFIG_TIMEOUT = 300  # seconds per config
+
+
+def _target_wrapper(result_holder: list, index: int, func, *args, **kwargs):
+    try:
+        result_holder[index] = func(*args, **kwargs)
+    except Exception as e:
+        result_holder[index] = e
+
+
+def run_with_timeout(func, timeout: int, *args, **kwargs) -> Any:
+    holder = [None]
+    t = threading.Thread(target=_target_wrapper, args=(holder, 0, func, *args), kwargs=kwargs, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    result = holder[0]
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 
 def print_sep(char="=", width=80):
     print(char * width)
 
 
-def run_dry_forward():
+def run_dry_forward(quick_mode: bool = True):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     all_results = []
     all_trades = []
@@ -42,17 +64,19 @@ def run_dry_forward():
     print_sep()
 
     for symbol, timeframe, label in ALLOWED:
-        print(f"\n[{label}] Running...")
+        print(f"\n[{label}] Starting (timeout={CONFIG_TIMEOUT}s)...")
         t0 = time.time()
         out_dir = os.path.join(RESULTS_DIR, f"{symbol}_{timeframe}")
         os.makedirs(out_dir, exist_ok=True)
 
         try:
-            result = run_forward_test(
+            result = run_with_timeout(
+                run_forward_test, CONFIG_TIMEOUT,
                 symbol=symbol, timeframe=timeframe, data_days=365,
                 dry_run=False, output_dir=out_dir,
                 risk_controls=RISK_CFG,
             )
+            elapsed = time.time() - t0
 
             trades = result.get("trade_diagnostics", [])
             wins = sum(1 for t in trades if t["net_r"] > 0)
@@ -69,7 +93,6 @@ def run_dry_forward():
             kill = check_kill_switch(trades=trades)
             rejections = result.get("rejection_summary", [])
 
-            # Per-window breakdown
             window_stats = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0, "dd": 0.0})
             for t in trades:
                 w = t.get("window", "unknown")
@@ -77,7 +100,6 @@ def run_dry_forward():
                 window_stats[w]["wins"] += 1 if t["net_r"] > 0 else 0
                 window_stats[w]["pnl"] += t["net_r"]
 
-            # Per-window DD
             for w in window_stats:
                 w_trades = [t for t in trades if t.get("window") == w]
                 wc = 0; wp = 0; wdd = 0
@@ -89,7 +111,7 @@ def run_dry_forward():
                 "label": label, "symbol": symbol, "timeframe": timeframe,
                 "trades": len(trades), "wr": round(wr, 1), "ev": round(ev, 3),
                 "pf": round(pf, 2), "dd": round(dd, 2), "kill": kill["kill_triggered"],
-                "elapsed_s": round(time.time() - t0, 1),
+                "elapsed_s": round(elapsed, 1),
                 "windows": len(window_stats),
                 "window_breakdown": {k: dict(v) for k, v in sorted(window_stats.items())},
                 "rejections": len(rejections),
@@ -100,33 +122,35 @@ def run_dry_forward():
             all_rejections_combined.extend(rejections)
 
             status_mark = "KILL" if kill["kill_triggered"] else "OK"
-            print(f"  -> {label}: {len(trades)} trades, EV {ev:+.3f}R, PF {pf:.2f}, DD {dd:.2f}R, {status_mark}")
+            print(f"  -> {label}: {len(trades)} trades, EV {ev:+.3f}R, PF {pf:.2f}, DD {dd:.2f}R, {status_mark} ({elapsed:.1f}s)")
 
-            # Per-window detail
             for wname, ws in sorted(window_stats.items()):
                 wwr = 100 * ws["wins"] / ws["trades"] if ws["trades"] else 0
                 print(f"     Window {wname[:20]:20s}: {ws['trades']:2d} trades, WR {wwr:5.1f}%, PnL {ws['pnl']:+7.2f}R, DD {ws['dd']:5.2f}R")
 
+        except TimeoutError:
+            print(f"  TIMEOUT: {label} exceeded {CONFIG_TIMEOUT}s — skipping")
+            all_results.append({"label": label, "error": "timeout", "trades": 0, "wr": 0, "ev": 0, "pf": 0, "dd": 0, "kill": False, "windows": 0, "rejections": 0, "unique_rejected": 0})
         except Exception as e:
-            print(f"  ERROR: {e}")
-            all_results.append({"label": label, "error": str(e)})
+            print(f"  ERROR: {label}: {e}")
+            all_results.append({"label": label, "error": str(e), "trades": 0, "wr": 0, "ev": 0, "pf": 0, "dd": 0, "kill": False, "windows": 0, "rejections": 0, "unique_rejected": 0})
 
     # Consolidated results
     print_sep()
     print("  CONSOLIDATED REPORT")
     print_sep()
     total_trades = sum(r.get("trades", 0) for r in all_results)
-    total_pnl = sum(t["net_r"] for t in all_trades)
-    total_wins = sum(1 for t in all_trades if t["net_r"] > 0)
+    total_pnl = sum(t["net_r"] for t in all_trades) if all_trades else 0
+    total_wins = sum(1 for t in all_trades if t["net_r"] > 0) if all_trades else 0
     total_wr = 100 * total_wins / len(all_trades) if all_trades else 0
     total_ev = total_pnl / len(all_trades) if all_trades else 0
-    total_wpnl = sum(t["net_r"] for t in all_trades if t["net_r"] > 0)
-    total_lpnl = abs(sum(t["net_r"] for t in all_trades if t["net_r"] <= 0))
+    total_wpnl = sum(t["net_r"] for t in all_trades if t["net_r"] > 0) if all_trades else 0
+    total_lpnl = abs(sum(t["net_r"] for t in all_trades if t["net_r"] <= 0)) if all_trades else 0
     total_pf = total_wpnl / total_lpnl if total_lpnl > 0 else 0
     cum = 0; peak = 0; total_dd = 0
     for t in all_trades:
         cum += t["net_r"]; peak = max(peak, cum); total_dd = max(total_dd, peak - cum)
-    total_kill = check_kill_switch(trades=all_trades)
+    total_kill = check_kill_switch(trades=all_trades) if all_trades else {"kill_triggered": False}
 
     header = f"{'Config':<15s} {'Trades':>6s} {'WR%':>5s} {'EV(R)':>8s} {'PF':>6s} {'DD(R)':>7s} {'Windows':>7s} {'Kill':>5s} {'Rej':>5s}"
     print(f"\n{header}")
@@ -134,7 +158,10 @@ def run_dry_forward():
     for r in all_results:
         km = "KILL" if r.get("kill") else "OK"
         rej = r.get("unique_rejected", 0)
-        print(f"{r['label']:<15s} {r['trades']:>6d} {r['wr']:>5.1f} {r['ev']:+>8.3f} {r['pf']:>6.2f} {r['dd']:>7.2f} {r['windows']:>7d} {km:>5s} {rej:>5d}")
+        if "error" in r:
+            print(f"{r['label']:<15s} {'ERR':>6s} {'':>5s} {'':>8s} {'':>6s} {'':>7s} {'':>7s} {'':>5s} {'':>5s}  ({r.get('error', '?')})")
+        else:
+            print(f"{r['label']:<15s} {r['trades']:>6d} {r['wr']:>5.1f} {r['ev']:+>8.3f} {r['pf']:>6.2f} {r['dd']:>7.2f} {r['windows']:>7d} {km:>5s} {rej:>5d}")
     print("-" * 70)
     print(f"{'COMBINED':<15s} {total_trades:>6d} {total_wr:>5.1f} {total_ev:+>8.3f} {total_pf:>6.2f} {total_dd:>7.2f} {'':>7s} {'OK' if not total_kill['kill_triggered'] else 'KILL':>5s}")
 
@@ -204,7 +231,7 @@ def run_dry_forward():
     with open(path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\n[REPORT] {path}")
-    print(f"\n  Next dry-forward: python production_replay/run_dry_forward.py")
+    print(f"\n  Next dry-forward: python -m production_replay.operator")
 
     return report
 

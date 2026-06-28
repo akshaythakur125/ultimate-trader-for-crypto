@@ -8,7 +8,7 @@ Execution disabled by default (DRY_RUN=True) to prevent accidental live
 execution.
 """
 
-import json, os, sys, uuid
+import json, os, sys, time, uuid
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Any
@@ -69,14 +69,24 @@ def run_forward_test(
         return {"status": "dry_run", "dry_run": True}
 
     os.makedirs(output_dir, exist_ok=True)
+    t_start = time.time()
 
+    print(f"  [DATA] Loading {data_days}d of {symbol} {timeframe}...", flush=True)
     candles = ensure_data(symbol, timeframe, days=data_days)
+    if not candles:
+        print(f"  [DATA] No candles loaded for {symbol} {timeframe}", flush=True)
+        return {"status": "failed", "error": "no data"}
+    print(f"  [DATA] Loaded {len(candles)} candles in {time.time()-t_start:.1f}s", flush=True)
+
     end_ts = candles[-1].timestamp
     total_days = (end_ts - candles[0].timestamp).days
 
     all_trades: list[dict[str, Any]] = []
     all_rejections: list[dict[str, Any]] = []
     window_metrics: list[dict[str, Any]] = []
+
+    total_windows = (total_days - TRAIN_DAYS - TEST_DAYS) // STEP_DAYS + 1
+    print(f"  [SIM] Testing {total_windows} walk-forward windows...", flush=True)
 
     for offset in range(0, total_days - TRAIN_DAYS - TEST_DAYS, STEP_DAYS):
         test_end = end_ts - timedelta(days=offset)
@@ -89,6 +99,11 @@ def run_forward_test(
         if len(train_set) < REPLAY_CFG.warmup_candles + 10 or len(test_set) < 10:
             continue
 
+        window_num = len(window_metrics) + 1
+        window_label = f"{test_start.strftime('%Y-%m-%d')}->{test_end.strftime('%Y-%m-%d')}"
+        t_win = time.time()
+        print(f"  [SIM] Window {window_num}/{total_windows}: {window_label}...", flush=True)
+
         gate = RegimeGate()
         gate.fit(train_set)
 
@@ -100,10 +115,9 @@ def run_forward_test(
                 risk_controls=risk_controls,
             )
         except Exception as e:
-            print(f"[FORWARD TEST] Window error: {e}", flush=True)
+            print(f"  [SIM] Window error: {e}", flush=True)
             continue
 
-        window_label = f"{test_start.strftime('%Y-%m-%d')}->{test_end.strftime('%Y-%m-%d')}"
         for d in metrics.get("trade_diagnostics", []):
             d["window"] = window_label
             d["test_start"] = test_start.isoformat()
@@ -129,6 +143,8 @@ def run_forward_test(
             "rc_rejected": metrics.get("rc_rejected", 0),
         }
         window_metrics.append(wm)
+        nt = len(all_trades)
+        print(f"  [SIM] Window {window_num} done in {time.time()-t_win:.1f}s ({nt} trades so far)", flush=True)
 
     # Cumulative peak-to-trough DD across all trades (primary risk metric)
     cum = 0.0
@@ -155,12 +171,13 @@ def run_forward_test(
         "window_metrics": window_metrics,
         "trade_diagnostics": all_trades,
         "rejection_summary": all_rejections,
+        "elapsed_s": round(time.time() - t_start, 1),
         "timestamp": datetime.now().isoformat(),
     }
 
     path = os.path.join(output_dir, "forward_test_result.json")
     with open(path, "w") as f:
         json.dump(result, f, indent=2, default=str)
-    print(f"[FORWARD TEST] Saved {len(all_trades)} trades to {path}", flush=True)
+    print(f"[FORWARD TEST] Saved {len(all_trades)} trades to {path} ({time.time()-t_start:.1f}s)", flush=True)
 
     return result

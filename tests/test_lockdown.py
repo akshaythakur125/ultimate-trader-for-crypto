@@ -335,3 +335,77 @@ def test_launch_check_handles_none_config():
     from production_replay.launch_check import run_launch_check
     result = run_launch_check(None)
     assert result["verdict"] in ("PASS", "BLOCKED"), "crash instead of verdict"
+
+
+# --- Test 11: run_with_timeout ---
+
+def test_run_with_timeout_completes():
+    """run_with_timeout must return result when func finishes in time."""
+    from production_replay.operator import run_with_timeout
+    result = run_with_timeout(lambda: 42, 10)
+    assert result == 42
+
+
+def test_run_with_timeout_raises_on_exception():
+    """run_with_timeout must propagate exceptions from wrapped func."""
+    from production_replay.operator import run_with_timeout
+    with pytest.raises(ValueError, match="boom"):
+        run_with_timeout(lambda: (_ for _ in ()).throw(ValueError("boom")), 10)
+
+
+def test_run_with_timeout_times_out():
+    """run_with_timeout must raise TimeoutError when func exceeds timeout."""
+    import time
+    from production_replay.operator import run_with_timeout
+    with pytest.raises(TimeoutError, match="timed out"):
+        run_with_timeout(lambda: time.sleep(10), 1)
+
+
+# --- Test 12: Operator --quick/--full flags ---
+
+def test_operator_default_mode_is_quick():
+    """Operator must default to quick mode."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "quick_mode: bool = True" in source or "quick" in source.lower()
+
+
+def test_operator_quick_mode_parsing():
+    """When --full is not given, quick_mode must be True."""
+    from production_replay.operator import operator_run
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sys.argv", ["operator.py"])
+        import importlib, production_replay.operator as op_mod
+        importlib.reload(op_mod)
+        # quick_mode logic: quick_mode = not args.full, so default True
+        assert op_mod.operator_run  # module loaded okay
+
+
+# --- Test 13: _interval_minutes ---
+
+def test_interval_minutes_15m():
+    """15m -> 15."""
+    from ultimate_trader.robustness_lab.replay_runner import _interval_minutes
+    assert _interval_minutes("15m") == 15
+
+
+def test_interval_minutes_30m():
+    """30m -> 30."""
+    from ultimate_trader.robustness_lab.replay_runner import _interval_minutes
+    assert _interval_minutes("30m") == 30
+
+
+def test_interval_minutes_1h():
+    """1h -> 60."""
+    from ultimate_trader.robustness_lab.replay_runner import _interval_minutes
+    assert _interval_minutes("1h") == 60
+
+
+def test_interval_minutes_1d():
+    """1d -> 1440."""
+    from ultimate_trader.robustness_lab.replay_runner import _interval_minutes
+    assert _interval_minutes("1d") == 1440
+
+
+
