@@ -47,6 +47,7 @@ def run_forward_test(
     data_days: int = 365,
     dry_run: bool = True,
     output_dir: str = "phase5_results",
+    risk_controls: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """Execute forward test on the frozen configuration.
 
@@ -96,6 +97,7 @@ def run_forward_test(
                 test_set, FROZEN_CONFIG, REPLAY_CFG, gate,
                 diagnose=True, collect_trade_timestamps=True,
                 stop_method=STOP_METHOD, entry_method=ENTRY_METHOD,
+                risk_controls=risk_controls,
             )
         except Exception as e:
             print(f"[FORWARD TEST] Window error: {e}", flush=True)
@@ -124,6 +126,7 @@ def run_forward_test(
             "max_drawdown_r": metrics.get("max_drawdown_r", 0),
             "total_signals": metrics.get("total_signals", 0),
             "rejected": metrics.get("rejected", 0),
+            "rc_rejected": metrics.get("rc_rejected", 0),
         }
         window_metrics.append(wm)
 

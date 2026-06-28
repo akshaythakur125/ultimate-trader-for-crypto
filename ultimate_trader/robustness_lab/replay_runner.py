@@ -15,6 +15,7 @@ from ultimate_trader.historical_replay.models import HistoricalCandle, ReplayCon
 from ultimate_trader.historical_replay.trade_simulator import TradeSimulator
 from ultimate_trader.liquidity_smart_money import Candle as LsmCandle
 from ultimate_trader.robustness_lab.frozen_config import FrozenConfig, freeze_current_config
+from production_replay.risk_controls import build_controller
 from ultimate_trader.selectivity_engine import CandidateRanker, DailySelector, DailySelectorConfig, QualityGate, QualityGateConfig, RejectionReasonAnalyzer
 from ultimate_trader.strategy_engine.engine import StrategyEngine
 from ultimate_trader.strategy_engine.models import StrategyConfig
@@ -385,6 +386,7 @@ def run_selective_replay_with_regime(
     diagnose: bool = False,
     stop_method: str = "atr14_20",
     entry_method: str = "immediate",
+    risk_controls: dict[str, dict] | None = None,
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int]]:
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
@@ -410,6 +412,8 @@ def run_selective_replay_with_regime(
     )
     sel = DailySelector(qg, ds_cfg)
     ra = RejectionReasonAnalyzer()
+    risk_checks, rc_state = build_controller(risk_controls)
+    rc_rejected = 0
     regime_stats = {"regime_blocked": 0, "regime_scores": []}
     regime_gate.reset_classifier()
     signal_contexts: dict[float, tuple[dict, Any, Any]] = {}
@@ -420,6 +424,7 @@ def run_selective_replay_with_regime(
     true_range_buffer = deque(maxlen=14)
 
     for i, candle in enumerate(candles):
+        rc_state.current_candle_idx = i
         if i > 0:
             tr = max(candle.high - candle.low, abs(candle.high - candles[i - 1].close), abs(candle.low - candles[i - 1].close))
             true_range_buffer.append(tr)
@@ -460,6 +465,7 @@ def run_selective_replay_with_regime(
                     trades = sim.process_candle(hc_to_lsm(candle), [plan])
                     for t in trades:
                         sel.record_outcome(getattr(t, "trade_id", ps["candidate_id"]), t.net_r > 0, ps["day_key"])
+                        rc_state.record_trade(ps["direction"].name if hasattr(ps["direction"], 'name') else str(ps["direction"]), t.net_r, candle.timestamp, ps["day_key"])
                 pending_signals.remove(ps)
 
         range_buffer.append(candle.high - candle.low)
@@ -581,6 +587,17 @@ def run_selective_replay_with_regime(
                 continue
             if diagnose:
                 signal_contexts[candle.timestamp.timestamp()] = (dict(lsm_data), gate_dec)
+            if risk_checks:
+                allowed = True
+                for check_fn in risk_checks:
+                    ok, reason = check_fn(rc_state, direction_str, day_key=day_key, candle_idx=i)
+                    if not ok:
+                        ra.record(rc2.candidate_id, "risk_control", reason or "risk control blocked")
+                        rc_rejected += 1
+                        allowed = False
+                        break
+                if not allowed:
+                    continue
             if entry_method == "immediate":
                 plan = TradePlan(
                     plan_id=f"RP-{uuid.uuid4().hex[:8].upper()}", symbol=candle.symbol,
@@ -591,6 +608,7 @@ def run_selective_replay_with_regime(
                 trades = sim.process_candle(hc_to_lsm(candle), [plan])
                 for t in trades:
                     sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+                    rc_state.record_trade(direction_str, t.net_r, candle.timestamp, day_key)
             elif entry_method == "skip_low_volatility":
                 recent = list(range_buffer)[-5:] if len(range_buffer) >= 5 else list(range_buffer)
                 sorted_ranges = sorted(recent)
@@ -605,6 +623,7 @@ def run_selective_replay_with_regime(
                     trades = sim.process_candle(hc_to_lsm(candle), [plan])
                     for t in trades:
                         sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
+                        rc_state.record_trade(direction_str, t.net_r, candle.timestamp, day_key)
             else:
                 pending_signals.append({
                     "direction": direction, "entry": entry, "stop": stop,
@@ -613,6 +632,8 @@ def run_selective_replay_with_regime(
                     "day_key": day_key, "signal_index": i,
                 })
 
+        rc_state.advance_candle()
+
     daily_breakdown = defaultdict(int)
     for t in sim.completed_trades:
         ts = getattr(t, "signal_time", None) or getattr(t, "entry_time", None)
@@ -620,6 +641,8 @@ def run_selective_replay_with_regime(
             daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
 
     re_metrics = compute_metrics(sim.completed_trades)
+    if risk_controls:
+        re_metrics["rc_rejected"] = rc_rejected
     if collect_trade_timestamps:
         timestamps = []
         for t in sim.completed_trades:
