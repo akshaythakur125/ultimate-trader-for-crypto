@@ -18,6 +18,12 @@ Verdicts (overall operator):
   - BLOCKED_LAUNCH: launch check failed
   - ERROR: timeouts, exceptions, or poor edge quality
   Never TIMEOUT — per-config timeout is handled gracefully.
+
+Per-config status:
+  - OK: completed with trades > 0
+  - INSUFFICIENT_TRADES: completed with 0 trades
+  - TIMEOUT: exceeded per-config timeout
+  - ERROR: exception during run
 """
 
 import argparse, json, os, sys, threading, time, traceback
@@ -103,6 +109,7 @@ def _compute_config_result(forward_result: dict, label: str) -> dict:
             wc += t["net_r"]; wp = max(wp, wc); wdd = max(wdd, wp - wc)
         window_stats[w]["dd"] = round(wdd, 2)
 
+    has_trades = len(trades) > 0
     return {
         "label": label,
         "symbol": forward_result.get("symbol", "?"),
@@ -118,7 +125,7 @@ def _compute_config_result(forward_result: dict, label: str) -> dict:
         "window_breakdown": {k: dict(v) for k, v in sorted(window_stats.items())},
         "rejections": len(rejections),
         "unique_rejected": forward_result.get("total_unique_rejected", 0),
-        "status": "COMPLETED",
+        "status": "OK" if has_trades else "INSUFFICIENT_TRADES",
     }
 
 
@@ -136,8 +143,8 @@ def _build_consolidated_report(all_results: list[dict], all_trades: list[dict]) 
         cum += t["net_r"]; peak = max(peak, cum); total_dd = max(total_dd, peak - cum)
     total_kill = check_kill_switch(trades=all_trades) if all_trades else {"kill_triggered": False}
 
-    has_any_timeout = any(r.get("error") == "timeout" for r in all_results)
-    has_any_error = any(r.get("error") not in (None, "timeout") for r in all_results)
+    has_any_timeout = any(r.get("status") == "TIMEOUT" for r in all_results)
+    has_any_error = any(r.get("status") == "ERROR" for r in all_results)
 
     evidence_ok = total_trades >= 100
     dd_ok = total_dd < 12.0
@@ -200,10 +207,10 @@ def _write_text_report(report: dict):
         "  Per-Config Results:",
     ]
     for cfg in report.get("per_config", []):
-        status = cfg.get("status", cfg.get("error", "?"))
-        if cfg.get("status") == "COMPLETED":
+        status = cfg.get("status", "?")
+        if status in ("OK", "INSUFFICIENT_TRADES"):
             kill_mark = "KILL" if cfg.get("kill") else "OK"
-            lines.append(f"    {cfg.get('label', '?'):15s}: COMPLETED | {cfg.get('trades', 0):3d} trades, "
+            lines.append(f"    {cfg.get('label', '?'):15s}: {cfg['status']:12s} | {cfg.get('trades', 0):3d} trades, "
                          f"WR {cfg.get('wr', 0):5.1f}%, EV {cfg.get('ev', 0):+.3f}R, "
                          f"PF {cfg.get('pf', 0):.2f}, DD {cfg.get('dd', 0):.2f}R, {kill_mark}")
         else:
@@ -270,7 +277,7 @@ def _write_summary(result: dict, start: float):
         lines.append("")
         lines.append("  Per-Config:")
         for cfg in dry.get("per_config", []):
-            status = cfg.get("status", cfg.get("error", "?"))
+            status = cfg.get("status", "?")
             trades = cfg.get("trades", 0)
             lines.append(f"    {cfg.get('label', '?'):15s}: {status:12s} | {trades:3d} trades")
     else:
@@ -326,7 +333,7 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print("-" * 42)
     print("  Per-Config:")
     for cfg in dry.get("per_config", []):
-        status = cfg.get("status", cfg.get("error", "?"))
+        status = cfg.get("status", "?")
         trades = cfg.get("trades", 0)
         print(f"    {cfg.get('label', '?'):15s}: {status:12s} | {trades:3d} trades")
     print("-" * 42)
@@ -342,10 +349,10 @@ def _determine_operator_verdict(
     evidence: dict,
 ) -> str:
     """Determine overall operator verdict. Never returns TIMEOUT."""
-    # If no configs completed, it's an error condition
-    completed_configs = [r for r in all_results if r.get("status") == "COMPLETED"]
-    timed_out_configs = [r for r in all_results if r.get("error") == "timeout"]
-    failed_configs = [r for r in all_results if r.get("error") not in (None, "timeout")]
+    # Completed = ran to completion (OK or INSUFFICIENT_TRADES)
+    completed_configs = [r for r in all_results if r.get("status") in ("OK", "INSUFFICIENT_TRADES")]
+    timed_out_configs = [r for r in all_results if r.get("status") == "TIMEOUT"]
+    failed_configs = [r for r in all_results if r.get("status") == "ERROR"]
 
     any_timeout = len(timed_out_configs) > 0
     any_failure = len(failed_configs) > 0
@@ -375,7 +382,7 @@ def operator_run(
 ) -> dict[str, Any]:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     start = time.time()
-    data_days = 180 if fast_daily else 365
+    data_days = 75 if fast_daily else 365
 
     operator_result = {
         "timestamp": datetime.now().isoformat(),
@@ -477,7 +484,7 @@ def operator_run(
             print(f"  TIMEOUT: {label} exceeded {CONFIG_TIMEOUT}s — continuing")
             all_results.append({
                 "label": label, "symbol": symbol, "timeframe": timeframe,
-                "error": "timeout", "status": "TIMEOUT",
+                "status": "TIMEOUT",
                 "trades": 0, "wr": 0, "ev": 0,
                 "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
                 "windows": 0, "rejections": 0, "unique_rejected": 0,
@@ -486,7 +493,7 @@ def operator_run(
             print(f"  ERROR: {label}: {e}")
             all_results.append({
                 "label": label, "symbol": symbol, "timeframe": timeframe,
-                "error": str(e), "status": "FAILED",
+                "status": "ERROR",
                 "trades": 0, "wr": 0, "ev": 0,
                 "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
                 "windows": 0, "rejections": 0, "unique_rejected": 0,
@@ -513,7 +520,7 @@ def operator_run(
     print("-" * 65)
     for r in all_results:
         status = r.get("status", r.get("error", "?"))
-        if status != "COMPLETED":
+        if status not in ("OK", "INSUFFICIENT_TRADES"):
             print(f"{r['label']:<15s} {status:<12s} {'ERR':>6s} {'':>5s} {'':>8s} {'':>6s} {'':>7s}")
         else:
             km = "KILL" if r.get("kill") else "OK"

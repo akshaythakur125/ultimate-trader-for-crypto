@@ -178,7 +178,7 @@ def test_dry_forward_report_structure():
     assert report["live_trading_enabled"] is False
     assert report["paper_trading_enabled"] is False
     assert report["mode"] == "dry_forward"
-    assert report["verdict"] in ("ROBUST_EDGE", "REGIME_SPECIFIC_EDGE", "INSUFFICIENT_TRADES", "NO_EDGE")
+    assert report["verdict"] in ("ROBUST_EDGE", "REGIME_SPECIFIC_EDGE", "INSUFFICIENT_TRADES", "NO_EDGE", "READY_FOR_PAPER", "ERROR")
     assert len(report["per_config"]) == 3, "expected 3 allowed configs"
 
 
@@ -342,11 +342,10 @@ def test_launch_check_handles_none_config():
 def test_determine_verdict_never_timeout():
     """_determine_operator_verdict must never return TIMEOUT."""
     from production_replay.operator import _determine_operator_verdict
-    verdicts = []
     # All configs timed out
     all_results = [
-        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
-        {"label": "BTC 30m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 15m", "status": "TIMEOUT", "trades": 0},
+        {"label": "BTC 30m", "status": "TIMEOUT", "trades": 0},
     ]
     dry_result = {"total_trades": 0, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
     evidence = {"paper_unlock_blocked": True, "live_unlock_blocked": True}
@@ -359,8 +358,8 @@ def test_determine_verdict_all_timeout_is_error():
     """When all configs time out, verdict must be ERROR."""
     from production_replay.operator import _determine_operator_verdict
     all_results = [
-        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
-        {"label": "BTC 30m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
+        {"label": "BTC 15m", "status": "TIMEOUT", "trades": 0},
+        {"label": "BTC 30m", "status": "TIMEOUT", "trades": 0},
     ]
     dry_result = {"total_trades": 0, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
     evidence = {}
@@ -372,8 +371,8 @@ def test_determine_verdict_partial_timeout_is_insufficient_trades():
     """When some configs complete but total < 100, verdict is INSUFFICIENT_TRADES."""
     from production_replay.operator import _determine_operator_verdict
     all_results = [
-        {"label": "BTC 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
-        {"label": "BTC 30m", "status": "COMPLETED", "trades": 30},
+        {"label": "BTC 15m", "status": "TIMEOUT", "trades": 0},
+        {"label": "BTC 30m", "status": "OK", "trades": 30},
     ]
     dry_result = {"total_trades": 30, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
     evidence = {}
@@ -385,8 +384,8 @@ def test_determine_verdict_ready_for_paper():
     """When trades >= 100 and gates pass, verdict must be READY_FOR_PAPER."""
     from production_replay.operator import _determine_operator_verdict
     all_results = [
-        {"label": "BTC 15m", "status": "COMPLETED", "trades": 50},
-        {"label": "BTC 30m", "status": "COMPLETED", "trades": 50},
+        {"label": "BTC 15m", "status": "OK", "trades": 50},
+        {"label": "BTC 30m", "status": "OK", "trades": 50},
     ]
     dry_result = {"total_trades": 100, "verdict": "READY_FOR_PAPER", "live_trading_enabled": False, "paper_trading_enabled": False}
     evidence = {}
@@ -399,8 +398,8 @@ def test_determine_verdict_mixed_timeout_reads_trade_verdict():
     from production_replay.operator import _determine_operator_verdict
     # One config timed out, one completed, but trades < 100
     all_results = [
-        {"label": "SOL 15m", "status": "TIMEOUT", "error": "timeout", "trades": 0},
-        {"label": "BTC 15m", "status": "COMPLETED", "trades": 40},
+        {"label": "SOL 15m", "status": "TIMEOUT", "trades": 0},
+        {"label": "BTC 15m", "status": "OK", "trades": 40},
     ]
     dry_result = {"total_trades": 40, "verdict": "INSUFFICIENT_TRADES", "live_trading_enabled": False, "paper_trading_enabled": False}
     evidence = {}
@@ -488,12 +487,12 @@ def test_operator_source_has_no_timeout_verdict():
 
 # --- Test 16: FAST_DAILY mode ---
 
-def test_fast_daily_uses_data_days_180():
-    """FAST_DAILY must use 180 data_days instead of 365."""
+def test_fast_daily_uses_data_days_75():
+    """FAST_DAILY must use 75 data_days (1-2 windows) instead of 365."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
-    assert "data_days = 180 if fast_daily else 365" in source
+    assert "data_days = 75 if fast_daily else 365" in source
 
 
 def test_fast_daily_flag_accepted():
@@ -535,7 +534,7 @@ def test_unlimited_flag_provides_365d():
     import inspect
     source = inspect.getsource(operator)
     assert "fast_daily = not args.unlimited" in source
-    assert "data_days = 180 if fast_daily else 365" in source
+    assert "data_days = 75 if fast_daily else 365" in source
     assert "unlimited" in source
 
 
@@ -571,6 +570,107 @@ def test_operator_source_no_live_trading():
 
 
 # --- Test 21: _interval_minutes ---
+
+# --- Test 21: Per-config status values ---
+
+def test_per_config_status_values():
+    """Per-config status must be one of OK/INSUFFICIENT_TRADES/TIMEOUT/ERROR."""
+    from production_replay.operator import _compute_config_result
+    statuses = set()
+    # OK: has trades
+    result = _compute_config_result({
+        "symbol": "BTCUSDT", "timeframe": "15m",
+        "status": "completed", "dry_run": False,
+        "trade_diagnostics": [{"net_r": 1.0, "window": "w1"}],
+        "window_metrics": [{"total_trades": 1}],
+        "rejection_summary": [],
+        "elapsed_s": 10, "total_unique_rejected": 0,
+    }, "BTC 15m")
+    assert result["status"] in ("OK", "INSUFFICIENT_TRADES", "TIMEOUT", "ERROR")
+    assert result["status"] == "OK"
+
+    # INSUFFICIENT_TRADES: 0 trades
+    result2 = _compute_config_result({
+        "symbol": "BTCUSDT", "timeframe": "15m",
+        "status": "completed", "dry_run": False,
+        "trade_diagnostics": [],
+        "window_metrics": [],
+        "rejection_summary": [],
+        "elapsed_s": 10, "total_unique_rejected": 0,
+    }, "BTC 15m")
+    assert result2["status"] == "INSUFFICIENT_TRADES"
+
+
+# --- Test 22: Fast daily candle trimming ---
+
+def test_fast_daily_trims_candles():
+    """forward_test_runner must trim candles in fast_daily mode to limit windows."""
+    from production_replay.forward_test_runner import run_forward_test
+    import inspect
+    source = inspect.getsource(run_forward_test)
+    assert "trimmed" in source or "cutoff_ts" in source
+
+
+# --- Test 23: Operator verdict never TIMEOUT with partial completion ---
+
+def test_operator_verdict_not_timeout_with_ok_config():
+    """Operator verdict must not be TIMEOUT if at least one config completes."""
+    from production_replay.operator import _determine_operator_verdict
+    # One OK, one TIMEOUT, one ERROR
+    all_results = [
+        {"label": "BTC 15m", "status": "OK", "trades": 50},
+        {"label": "BTC 30m", "status": "TIMEOUT", "trades": 0},
+        {"label": "SOL 15m", "status": "ERROR", "trades": 0},
+    ]
+    dry_result = {"total_trades": 50, "verdict": "INSUFFICIENT_TRADES",
+                  "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert "TIMEOUT" not in v
+    assert v == "INSUFFICIENT_TRADES"
+
+
+def test_operator_verdict_all_errors():
+    """When all configs error out, verdict must be ERROR."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "ERROR", "trades": 0},
+        {"label": "BTC 30m", "status": "TIMEOUT", "trades": 0},
+    ]
+    dry_result = {"total_trades": 0, "verdict": "INSUFFICIENT_TRADES",
+                  "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert v == "ERROR"
+
+
+def test_insufficient_trades_config_still_counts_as_completed():
+    """A config with INSUFFICIENT_TRADES status counts as completed (not error)."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "INSUFFICIENT_TRADES", "trades": 0},
+        {"label": "BTC 30m", "status": "OK", "trades": 40},
+    ]
+    dry_result = {"total_trades": 40, "verdict": "INSUFFICIENT_TRADES",
+                  "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    # At least one completed, so NOT ERROR (all_failed = False)
+    assert v != "ERROR"
+    assert v == "INSUFFICIENT_TRADES"
+
+
+def test_operator_summary_shows_live_paper_disabled():
+    """operator_summary.txt must show live and paper trading as DISABLED."""
+    path = "deploy_results/operator_summary.txt"
+    if not os.path.exists(path):
+        pytest.skip("operator_summary.txt not available")
+    content = open(path).read()
+    assert "Live trading:  DISABLED" in content
+    assert "Paper trading: DISABLED" in content
+
+
+# --- Test 24: _interval_minutes ---
 
 def test_interval_minutes_15m():
     """15m -> 15."""

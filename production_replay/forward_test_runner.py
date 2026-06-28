@@ -80,6 +80,13 @@ def run_forward_test(
         return {"status": "failed", "error": "no data"}
     print(f"  [DATA] Loaded {len(candles)} candles in {time.time()-t_start:.1f}s", flush=True)
 
+    # In fast daily mode, trim candles to most recent data_days to limit windows
+    if fast_daily and data_days > 0 and len(candles) > 1:
+        cutoff_ts = candles[-1].timestamp - timedelta(days=data_days)
+        trimmed = [c for c in candles if c.timestamp >= cutoff_ts]
+        print(f"  [DATA] Trimmed to {len(trimmed)} candles ({data_days}d) for fast daily mode", flush=True)
+        candles = trimmed if trimmed else candles
+
     end_ts = candles[-1].timestamp
     total_days = (end_ts - candles[0].timestamp).days
 
