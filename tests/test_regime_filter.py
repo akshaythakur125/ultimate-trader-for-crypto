@@ -93,8 +93,8 @@ class TestReferenceProfile:
         profile = ReferenceProfile.from_features([feats])
         assert profile.num_samples == 1
         for f in FEATURE_NAMES:
-            assert f in profile.means
-            assert f in profile.stds
+            assert f in profile.sorted_vals
+            assert len(profile.sorted_vals[f]) == 1
 
     def test_from_features_multiple(self):
         features = []
@@ -107,7 +107,7 @@ class TestReferenceProfile:
             features.append(feats)
         profile = ReferenceProfile.from_features(features)
         assert profile.num_samples == 100
-        assert profile.stds["norm_volatility"] > 0
+        assert len(profile.sorted_vals["norm_volatility"]) == 100
 
 
 class TestSimilarityScorer:
