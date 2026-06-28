@@ -127,6 +127,7 @@ def run_selective_replay(
     frozen_cfg: FrozenConfig,
     rcfg: ReplayConfig,
     invert: bool = False,
+    collect_trade_timestamps: bool = False,
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int]]:
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
@@ -206,7 +207,15 @@ def run_selective_replay(
         if ts:
             daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
 
-    return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown)
+    metrics = compute_metrics(sim.completed_trades)
+    if collect_trade_timestamps:
+        timestamps = []
+        for t in sim.completed_trades:
+            ts = getattr(t, "signal_time", None) or getattr(t, "entry_time", None)
+            if ts:
+                timestamps.append(ts.timestamp())
+        metrics["trade_timestamps"] = timestamps
+    return metrics, ra, dict(daily_breakdown)
 
 
 def run_selective_replay_with_governor(
@@ -321,6 +330,7 @@ def run_selective_replay_with_regime(
     rcfg: ReplayConfig,
     regime_gate: RegimeGate,
     invert: bool = False,
+    collect_trade_timestamps: bool = False,
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int], dict[str, int]]:
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
@@ -408,7 +418,15 @@ def run_selective_replay_with_regime(
         if ts:
             daily_breakdown[ts.strftime("%Y-%m-%d")] += 1
 
-    return compute_metrics(sim.completed_trades), ra, dict(daily_breakdown), regime_stats
+    re_metrics = compute_metrics(sim.completed_trades)
+    if collect_trade_timestamps:
+        timestamps = []
+        for t in sim.completed_trades:
+            ts = getattr(t, "signal_time", None) or getattr(t, "entry_time", None)
+            if ts:
+                timestamps.append(ts.timestamp())
+        re_metrics["trade_timestamps"] = timestamps
+    return re_metrics, ra, dict(daily_breakdown), regime_stats
 
 
 def run_selective_replay_with_regime_governor(

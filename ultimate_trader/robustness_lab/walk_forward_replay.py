@@ -23,6 +23,7 @@ class WalkForwardWindow:
     test_avg_trades_per_day: float
     test_max_drawdown: float = 0.0
     profitable: bool = False
+    test_trade_timestamps: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -39,6 +40,7 @@ class GovernorWalkForwardWindow:
     test_max_drawdown: float = 0.0
     profitable: bool = False
     blocked_signals: int = 0
+    test_trade_timestamps: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -55,7 +57,9 @@ class RegimeWalkForwardWindow:
     test_max_drawdown: float = 0.0
     profitable: bool = False
     regime_blocked: int = 0
+    regime_checked: int = 0
     regime_avg_score: float = 0.0
+    test_trade_timestamps: list[float] = field(default_factory=list)
 
 
 class WalkForwardReplay:
@@ -86,7 +90,7 @@ class WalkForwardReplay:
         return {"5m": 100, "15m": 50, "30m": 30, "1h": 20}.get(timeframe, 50)
 
     def run(self, symbol: str = "BTCUSDT", timeframe: str = "15m",
-            train_days: int = 30, test_days: int = 15,
+            train_days: int = 30, test_days: int = 15, step: int = 0,
             run_governor: bool = False,
             run_regime: bool = False,
             run_regime_governor: bool = False):
@@ -103,15 +107,14 @@ class WalkForwardReplay:
         gov_cfg = RiskGovernorConfig()
 
         total_days = (candles[-1].timestamp - candles[0].timestamp).days
-        step = test_days
+        step = step if step > 0 else test_days
+        end_ts = candles[-1].timestamp
 
         for offset in range(0, total_days - train_days - test_days, step):
-            end_ts = candles[-1].timestamp
-            ref = end_ts - timedelta(days=offset)
-            train_end = ref
-            train_start = ref - timedelta(days=train_days)
-            test_end = ref + timedelta(days=test_days) if offset > 0 else end_ts
-            test_start = ref
+            test_end = end_ts - timedelta(days=offset)
+            test_start = test_end - timedelta(days=test_days)
+            train_start = test_start - timedelta(days=train_days)
+            train_end = test_start
 
             train_set = [c for c in candles if train_start <= c.timestamp < train_end]
             test_set = [c for c in candles if test_start <= c.timestamp < test_end]
@@ -120,7 +123,7 @@ class WalkForwardReplay:
                 continue
 
             train_metrics, _, _ = run_selective_replay(train_set, self._cfg, rcfg)
-            test_metrics, _, _ = run_selective_replay(test_set, self._cfg, rcfg)
+            test_metrics, _, _ = run_selective_replay(test_set, self._cfg, rcfg, collect_trade_timestamps=True)
 
             w = WalkForwardWindow(
                 train_start=train_start.strftime("%Y-%m-%d"),
@@ -135,6 +138,7 @@ class WalkForwardReplay:
                 test_avg_trades_per_day=test_metrics["avg_trades_per_day"],
                 test_max_drawdown=test_metrics["max_drawdown"],
                 profitable=test_metrics["expectancy"] > 0,
+                test_trade_timestamps=test_metrics.get("trade_timestamps", []),
             )
             self._windows.append(w)
 
@@ -162,7 +166,7 @@ class WalkForwardReplay:
                 regime_gate = RegimeGate()
                 regime_gate.fit(train_set)
                 reg_metrics, _, _, reg_stats = run_selective_replay_with_regime(
-                    test_set, self._cfg, rcfg, regime_gate,
+                    test_set, self._cfg, rcfg, regime_gate, collect_trade_timestamps=True,
                 )
                 scores = reg_stats.get("regime_scores", [])
                 rw = RegimeWalkForwardWindow(
@@ -178,7 +182,9 @@ class WalkForwardReplay:
                     test_max_drawdown=reg_metrics["max_drawdown"],
                     profitable=reg_metrics["expectancy"] > 0,
                     regime_blocked=reg_stats.get("regime_blocked", 0),
+                    regime_checked=len(scores),
                     regime_avg_score=sum(scores) / len(scores) if scores else 0,
+                    test_trade_timestamps=reg_metrics.get("trade_timestamps", []),
                 )
                 self._regime_windows.append(rw)
 
@@ -202,6 +208,7 @@ class WalkForwardReplay:
                     test_max_drawdown=rg_metrics["max_drawdown"],
                     profitable=rg_metrics["expectancy"] > 0,
                     regime_blocked=rg_stats.get("regime_blocked", 0),
+                    regime_checked=len(scores2),
                     regime_avg_score=sum(scores2) / len(scores2) if scores2 else 0,
                 )
                 self._regime_gov_windows.append(rgw)
