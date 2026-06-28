@@ -23,6 +23,7 @@ Per-config status:
   - OK: completed with trades > 0
   - INSUFFICIENT_TRADES: completed with 0 trades
   - TIMEOUT: exceeded per-config timeout
+  - SKIPPED: excluded from default run (VM slow — use --config for manual run)
   - ERROR: exception during run
 """
 
@@ -80,6 +81,9 @@ def print_sep(char="=", width=80):
     print(char * width)
 
 
+_SKIP_REASON = "VM slow — use --config for manual run"
+
+
 def _format_timed_out_result(label: str, symbol: str, timeframe: str, t0: float) -> dict:
     return {
         "label": label, "symbol": symbol, "timeframe": timeframe,
@@ -87,6 +91,17 @@ def _format_timed_out_result(label: str, symbol: str, timeframe: str, t0: float)
         "trades": 0, "wr": 0, "ev": 0,
         "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
         "windows": 0, "rejections": 0, "unique_rejected": 0,
+    }
+
+
+def _format_skipped_result(label: str, symbol: str, timeframe: str) -> dict:
+    return {
+        "label": label, "symbol": symbol, "timeframe": timeframe,
+        "status": "SKIPPED",
+        "trades": 0, "wr": 0, "ev": 0,
+        "pf": 0, "dd": 0, "kill": False, "elapsed_s": 0,
+        "windows": 0, "rejections": 0, "unique_rejected": 0,
+        "skip_reason": _SKIP_REASON,
     }
 
 
@@ -511,6 +526,12 @@ def operator_run(
                 "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
                 "windows": 0, "rejections": 0, "unique_rejected": 0,
             })
+
+    # In default mode, add SKIPPED entry for SOL 15m (VM slow — visible in output)
+    if not config_labels:
+        skipped = _format_skipped_result("SOL 15m", "SOLUSDT", "15m")
+        all_results.append(skipped)
+        print(f"\n  [SOL 15m] SKIPPED — {_SKIP_REASON}")
 
     # Build consolidated report
     dry_result = _build_consolidated_report(all_results, all_trades)

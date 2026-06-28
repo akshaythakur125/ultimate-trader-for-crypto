@@ -179,7 +179,7 @@ def test_dry_forward_report_structure():
     assert report["paper_trading_enabled"] is False
     assert report["mode"] == "dry_forward"
     assert report["verdict"] in ("ROBUST_EDGE", "REGIME_SPECIFIC_EDGE", "INSUFFICIENT_TRADES", "NO_EDGE", "READY_FOR_PAPER", "ERROR")
-    assert len(report["per_config"]) == 2, "expected 2 allowed configs"
+    assert len(report["per_config"]) == 3, "expected 3 configs (2 running + 1 SKIPPED)"
 
 
 # --- Test 5: Operator ---
@@ -737,6 +737,100 @@ def test_interval_minutes_1d():
     """1d -> 1440."""
     from ultimate_trader.robustness_lab.replay_runner import _interval_minutes
     assert _interval_minutes("1d") == 1440
+
+
+# --- Test 26: SKIPPED status ---
+
+def test_format_skipped_result():
+    """_format_skipped_result must create correct SKIPPED dict."""
+    from production_replay.operator import _format_skipped_result, _SKIP_REASON
+    result = _format_skipped_result("SOL 15m", "SOLUSDT", "15m")
+    assert result["status"] == "SKIPPED"
+    assert result["label"] == "SOL 15m"
+    assert result["symbol"] == "SOLUSDT"
+    assert result["timeframe"] == "15m"
+    assert result["trades"] == 0
+    assert result["skip_reason"] == _SKIP_REASON
+
+
+def test_skipped_config_does_not_affect_verdict():
+    """SKIPPED configs must not change operator verdict from trade-based result."""
+    from production_replay.operator import _determine_operator_verdict
+    all_results = [
+        {"label": "BTC 15m", "status": "OK", "trades": 50},
+        {"label": "BTC 30m", "status": "OK", "trades": 50},
+        {"label": "SOL 15m", "status": "SKIPPED", "trades": 0},
+    ]
+    dry_result = {"total_trades": 100, "verdict": "READY_FOR_PAPER",
+                  "live_trading_enabled": False, "paper_trading_enabled": False}
+    evidence = {}
+    v = _determine_operator_verdict(all_results, dry_result, evidence)
+    assert v == "READY_FOR_PAPER"
+
+
+def test_skipped_config_does_not_add_trades():
+    """SKIPPED configs must contribute 0 trades to totals."""
+    from production_replay.operator import _build_consolidated_report
+    all_results = [
+        {"label": "BTC 15m", "status": "OK", "trades": 16, "wr": 62.5, "ev": 1.26,
+         "pf": 3.75, "dd": 2.37, "kill": False, "elapsed_s": 18.8,
+         "windows": 1, "rejections": 0, "unique_rejected": 0},
+        {"label": "BTC 30m", "status": "OK", "trades": 6, "wr": 83.3, "ev": 2.13,
+         "pf": 12.45, "dd": 1.12, "kill": False, "elapsed_s": 5.2,
+         "windows": 1, "rejections": 0, "unique_rejected": 0},
+        {"label": "SOL 15m", "status": "SKIPPED", "trades": 0, "skip_reason": "test"},
+    ]
+    trade_diagnostics = [
+        {"net_r": 1.5, "window": "w1"},
+        {"net_r": -0.5, "window": "w1"},
+        {"net_r": 2.0, "window": "w1"},
+    ]
+    report = _build_consolidated_report(all_results, trade_diagnostics)
+    assert report["total_trades"] == 22  # 16 + 6 from BTC configs, 0 from SKIPPED
+    assert report["configs_tested"] == 3  # all 3 appear in per_config
+
+
+def test_source_contains_skipped_handling():
+    """Operator source must handle SKIPPED status."""
+    from production_replay import operator
+    import inspect
+    source = inspect.getsource(operator)
+    assert "SKIPPED" in source
+    assert "_SKIP_REASON" in source
+    assert "_format_skipped_result" in source
+
+
+# --- Test 27: Timeout safety ---
+
+def test_timed_out_config_still_appears_in_report():
+    """A TIMEOUT config must still appear in per_config list."""
+    from production_replay.operator import _build_consolidated_report
+    all_results = [
+        {"label": "BTC 15m", "status": "OK", "trades": 16, "wr": 62.5, "ev": 1.26,
+         "pf": 3.75, "dd": 2.37, "kill": False, "elapsed_s": 18.8,
+         "windows": 1, "rejections": 0, "unique_rejected": 0},
+        {"label": "SOL 15m", "status": "TIMEOUT", "trades": 0},
+    ]
+    report = _build_consolidated_report(all_results, [])
+    assert len(report["per_config"]) == 2
+    assert report["per_config"][1]["status"] == "TIMEOUT"
+
+
+def test_operator_does_not_stall_on_slow_config():
+    """Threaded timeout ensures a slow config doesn't stall the operator.
+    Verifies the timeout mechanism exists and produces TIMEOUT status."""
+    import time
+    from production_replay.operator import run_with_timeout, _format_timed_out_result
+
+    def slow_func():
+        time.sleep(10)
+        return "done"
+
+    with pytest.raises(TimeoutError, match="timed out after"):
+        run_with_timeout(slow_func, 2)
+
+    result = _format_timed_out_result("TEST", "TESTUSDT", "15m", time.time())
+    assert result["status"] == "TIMEOUT"
 
 
 
