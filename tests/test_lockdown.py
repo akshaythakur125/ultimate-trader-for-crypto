@@ -670,35 +670,47 @@ def test_operator_summary_shows_live_paper_disabled():
     assert "Paper trading: DISABLED" in content
 
 
-# --- Test 24: Pre-download and timeout constants ---
+# --- Test 24: VM_FAST mode ---
 
-def test_pre_download_timeout_constant():
-    """PRE_DOWNLOAD_TIMEOUT must be generous for cold cache."""
+def test_vm_fast_per_config_timeout_60():
+    """VM_FAST must have 60s per-config timeout."""
     from production_replay import operator
-    assert operator.PRE_DOWNLOAD_TIMEOUT >= 300, "pre-download timeout too short"
+    assert operator.CONFIG_TIMEOUT == 60, "per-config timeout must be 60s"
 
 
-def test_config_timeout_reduced():
-    """CONFIG_TIMEOUT must be short since data is pre-downloaded."""
+def test_vm_fast_total_timeout_240():
+    """VM_FAST must have 240s total operator timeout."""
     from production_replay import operator
-    assert operator.CONFIG_TIMEOUT <= 180, "config timeout should be short with cached data"
+    assert operator.TOTAL_TIMEOUT == 240, "total timeout must be 240s"
 
 
-def test_operator_has_pre_download_step():
-    """operator_run must contain a pre-download step."""
+def test_vm_fast_passes_vm_fast_to_runner():
+    """operator_run must pass vm_fast=True to run_forward_test."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
-    assert "Pre-downloading" in source or "pre_download" in source
-    assert "ensure_data" in source
+    assert "vm_fast=True" in source, "must pass vm_fast=True to forward test"
 
 
-def test_operator_pre_download_uses_timeout():
-    """Pre-download step must use PRE_DOWNLOAD_TIMEOUT."""
-    from production_replay.operator import operator_run
+def test_vm_fast_uses_cache_only():
+    """VM_FAST must not download — only use cached data."""
+    from production_replay.forward_test_runner import run_forward_test
     import inspect
-    source = inspect.getsource(operator_run)
-    assert "PRE_DOWNLOAD_TIMEOUT" in source
+    source = inspect.getsource(run_forward_test)
+    assert "vm_fast" in source
+    assert "_csv_path" in source or "load_candles_from_csv" in source
+
+
+def test_vm_fast_no_365d_download():
+    """VM_FAST must load from cache, not download via ensure_data."""
+    from production_replay.forward_test_runner import run_forward_test
+    import inspect
+    source = inspect.getsource(run_forward_test)
+    # Verify both paths exist
+    assert "if vm_fast:" in source
+    assert "else:" in source
+    assert "_csv_path" in source
+    assert "load_candles_from_csv" in source
 
 
 # --- Test 25: _interval_minutes ---

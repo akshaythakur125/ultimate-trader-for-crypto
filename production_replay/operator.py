@@ -1,17 +1,16 @@
 """Operator — single command for daily dry-forward operation.
 
 Sequence:
-1. Parse args — default is FAST_DAILY (75d cache, 1 window)
+1. Parse args — default is VM_FAST (cache-only, no download, 60s per config)
 2. Run safety lock checks
 3. Run launch check
 4. Block immediately if launch_check fails
-5. Pre-download data for all configs (generous 600s timeout)
-6. Run each allowed config serially with per-config timeout
-7. If one config times out, continue remaining (partial results)
-8. Build consolidated report from per-config results
-9. Track evidence
-10. Write deploy_results/* files
-11. Print final status table
+5. Run each allowed config serially with per-config timeout
+6. If one config times out, continue remaining (partial results)
+7. Build consolidated report from per-config results
+8. Track evidence
+9. Write deploy_results/* files
+10. Print final status table
 
 Verdicts (overall operator):
   - READY_FOR_PAPER: trades >= 100, DD < 12R, PF >= 1.5, EV > 0, no kill
@@ -40,14 +39,13 @@ from production_replay.evidence_tracker import track_evidence, print_evidence_su
 from production_replay.safety_lock import run_safety_lock
 from production_replay.forward_test_runner import run_forward_test
 from production_replay.kill_switch import check_kill_switch
-from ultimate_trader.robustness_lab.replay_runner import ensure_data
 
 RESULTS_DIR = "deploy_results"
 SUMMARY_FILE = os.path.join(RESULTS_DIR, "operator_summary.txt")
 TEXT_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.txt")
 JSON_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.json")
-PRE_DOWNLOAD_TIMEOUT = 600  # generous 10min for cold-cache first download
-CONFIG_TIMEOUT = 120  # per-config forward test (data already cached)
+CONFIG_TIMEOUT = 60  # per-config forward test (cache-only, no download)
+TOTAL_TIMEOUT = 240  # total operator hard cap
 
 ALLOWED = [
     ("BTCUSDT", "15m", "BTC 15m"),
@@ -80,6 +78,16 @@ def run_with_timeout(func, timeout: int, *args, **kwargs) -> Any:
 
 def print_sep(char="=", width=80):
     print(char * width)
+
+
+def _format_timed_out_result(label: str, symbol: str, timeframe: str, t0: float) -> dict:
+    return {
+        "label": label, "symbol": symbol, "timeframe": timeframe,
+        "status": "TIMEOUT",
+        "trades": 0, "wr": 0, "ev": 0,
+        "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
+        "windows": 0, "rejections": 0, "unique_rejected": 0,
+    }
 
 
 def _compute_config_result(forward_result: dict, label: str) -> dict:
@@ -398,19 +406,19 @@ def operator_run(
     }
 
     print_sep()
-    mode_str = "FAST DAILY" if fast_daily else "UNLIMITED"
+    mode_str = "VM_FAST" if fast_daily else "UNLIMITED"
     status_parts = []
     if allow_dirty:
         status_parts.append("DIRTY")
     status_tag = f" ({', '.join(status_parts)})" if status_parts else ""
     print(f"  OPERATOR — {mode_str} MODE{status_tag}")
-    print(f"  Data days: {data_days}d | Timeout: {CONFIG_TIMEOUT}s per config")
+    print(f"  Cache-only, no download | {CONFIG_TIMEOUT}s per config | Total cap {TOTAL_TIMEOUT}s")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_sep()
 
     # Step 1: Safety lock
     print(f"\n  {'='*60}")
-    print(f"  [1/5] Running safety lock...")
+    print(f"  [1/4] Running safety lock...")
     safety = run_safety_lock()
     operator_result["safety_lock"] = safety
     if not safety["pass"]:
@@ -418,11 +426,11 @@ def operator_run(
         _write_summary(operator_result, start)
         print(f"\n  OPERATOR BLOCKED: safety lock failed")
         sys.exit(1)
-    print(f"  [1/5] Safety lock: ALL ENGAGED ({time.time()-start:.1f}s)")
+    print(f"  [1/4] Safety lock: ALL ENGAGED ({time.time()-start:.1f}s)")
 
     # Step 2: Launch check
     print(f"\n  {'='*60}")
-    print(f"  [2/5] Running launch check...")
+    print(f"  [2/4] Running launch check...")
     config = load_config()
     lc = run_launch_check(config, allow_dirty=allow_dirty)
     operator_result["launch_check"] = lc
@@ -431,27 +439,11 @@ def operator_run(
         _write_summary(operator_result, start)
         print(f"\n  OPERATOR BLOCKED: launch check failed")
         sys.exit(1)
-    print(f"  [2/5] Launch check: PASS ({time.time()-start:.1f}s)")
+    print(f"  [2/4] Launch check: PASS ({time.time()-start:.1f}s)")
 
-    # Step 3: Pre-download all configs (generous timeout for cold cache)
+    # Step 3: Run each config serially (cache-only, no download, 60s per config)
     print(f"\n  {'='*60}")
-    print(f"  [3/5] Pre-downloading data (timeout={PRE_DOWNLOAD_TIMEOUT}s per config)...")
-    for symbol, timeframe, label in configs_to_run:
-        t0 = time.time()
-        try:
-            run_with_timeout(
-                ensure_data, PRE_DOWNLOAD_TIMEOUT,
-                symbol, timeframe, days=data_days, fast_daily=fast_daily,
-            )
-            print(f"  [{label}] Data ready ({time.time()-t0:.1f}s)", flush=True)
-        except TimeoutError:
-            print(f"  [{label}] Pre-download timeout ({time.time()-t0:.1f}s) — data may be partial", flush=True)
-        except Exception as e:
-            print(f"  [{label}] Pre-download error: {e}", flush=True)
-
-    # Step 4: Run each config serially with per-config timeout
-    print(f"\n  {'='*60}")
-    print(f"  [4/5] Running dry-forward (timeout={CONFIG_TIMEOUT}s per config, data cached)...")
+    print(f"  [3/4] Running dry-forward (vm_fast, timeout={CONFIG_TIMEOUT}s per config)...")
 
     if config_labels:
         configs_to_run = [
@@ -469,6 +461,11 @@ def operator_run(
     all_trades: list[dict] = []
 
     for symbol, timeframe, label in configs_to_run:
+        # Check total timeout before each config
+        if time.time() - start >= TOTAL_TIMEOUT:
+            print(f"\n  TOTAL TIMEOUT ({TOTAL_TIMEOUT}s) — skipping remaining configs", flush=True)
+            break
+
         print(f"\n  [{label}] Starting (timeout={CONFIG_TIMEOUT}s)...")
         t0 = time.time()
         out_dir = os.path.join(RESULTS_DIR, f"{symbol}_{timeframe}")
@@ -482,6 +479,7 @@ def operator_run(
                 dry_run=False, output_dir=out_dir,
                 risk_controls=RISK_CFG,
                 fast_daily=fast_daily,
+                vm_fast=True,
             )
 
             elapsed = time.time() - t0
@@ -501,13 +499,7 @@ def operator_run(
 
         except TimeoutError:
             print(f"  TIMEOUT: {label} exceeded {CONFIG_TIMEOUT}s — continuing")
-            all_results.append({
-                "label": label, "symbol": symbol, "timeframe": timeframe,
-                "status": "TIMEOUT",
-                "trades": 0, "wr": 0, "ev": 0,
-                "pf": 0, "dd": 0, "kill": False, "elapsed_s": round(time.time() - t0, 1),
-                "windows": 0, "rejections": 0, "unique_rejected": 0,
-            })
+            all_results.append(_format_timed_out_result(label, symbol, timeframe, t0))
         except Exception as e:
             print(f"  ERROR: {label}: {e}")
             all_results.append({
@@ -557,9 +549,9 @@ def operator_run(
     print(f"\n  VERDICT: {dry_result['verdict']}")
     print_sep()
 
-    # Step 5: Track evidence (uses only completed config trades via all_trades)
+    # Step 4: Track evidence (uses only completed config trades via all_trades)
     print(f"\n  {'='*60}")
-    print(f"  [5/5] Tracking evidence...")
+    print(f"  [4/4] Tracking evidence...")
     evidence = track_evidence(dry_result)
     operator_result["evidence"] = evidence
     print_evidence_summary(evidence)
@@ -595,11 +587,11 @@ def _parse_config_labels(args_config: list[str] | None) -> list[str] | None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Daily dry-forward operator (default: FAST_DAILY)")
+    parser = argparse.ArgumentParser(description="Daily dry-forward operator (default: VM_FAST)")
     parser.add_argument("--quick", action="store_true", default=True,
                         help="Run all 3 allowed configs (default)")
     parser.add_argument("--unlimited", action="store_true", default=False,
-                        help="Use 365d download instead of 180d cache (slow)")
+                        help="Use 365d download instead of cache (slow)")
     parser.add_argument("--config", action="append", default=None,
                         help="Specific config(s) to run, e.g. --config BTC:15m")
     parser.add_argument("--allow-dirty", action="store_true", default=False,
@@ -610,7 +602,10 @@ if __name__ == "__main__":
     fast_daily = not args.unlimited
 
     try:
-        operator_run(quick_mode=True, config_labels=config_labels, fast_daily=fast_daily, allow_dirty=args.allow_dirty)
+        operator_run(
+            quick_mode=True, config_labels=config_labels,
+            fast_daily=fast_daily, allow_dirty=args.allow_dirty,
+        )
     except SystemExit:
         raise
     except Exception as e:

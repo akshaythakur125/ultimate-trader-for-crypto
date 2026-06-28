@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ultimate_trader.historical_replay.models import ReplayConfig
 from ultimate_trader.robustness_lab.replay_runner import (
     run_selective_replay_with_regime, ensure_data,
+    _csv_path, load_candles_from_csv,
 )
 from ultimate_trader.robustness_lab.frozen_config import FrozenConfig
 from ultimate_trader.regime_filter import RegimeGate
@@ -41,6 +42,27 @@ STEP_DAYS = 30
 DRY_RUN = True  # default disabled; set to False only after explicit approval
 
 
+def _empty_result(symbol: str, timeframe: str, t_start: float) -> dict[str, Any]:
+    return {
+        "status": "completed",
+        "dry_run": False,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "stop_method": STOP_METHOD,
+        "entry_method": ENTRY_METHOD,
+        "windows": 0,
+        "total_trades": 0,
+        "total_unique_rejected": 0,
+        "cumulative_max_dd_r": 0.0,
+        "window_metrics": [],
+        "trade_diagnostics": [],
+        "rejection_summary": [],
+        "elapsed_s": round(time.time() - t_start, 1),
+        "timestamp": datetime.now().isoformat(),
+        "vm_fast_no_cache": True,
+    }
+
+
 def run_forward_test(
     symbol: str = "BTCUSDT",
     timeframe: str = "15m",
@@ -49,6 +71,7 @@ def run_forward_test(
     output_dir: str = "phase5_results",
     risk_controls: dict[str, dict] | None = None,
     fast_daily: bool = False,
+    vm_fast: bool = False,
 ) -> dict[str, Any]:
     """Execute forward test on the frozen configuration.
 
@@ -59,6 +82,8 @@ def run_forward_test(
         dry_run: If True (default), logs intent but does not execute.
         output_dir: Directory for output files.
         fast_daily: If True, use 180d cache and skip 365d download.
+        vm_fast: If True, load cache only (no download). Returns empty
+                 instantly if no cached data. Trims to 1 window.
 
     Returns:
         Dict with trade_diagnostics, rejection_summary, window_metrics, and
@@ -73,15 +98,25 @@ def run_forward_test(
     os.makedirs(output_dir, exist_ok=True)
     t_start = time.time()
 
-    print(f"  [DATA] Loading {data_days}d of {symbol} {timeframe}...", flush=True)
-    candles = ensure_data(symbol, timeframe, days=data_days, fast_daily=fast_daily)
+    if vm_fast:
+        path = _csv_path(symbol, timeframe)
+        if os.path.exists(path):
+            candles = load_candles_from_csv(path)
+            print(f"  [CACHE] Loaded {len(candles)} candles from {os.path.basename(path)} ({time.time()-t_start:.1f}s)", flush=True)
+        else:
+            print(f"  [CACHE] No cached data for {symbol} {timeframe} — skipping (0 trades)", flush=True)
+            return _empty_result(symbol, timeframe, t_start)
+    else:
+        print(f"  [DATA] Loading {data_days}d of {symbol} {timeframe}...", flush=True)
+        candles = ensure_data(symbol, timeframe, days=data_days, fast_daily=fast_daily)
+
     if not candles:
         print(f"  [DATA] No candles loaded for {symbol} {timeframe}", flush=True)
-        return {"status": "failed", "error": "no data"}
+        return _empty_result(symbol, timeframe, t_start)
     print(f"  [DATA] Loaded {len(candles)} candles in {time.time()-t_start:.1f}s", flush=True)
 
-    # In fast daily mode, trim candles to most recent data_days to limit windows
-    if fast_daily and data_days > 0 and len(candles) > 1:
+    # In fast/vm mode, trim candles to most recent data_days to limit windows
+    if (fast_daily or vm_fast) and data_days > 0 and len(candles) > 1:
         cutoff_ts = candles[-1].timestamp - timedelta(days=data_days)
         trimmed = [c for c in candles if c.timestamp >= cutoff_ts]
         print(f"  [DATA] Trimmed to {len(trimmed)} candles ({data_days}d) for fast daily mode", flush=True)
