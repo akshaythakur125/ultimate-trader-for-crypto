@@ -1,0 +1,53 @@
+{
+  "status": "PASS",
+  "timestamp": "2026-06-28T13:17:45.154042",
+  "files_audited": 4,
+  "findings_high": 0,
+  "findings_info": 1,
+  "critical_findings": [],
+  "info_findings": [
+    {
+      "line": 0,
+      "code": "train_start <= c.timestamp < train_end",
+      "severity": "INFO",
+      "description": "train/test split is time-causal (train_end <= test_start)"
+    }
+  ],
+  "file_results": {
+    "ultimate_trader/robustness_lab/replay_runner.py": {
+      "status": "PASS",
+      "findings": []
+    },
+    "ultimate_trader/robustness_lab/walk_forward_replay.py": {
+      "status": "PASS",
+      "findings": [
+        {
+          "line": 0,
+          "code": "train_start <= c.timestamp < train_end",
+          "severity": "INFO",
+          "description": "train/test split is time-causal (train_end <= test_start)"
+        }
+      ]
+    },
+    "ultimate_trader/robustness_lab/frozen_config.py": {
+      "status": "PASS",
+      "findings": []
+    },
+    "ultimate_trader/validation_lab/walk_forward_validator.py": {
+      "status": "SKIP",
+      "reason": "file not found"
+    },
+    "ultimate_trader/validation_lab/out_of_sample_validator.py": {
+      "status": "SKIP",
+      "reason": "file not found"
+    },
+    "ultimate_trader/regime_filter/regime_gate.py": {
+      "status": "PASS",
+      "findings": []
+    },
+    "ultimate_trader/regime_filter/similarity_scorer.py": {
+      "status": "SKIP",
+      "reason": "file not found"
+    }
+  }
+}

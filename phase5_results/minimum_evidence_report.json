@@ -1,0 +1,18 @@
+{
+  "status": "BLOCKED",
+  "timestamp": "2026-06-28T13:17:45.155058",
+  "gates": {
+    "gate_a": {
+      "status": "BLOCKED",
+      "reason": "forward test result not found at phase5_results\\forward_test_result.json"
+    },
+    "gate_b": {
+      "status": "BLOCKED",
+      "reason": "paper-trading results not provided"
+    }
+  },
+  "findings": [
+    "BLOCKED: no forward test data",
+    "BLOCKED gate B: no paper-trading data"
+  ]
+}

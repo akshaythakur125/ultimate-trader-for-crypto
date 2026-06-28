@@ -1,0 +1,97 @@
+{
+  "phase": "phase5",
+  "timestamp": "2026-06-28T13:17:45.156037",
+  "elapsed_seconds": 0.0,
+  "execute_mode": false,
+  "results": {
+    "audit_bias_check": {
+      "status": "PASS",
+      "timestamp": "2026-06-28T13:17:45.154042",
+      "files_audited": 4,
+      "findings_high": 0,
+      "findings_info": 1,
+      "critical_findings": [],
+      "info_findings": [
+        {
+          "line": 0,
+          "code": "train_start <= c.timestamp < train_end",
+          "severity": "INFO",
+          "description": "train/test split is time-causal (train_end <= test_start)"
+        }
+      ],
+      "file_results": {
+        "ultimate_trader/robustness_lab/replay_runner.py": {
+          "status": "PASS",
+          "findings": []
+        },
+        "ultimate_trader/robustness_lab/walk_forward_replay.py": {
+          "status": "PASS",
+          "findings": [
+            {
+              "line": 0,
+              "code": "train_start <= c.timestamp < train_end",
+              "severity": "INFO",
+              "description": "train/test split is time-causal (train_end <= test_start)"
+            }
+          ]
+        },
+        "ultimate_trader/robustness_lab/frozen_config.py": {
+          "status": "PASS",
+          "findings": []
+        },
+        "ultimate_trader/validation_lab/walk_forward_validator.py": {
+          "status": "SKIP",
+          "reason": "file not found"
+        },
+        "ultimate_trader/validation_lab/out_of_sample_validator.py": {
+          "status": "SKIP",
+          "reason": "file not found"
+        },
+        "ultimate_trader/regime_filter/regime_gate.py": {
+          "status": "PASS",
+          "findings": []
+        },
+        "ultimate_trader/regime_filter/similarity_scorer.py": {
+          "status": "SKIP",
+          "reason": "file not found"
+        }
+      }
+    },
+    "forward_test": {
+      "status": "dry_run",
+      "dry_run": true
+    },
+    "daily_report": {
+      "status": "no_data",
+      "reason": "phase5_results\\forward_test_result.json not found"
+    },
+    "risk_report": {
+      "status": "no_data",
+      "reason": "phase5_results\\forward_test_result.json not found"
+    },
+    "minimum_evidence": {
+      "status": "BLOCKED",
+      "timestamp": "2026-06-28T13:17:45.155058",
+      "gates": {
+        "gate_a": {
+          "status": "BLOCKED",
+          "reason": "forward test result not found at phase5_results\\forward_test_result.json"
+        },
+        "gate_b": {
+          "status": "BLOCKED",
+          "reason": "paper-trading results not provided"
+        }
+      },
+      "findings": [
+        "BLOCKED: no forward test data",
+        "BLOCKED gate B: no paper-trading data"
+      ]
+    },
+    "kill_switch": {
+      "kill_triggered": false,
+      "reason": "no data"
+    }
+  },
+  "errors": [],
+  "all_steps_completed": true
+}
