@@ -68,6 +68,9 @@ class RiskGovernor:
         current_dd = self.current_drawdown
         day_key = timestamp.strftime("%Y-%m-%d")
         iso_key = timestamp.strftime("%Y-%W")
+        if day_key != self._last_day:
+            self._daily_consecutive = 0
+            self._last_day = day_key
         daily_loss = sum(t.net_r for t in self._daily_trades.get(day_key, []))
         weekly_loss = sum(t.net_r for t in self._weekly_trades.get(iso_key, []))
         last10 = self._all_trades[-10:] if len(self._all_trades) >= 10 else self._all_trades

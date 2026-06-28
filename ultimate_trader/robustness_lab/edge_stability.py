@@ -17,13 +17,30 @@ class EdgeClassification:
     verdict: str = "INSUFFICIENT_TRADES"
     reason: str = ""
     total_out_of_sample_trades: int = 0
+    total_governor_trades: int = 0
     windows_profitable: int = 0
     windows_total: int = 0
     avg_expectancy: float = 0.0
     avg_profit_factor: float = 0.0
     max_drawdown: float = 0.0
+    governor_max_drawdown: float = 0.0
     periods_profitable: int = 0
     periods_total: int = 0
+    after_governor_ev: float = 0.0
+    after_governor_pf: float = 0.0
+    after_governor_trades_per_day: float = 0.0
+    max_symbol_profit_pct: float = 100.0
+
+    def governor_verdict(self) -> str:
+        if self.total_governor_trades < 50:
+            return "INSUFFICIENT_TRADES"
+        if self.after_governor_ev <= 0 or self.after_governor_pf <= 1.2:
+            return "NO_EDGE"
+        if self.after_governor_trades_per_day > 4:
+            return "OVERTRADING"
+        if self.governor_max_drawdown > 8.0:
+            return "DRAWDOWN_TOO_HIGH"
+        return "GOOD_RISK_PROFILE"
 
 
 class EdgeStabilityAnalyzer:
@@ -34,13 +51,34 @@ class EdgeStabilityAnalyzer:
         timeframe_results: list,
         walk_forward_windows: list,
         total_oos_trades: int,
+        after_governor_metrics: Optional[dict] = None,
+        governor_walk_forward_windows: Optional[list] = None,
+        max_symbol_profit_pct: float = 100.0,
     ) -> EdgeClassification:
         ec = EdgeClassification()
+        ec.total_out_of_sample_trades = total_oos_trades
+
+        if after_governor_metrics:
+            ec.total_governor_trades = after_governor_metrics.get("total_trades", 0)
+            ec.after_governor_ev = after_governor_metrics.get("expectancy", 0)
+            ec.after_governor_pf = after_governor_metrics.get("profit_factor", 0)
+            ec.after_governor_trades_per_day = after_governor_metrics.get("avg_trades_per_day", 0)
+        # Compute max symbol profit concentration from symbol results if not provided
+        if max_symbol_profit_pct == 100.0 and symbol_results:
+            profits = []
+            total = 0
+            for sr in symbol_results:
+                if hasattr(sr, 'data_available') and sr.data_available and hasattr(sr, 'total_trades') and sr.total_trades >= 5:
+                    p = sr.expectancy * sr.total_trades
+                    profits.append(p)
+                    total += p
+            if total > 0 and len(profits) >= 2:
+                max_symbol_profit_pct = (max(profits) / total) * 100
+        ec.max_symbol_profit_pct = max_symbol_profit_pct
 
         if total_oos_trades < 20:
             ec.verdict = "INSUFFICIENT_TRADES"
-            ec.reason = f"Only {total_oos_trades} out-of-sample trades (need ≥ 20)"
-            ec.total_out_of_sample_trades = total_oos_trades
+            ec.reason = f"Only {total_oos_trades} OOS trades (need >= 20 for any verdict)"
             return ec
 
         all_evs = []
@@ -81,7 +119,6 @@ class EdgeStabilityAnalyzer:
                 all_evs.append(w.test_expectancy)
                 all_pfs.append(w.test_profit_factor)
 
-        ec.total_out_of_sample_trades = total_oos_trades
         ec.windows_total = len(walk_forward_windows)
         ec.windows_profitable = sum(1 for w in walk_forward_windows if w.profitable)
         ec.periods_total = total_periods
@@ -96,38 +133,83 @@ class EdgeStabilityAnalyzer:
         ec.avg_profit_factor = sum(all_pfs) / len(all_pfs) if all_pfs else 0
         ec.max_drawdown = max(all_dds) if all_dds else 0
 
-        if total_oos_trades < 100:
-            if ec.avg_expectancy > 0 and ec.avg_profit_factor > 1.0:
-                ec.verdict = "PROMISING_BUT_UNPROVEN"
-                ec.reason = f"Only {total_oos_trades} OOS trades — promising EV={ec.avg_expectancy:.2f}R but sample too small for robust conclusion"
-                return ec
-            ec.verdict = "INSUFFICIENT_TRADES"
-            ec.reason = f"Only {total_oos_trades} OOS trades, negative or flat EV"
-            return ec
+        if after_governor_metrics:
+            ec.governor_max_drawdown = after_governor_metrics.get("max_drawdown", 0)
 
-        if ec.avg_expectancy <= 0 or ec.avg_profit_factor <= 1.0:
-            ec.verdict = "NO_EDGE"
-            ec.reason = f"Avg EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f} — no edge detected"
-            return ec
-
-        profitable_ratio = profitable_periods / max(total_periods, 1)
+        # ---- Minimum evidence rules ----
         wf_profitable_ratio = ec.windows_profitable / max(ec.windows_total, 1)
 
-        if ec.max_drawdown > 5.0:
+        # NO_EDGE first — negative EV or PF <= 1.0 overrides all other checks
+        if ec.avg_expectancy <= 0 or ec.avg_profit_factor <= 1.0:
+            ec.verdict = "NO_EDGE"
+            ec.reason = f"Avg EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f}"
+            return ec
+
+        # ROBUST_EDGE
+        if (total_oos_trades >= 200
+                and ec.avg_expectancy > 0
+                and ec.avg_profit_factor > 1.2
+                and wf_profitable_ratio >= 0.7
+                and max_symbol_profit_pct <= 50.0):
+            if ec.max_drawdown <= 8.0:
+                ec.verdict = "ROBUST_EDGE"
+                ec.reason = (
+                    f"Stable across {total_oos_trades} OOS trades, "
+                    f"EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f}, "
+                    f"DD={ec.max_drawdown:.1f}R, "
+                    f"WF profitable={ec.windows_profitable}/{ec.windows_total}, "
+                    f"best symbol <=50% of profit"
+                )
+                return ec
+
+        # Check high drawdown
+        if ec.max_drawdown > 8.0 and total_oos_trades >= 50:
             ec.verdict = "OVERFIT_SUSPECTED"
-            ec.reason = f"Excessive drawdown ({ec.max_drawdown:.1f}R) across tests"
+            ec.reason = (
+                f"Excessive drawdown ({ec.max_drawdown:.1f}R) across "
+                f"{total_oos_trades} OOS trades"
+            )
             return ec
 
-        if ec.avg_expectancy > 0.5 and ec.avg_profit_factor > 2.0 and profitable_ratio >= 0.6 and wf_profitable_ratio >= 0.5:
-            ec.verdict = "ROBUST_EDGE"
-            ec.reason = f"Stable positive results: EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f}, {profitable_periods}/{total_periods} periods profitable, {ec.windows_profitable}/{ec.windows_total} WF windows profitable"
+        # Check if symbol profit concentration > 50% (only with 2+ data symbols)
+        data_symbols = [s for s in symbol_results if s.data_available and s.total_trades >= 5]
+        if len(data_symbols) >= 2 and max_symbol_profit_pct > 50.0 and total_oos_trades >= 50:
+            ec.verdict = "OVERFIT_SUSPECTED"
+            ec.reason = (
+                f"Edge concentrated: one symbol contributes "
+                f"{max_symbol_profit_pct:.0f}% of total profit"
+            )
             return ec
 
-        if profitable_ratio >= 0.4 or wf_profitable_ratio >= 0.4:
-            ec.verdict = "PROMISING_BUT_UNPROVEN"
-            ec.reason = f"Partial positive: EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f}, {profitable_periods}/{total_periods} periods, {ec.windows_profitable}/{ec.windows_total} WF windows"
-            return ec
+        # PROMISING_BUT_UNPROVEN
+        if ec.avg_expectancy > 0 and ec.avg_profit_factor > 1.2:
+            if total_oos_trades < 200:
+                ec.verdict = "PROMISING_BUT_UNPROVEN"
+                ec.reason = (
+                    f"Positive EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f} "
+                    f"but only {total_oos_trades} OOS trades (need >= 200)"
+                )
+                return ec
+            if wf_profitable_ratio < 0.7:
+                ec.verdict = "PROMISING_BUT_UNPROVEN"
+                ec.reason = (
+                    f"Positive EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f} "
+                    f"but only {ec.windows_profitable}/{ec.windows_total} WF windows profitable"
+                )
+                return ec
+            if ec.max_drawdown > 5.0:
+                ec.verdict = "PROMISING_BUT_UNPROVEN"
+                ec.reason = (
+                    f"Positive EV={ec.avg_expectancy:.2f}R but drawdown "
+                    f"{ec.max_drawdown:.1f}R is elevated"
+                )
+                return ec
 
         ec.verdict = "UNSTABLE_EDGE"
-        ec.reason = f"Mixed results: EV={ec.avg_expectancy:.2f}R but most periods/windows not profitable"
+        ec.reason = (
+            f"Mixed results: EV={ec.avg_expectancy:.2f}R, PF={ec.avg_profit_factor:.2f}, "
+            f"{profitable_periods}/{total_periods} periods profitable"
+        )
         return ec
+
+

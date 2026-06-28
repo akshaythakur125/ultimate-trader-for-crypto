@@ -47,15 +47,19 @@ class MultiPeriodReplay:
             ("Prev 30 days", 30),
             ("Prev 60 days", 60),
             ("Prev 90 days", 90),
+            ("Prev 180 days", 180),
+            ("Full dataset", None),
         ]
 
         total_days = (candles[-1].timestamp - candles[0].timestamp).days
 
         for label, offset_days in periods:
-            if offset_days >= total_days:
+            if offset_days is not None and offset_days >= total_days:
                 print(f"  {label}: insufficient data ({total_days}d available)")
                 continue
-            if offset_days > 0:
+            if offset_days is None:
+                period_candles = list(candles)
+            elif offset_days > 0:
                 day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 cutoff_start = day_start - timedelta(days=offset_days)
                 cutoff_end = cutoff_start + timedelta(days=30)

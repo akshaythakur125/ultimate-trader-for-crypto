@@ -107,7 +107,8 @@ def run_gov_replay(candles, frozen, rcfg, gov_cfg):
             trades = sim.process_candle(hc_to_lsm(candle), [plan])
             for t in trades:
                 sel.record_outcome(getattr(t, "trade_id", rc2.candidate_id), t.net_r > 0, day_key)
-                gov.evaluate(t, grade=grade)
+                if t.net_r != 0.0:
+                    gov.evaluate(t, grade=grade)
     return sim.completed_trades, gov_stats
 
 
