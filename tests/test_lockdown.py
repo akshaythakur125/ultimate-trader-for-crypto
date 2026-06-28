@@ -434,7 +434,7 @@ def test_run_with_timeout_times_out():
 # --- Test 12: Operator --quick/--full flags ---
 
 def test_operator_default_mode_is_fast_daily():
-    """Operator must default to FAST_DAILY mode (180d cache)."""
+    """Operator must default to FAST_DAILY mode (75d cache, 1 window)."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
@@ -496,7 +496,7 @@ def test_fast_daily_uses_data_days_75():
 
 
 def test_fast_daily_flag_accepted():
-    """Operator must default to fast_daily=True (180d cache)."""
+    """Operator must default to fast_daily=True (75d cache, 1 window)."""
     from production_replay.operator import operator_run
     import inspect
     source = inspect.getsource(operator_run)
@@ -670,7 +670,38 @@ def test_operator_summary_shows_live_paper_disabled():
     assert "Paper trading: DISABLED" in content
 
 
-# --- Test 24: _interval_minutes ---
+# --- Test 24: Pre-download and timeout constants ---
+
+def test_pre_download_timeout_constant():
+    """PRE_DOWNLOAD_TIMEOUT must be generous for cold cache."""
+    from production_replay import operator
+    assert operator.PRE_DOWNLOAD_TIMEOUT >= 300, "pre-download timeout too short"
+
+
+def test_config_timeout_reduced():
+    """CONFIG_TIMEOUT must be short since data is pre-downloaded."""
+    from production_replay import operator
+    assert operator.CONFIG_TIMEOUT <= 180, "config timeout should be short with cached data"
+
+
+def test_operator_has_pre_download_step():
+    """operator_run must contain a pre-download step."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "Pre-downloading" in source or "pre_download" in source
+    assert "ensure_data" in source
+
+
+def test_operator_pre_download_uses_timeout():
+    """Pre-download step must use PRE_DOWNLOAD_TIMEOUT."""
+    from production_replay.operator import operator_run
+    import inspect
+    source = inspect.getsource(operator_run)
+    assert "PRE_DOWNLOAD_TIMEOUT" in source
+
+
+# --- Test 25: _interval_minutes ---
 
 def test_interval_minutes_15m():
     """15m -> 15."""

@@ -1,16 +1,17 @@
 """Operator — single command for daily dry-forward operation.
 
 Sequence:
-1. Parse args — default is FAST_DAILY (180d cache)
+1. Parse args — default is FAST_DAILY (75d cache, 1 window)
 2. Run safety lock checks
 3. Run launch check
 4. Block immediately if launch_check fails
-5. Run each allowed config serially with per-config timeout
-6. If one config times out, continue remaining (partial results)
-7. Build consolidated report from per-config results
-8. Track evidence
-9. Write deploy_results/* files
-10. Print final status table
+5. Pre-download data for all configs (generous 600s timeout)
+6. Run each allowed config serially with per-config timeout
+7. If one config times out, continue remaining (partial results)
+8. Build consolidated report from per-config results
+9. Track evidence
+10. Write deploy_results/* files
+11. Print final status table
 
 Verdicts (overall operator):
   - READY_FOR_PAPER: trades >= 100, DD < 12R, PF >= 1.5, EV > 0, no kill
@@ -39,12 +40,14 @@ from production_replay.evidence_tracker import track_evidence, print_evidence_su
 from production_replay.safety_lock import run_safety_lock
 from production_replay.forward_test_runner import run_forward_test
 from production_replay.kill_switch import check_kill_switch
+from ultimate_trader.robustness_lab.replay_runner import ensure_data
 
 RESULTS_DIR = "deploy_results"
 SUMMARY_FILE = os.path.join(RESULTS_DIR, "operator_summary.txt")
 TEXT_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.txt")
 JSON_REPORT = os.path.join(RESULTS_DIR, "dry_forward_report.json")
-CONFIG_TIMEOUT = 180  # seconds per config (reduced from 300 to avoid 900s external kill)
+PRE_DOWNLOAD_TIMEOUT = 600  # generous 10min for cold-cache first download
+CONFIG_TIMEOUT = 120  # per-config forward test (data already cached)
 
 ALLOWED = [
     ("BTCUSDT", "15m", "BTC 15m"),
@@ -407,7 +410,7 @@ def operator_run(
 
     # Step 1: Safety lock
     print(f"\n  {'='*60}")
-    print(f"  [1/4] Running safety lock...")
+    print(f"  [1/5] Running safety lock...")
     safety = run_safety_lock()
     operator_result["safety_lock"] = safety
     if not safety["pass"]:
@@ -415,11 +418,11 @@ def operator_run(
         _write_summary(operator_result, start)
         print(f"\n  OPERATOR BLOCKED: safety lock failed")
         sys.exit(1)
-    print(f"  [1/4] Safety lock: ALL ENGAGED ({time.time()-start:.1f}s)")
+    print(f"  [1/5] Safety lock: ALL ENGAGED ({time.time()-start:.1f}s)")
 
     # Step 2: Launch check
     print(f"\n  {'='*60}")
-    print(f"  [2/4] Running launch check...")
+    print(f"  [2/5] Running launch check...")
     config = load_config()
     lc = run_launch_check(config, allow_dirty=allow_dirty)
     operator_result["launch_check"] = lc
@@ -428,11 +431,27 @@ def operator_run(
         _write_summary(operator_result, start)
         print(f"\n  OPERATOR BLOCKED: launch check failed")
         sys.exit(1)
-    print(f"  [2/4] Launch check: PASS ({time.time()-start:.1f}s)")
+    print(f"  [2/5] Launch check: PASS ({time.time()-start:.1f}s)")
 
-    # Step 3: Run each config serially with per-config timeout
+    # Step 3: Pre-download all configs (generous timeout for cold cache)
     print(f"\n  {'='*60}")
-    print(f"  [3/4] Running dry-forward (timeout={CONFIG_TIMEOUT}s per config)...")
+    print(f"  [3/5] Pre-downloading data (timeout={PRE_DOWNLOAD_TIMEOUT}s per config)...")
+    for symbol, timeframe, label in configs_to_run:
+        t0 = time.time()
+        try:
+            run_with_timeout(
+                ensure_data, PRE_DOWNLOAD_TIMEOUT,
+                symbol, timeframe, days=data_days, fast_daily=fast_daily,
+            )
+            print(f"  [{label}] Data ready ({time.time()-t0:.1f}s)", flush=True)
+        except TimeoutError:
+            print(f"  [{label}] Pre-download timeout ({time.time()-t0:.1f}s) — data may be partial", flush=True)
+        except Exception as e:
+            print(f"  [{label}] Pre-download error: {e}", flush=True)
+
+    # Step 4: Run each config serially with per-config timeout
+    print(f"\n  {'='*60}")
+    print(f"  [4/5] Running dry-forward (timeout={CONFIG_TIMEOUT}s per config, data cached)...")
 
     if config_labels:
         configs_to_run = [
@@ -538,9 +557,9 @@ def operator_run(
     print(f"\n  VERDICT: {dry_result['verdict']}")
     print_sep()
 
-    # Step 4: Track evidence (uses only completed config trades via all_trades)
+    # Step 5: Track evidence (uses only completed config trades via all_trades)
     print(f"\n  {'='*60}")
-    print(f"  [4/4] Tracking evidence...")
+    print(f"  [5/5] Tracking evidence...")
     evidence = track_evidence(dry_result)
     operator_result["evidence"] = evidence
     print_evidence_summary(evidence)
