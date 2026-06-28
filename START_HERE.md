@@ -1,70 +1,79 @@
 # Start Here — ultimate-trader-for-crypto
 
+This system is a **dry-forward evidence collection system only.**
+It is NOT deployable for live or paper trading. It is NOT ready
+to generate income. Do not use it for real trading.
+
 ## Current Status
 
-The system is in **DRY-RUN mode only**. It runs historical simulations
-(walk-forward validation) across 3 allowed configs:
-- BTCUSDT 15m (34 trades, EV +0.82R, PF 2.41, DD 5.92R)
-- BTCUSDT 30m (25 trades, EV +1.24R, PF 3.73, DD 5.56R)
-- SOLUSDT 15m (36 trades, EV +0.98R, PF 2.84, DD 7.74R)
+| Metric | Value |
+|--------|-------|
+| Mode | DRY_RUN |
+| Live trading | DISABLED |
+| Paper trading | DISABLED |
+| Total trades collected | **95 / 100** |
+| Verdict | **INSUFFICIENT_TRADES** |
+| Launch check | PASS |
+| Safety locks | ALL ENGAGED |
+| Tests | 1148 / 1148 PASS |
 
-**Combined: 95 trades, verdict INSUFFICIENT_TRADES.**
-
-## Why Live and Paper Trading Are Disabled
-
-1. **Not enough trades** — only 95 total. Need 100+.
-2. **Not enough days** — 0 calendar days of dry-forward runs.
-3. **Regime-specific edge** — works for BTC/SOL, fails for ETH/XRP/BNB.
-4. **Hard-locked in code** — you cannot accidentally enable trading.
-   Even if you edit config_locked.yaml, the launch_check will block it.
-
-## Daily Command (one line)
+## Daily Command
 
 ```
 python production_replay/operator.py
 ```
 
-Or double-click `run_operator.bat` (Windows).
+Or double-click `run_operator.bat` (Windows). Takes 3-5 minutes.
 
-This single command runs all checks, generates reports, and prints
-a status table. Takes 3-5 minutes.
+## Where to Read Results
 
-## Reports
+Open **`deploy_results/operator_summary.txt`** after each run.
 
-After running the operator, check:
+It contains:
+- Launch check result (PASS / BLOCKED)
+- Safety lock status
+- Dry-forward verdict and trade count
+- Evidence tracker: trades, days, kill switch, unlock status
+- Next required action
 
-| File | Contents |
-|------|----------|
-| `deploy_results/operator_summary.txt` | Full session summary |
-| `deploy_results/dry_forward_report.json` | Verdict, gates, per-config metrics |
-| `deploy_results/dry_forward_report.txt` | Human-readable text report |
-| `deploy_results/BTCUSDT_15m/forward_test_result.json` | BTC 15m individual trades |
-| `deploy_results/BTCUSDT_30m/forward_test_result.json` | BTC 30m individual trades |
-| `deploy_results/SOLUSDT_15m/forward_test_result.json` | SOL 15m individual trades |
+## Why Live and Paper Trading Are Disabled
 
-## What Must Happen Before Paper Trading Can Be Discussed
+1. **95 trades < 100** minimum evidence gate (Gate A)
+2. **1 day < 30** calendar day minimum (Gate B)
+3. **Regime-specific edge** — works for BTC/SOL, fails for ETH/XRP/BNB
+4. **Hard-locked in config** — config_locked.yaml sets live/paper=false
+5. **Hard-locked in code** — launch_check.py blocks any flip;
+   validation_gate.py hardcodes eligible_for_live_trading=False;
+   safety_lock.py scans for forbidden imports
 
-All of the following must be true:
+## Unlock Criteria Before Paper Trading
 
-- **≥ 100** valid dry-forward trades
-- **≥ 30** calendar days of dry-forward runs
-- **No kill-switch trigger** in the latest run
-- **PF ≥ 1.5** and **WR ≥ 35%** in the latest run
-- **DD < 12.0R** in the latest run
-- **Bias audit passes**
-- **All launch_check gates PASS** for 7 consecutive days
+All conditions must be met simultaneously:
 
-Only after these are met should you consider updating config_locked.yaml
-to enable paper_trading. Then re-run launch_check.
+| Condition | Target | Current |
+|-----------|--------|---------|
+| Dry-forward trades | >= 100 | 95 |
+| Calendar days logged | >= 30 | 1 |
+| Kill switch | NOT triggered | OK |
+| Profit factor | >= 1.5 | 2.87 |
+| Win rate | >= 35% | 53.7% |
+| Drawdown | < 12.0R | 7.74R |
+| Expectancy | > 0 | +0.993R |
+| Bias audit | PASS | PASS |
+| Launch check | PASS (7+ consecutive days) | PASS |
+
+When these are met, run the full paper-trading pipeline (code changes
+required outside the operator layer). Do not simply flip config_locked.yaml.
 
 ## WARNING
 
+**This system is NOT deployable for income.**
+
+- It only collects evidence through historical simulation
+- It does not execute real or paper trades
+- Live and paper trading are permanently disabled in code
+- Do not attempt to override config_locked.yaml or force-skip launch_check
+- If you believe you are ready for paper trading, run the full
+  validation pipeline (Phase 5-7) and pass all unlock conditions first
+
 **Do not edit config_locked.yaml manually.**
-
-It is the single source of truth for production safety. If you change
-it incorrectly, the launch_check will block the operator. If you
-force-skip the launch_check, you risk enabling live trading on an
-unvalidated strategy.
-
-If you believe a config change is needed, run the full validation
-pipeline (Phase 5-7) first.
