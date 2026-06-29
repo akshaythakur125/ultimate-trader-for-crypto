@@ -88,10 +88,14 @@ def main():
         direction = trade_plan.get("direction", "UNKNOWN")
         best_candidate = trade_plan.get("best_candidate", "none")
         levels = trade_plan.get("setup_levels", {})
+        rr_gate = trade_plan.get("rr_gate", "FAIL")
+        rr_gate_reason = trade_plan.get("rr_gate_reason", "unknown")
     else:
         direction = "UNKNOWN"
         best_candidate = "none"
         levels = {}
+        rr_gate = "FAIL"
+        rr_gate_reason = "no trade plan data"
 
     if risk_plan:
         pos_sizing = risk_plan.get("position_sizing", {})
@@ -124,6 +128,11 @@ def main():
         decision = "DO_NOT_TRADE" if decision == "MANUAL_REVIEW_ONLY" else decision
         if "direction UNKNOWN" not in reasons:
             reasons.append("direction UNKNOWN")
+    if rr_gate == "FAIL":
+        if decision != "DO_NOT_TRADE":
+            decision = "DO_NOT_TRADE" if decision == "MANUAL_REVIEW_ONLY" else decision
+        if rr_gate_reason not in reasons:
+            reasons.append(rr_gate_reason)
     if trades < MIN_TRADES or days < MIN_DAYS:
         if decision not in ("DO_NOT_TRADE",):
             decision = "MANUAL_REVIEW_ONLY"
@@ -161,6 +170,7 @@ def main():
         f"  EVIDENCE:       {trades}/{MIN_TRADES} trades, {days}/{MIN_DAYS} days",
         f"  BEST CANDIDATE: {best_candidate}",
         f"  DIRECTION:      {direction}",
+        f"  RR GATE:        {'PASS' if rr_gate == 'PASS' else 'FAIL'} ({rr_gate_reason})",
         "",
         "  SETUP LEVELS:",
         f"    ENTRY:     {entry_str}",
@@ -200,6 +210,8 @@ def main():
         },
         "best_candidate": best_candidate,
         "direction": direction,
+        "rr_gate": "PASS" if rr_gate == "PASS" else "FAIL",
+        "rr_gate_reason": rr_gate_reason,
         "setup_levels": {
             "entry_zone": levels.get("entry_zone"),
             "stop": levels.get("stop"),

@@ -45,8 +45,10 @@ def _best_candidate_from_accelerated(acc: dict | None) -> dict | None:
     return completed[0]
 
 
-def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str) -> str:
+def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str, rr_1: float | None = None) -> str:
     if direction == "UNKNOWN" or trades == 0:
+        return "C"
+    if rr_1 is not None and rr_1 < 1.0:
         return "C"
     ev_ok = ev > 0
     pf_ok = pf >= 1.5
@@ -54,6 +56,15 @@ def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str) ->
     if ev_ok and pf_ok and dd_ok:
         return "B"
     return "C"
+
+
+def check_rr_gate(rr_2: float | None) -> tuple[bool, str]:
+    """Returns (pass: bool, reason: str). Pass requires rr_2 >= 1.5."""
+    if rr_2 is None:
+        return False, "RR cannot be calculated"
+    if rr_2 < 1.5:
+        return False, "RR too poor"
+    return True, "RR OK"
 
 
 def main():
@@ -102,7 +113,10 @@ def main():
                       "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
 
     direction = levels["direction"]
-    setup_grade = grade_setup(trades, ev, pf, dd, direction)
+    rr_1 = levels.get("rr_1")
+    rr_2 = levels.get("rr_2")
+    rr_gate_pass, rr_gate_reason = check_rr_gate(rr_2)
+    setup_grade = grade_setup(trades, ev, pf, dd, direction, rr_1)
 
     # Decision rules
     decision = "MANUAL_REVIEW_ONLY"
@@ -126,8 +140,11 @@ def main():
     if direction == "UNKNOWN" and decision != "WAIT":
         decision = "WAIT"
         reasons.append("direction UNKNOWN -- cannot determine setup")
+    if not rr_gate_pass:
+        decision = "WAIT"
+        reasons.append(rr_gate_reason)
     if trades < MIN_TRADES or days < MIN_DAYS:
-        if decision != "WAIT":
+        if decision not in ("WAIT",):
             decision = "MANUAL_REVIEW_ONLY"
         reasons.append(f"evidence incomplete ({trades}/{MIN_TRADES} trades, {days}/{MIN_DAYS} days)")
     if decision == "MANUAL_REVIEW_ONLY" and not reasons:
@@ -148,6 +165,8 @@ def main():
         "direction": direction,
         "best_candidate": best_label,
         "setup_quality": setup_grade,
+        "rr_gate": "PASS" if rr_gate_pass else "FAIL",
+        "rr_gate_reason": rr_gate_reason,
         "setup_levels": levels,
         "evidence": {
             "trades_collected": trades,
@@ -185,6 +204,7 @@ def main():
         f"  Best candidate: {best_label}",
         f"  Direction:      {direction}",
         f"  Setup quality:  {setup_grade}",
+        f"  RR Gate:        {'PASS' if rr_gate_pass else 'FAIL'} ({rr_gate_reason})",
         "",
         "  Setup Levels (manual review only):",
         f"    Entry zone:     {entry_str}",

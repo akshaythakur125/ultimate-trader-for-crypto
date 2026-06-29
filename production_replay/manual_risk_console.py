@@ -76,6 +76,8 @@ def main():
         system_safe = trade_plan.get("system_safe", False)
         live_disabled = trade_plan.get("live_disabled", False)
         paper_disabled = trade_plan.get("paper_disabled", False)
+        rr_gate = trade_plan.get("rr_gate", "FAIL")
+        rr_gate_reason = trade_plan.get("rr_gate_reason", "unknown")
     elif entry:
         trades = entry.get("total_trades", 0)
         days = entry.get("calendar_days", 0)
@@ -107,6 +109,9 @@ def main():
     # Calculate position size
     pos = _calc_position_size(entry_price, stop_price, args.risk_per_trade)
 
+    # RR gate from today_trade_plan
+    rr_gate_pass = rr_gate == "PASS" if trade_plan else False
+
     # Decision rules
     risk_instruction = "MANUAL_REVIEW_ONLY"
     reasons = []
@@ -126,6 +131,10 @@ def main():
     if decision == "WAIT":
         risk_instruction = "DO_NOT_TRADE"
         reasons.append("trade plan says WAIT")
+    if not rr_gate_pass:
+        if risk_instruction != "DO_NOT_TRADE":
+            risk_instruction = "WAIT"
+        reasons.append(rr_gate_reason)
     if direction == "UNKNOWN" and risk_instruction != "DO_NOT_TRADE":
         risk_instruction = "WAIT"
         reasons.append("direction UNKNOWN")
@@ -164,6 +173,8 @@ def main():
         "direction": direction,
         "best_candidate": best_candidate,
         "setup_quality": setup_quality,
+        "rr_gate": "PASS" if rr_gate_pass else "FAIL",
+        "rr_gate_reason": rr_gate_reason,
         "setup_levels": {
             "entry_zone": entry_price, "stop": stop_price,
             "target_1": t1_price, "target_2": t2_price,
@@ -205,6 +216,7 @@ def main():
         f"  Direction:        {direction}",
         f"  Best candidate:   {best_candidate}",
         f"  Setup quality:    {setup_quality}",
+        f"  RR Gate:          {'PASS' if rr_gate_pass else 'FAIL'} ({rr_gate_reason})",
         "",
         "  Setup Levels:",
         f"    Entry zone:     {entry_str}",

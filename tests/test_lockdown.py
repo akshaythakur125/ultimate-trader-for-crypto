@@ -1358,3 +1358,86 @@ def test_doctor_daily_packet_no_api_imports():
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
 
+
+# --- Risk-Reward Quality Gate (Phase 28) ---
+
+def test_check_rr_gate_fail_when_none():
+    from production_replay.today_trade_plan import check_rr_gate
+    passed, reason = check_rr_gate(None)
+    assert not passed
+    assert "cannot be calculated" in reason
+
+
+def test_check_rr_gate_fail_when_below_1_5():
+    from production_replay.today_trade_plan import check_rr_gate
+    passed, reason = check_rr_gate(1.18)
+    assert not passed
+    assert "RR too poor" in reason
+
+
+def test_check_rr_gate_pass_when_above_1_5():
+    from production_replay.today_trade_plan import check_rr_gate
+    passed, reason = check_rr_gate(1.5)
+    assert passed
+
+
+def test_rr_gate_forces_wait_in_today_trade_plan():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    rr_2 = report.get("setup_levels", {}).get("rr_2")
+    if rr_2 is not None and rr_2 < 1.5:
+        assert report["final_decision"] in ("WAIT", "DO_NOT_TRADE")
+        assert any("RR" in r or "poor" in r for r in report.get("reason", "").split("; "))
+    elif rr_2 is not None:
+        assert report["final_decision"] in ("MANUAL_REVIEW_ONLY", "DO_NOT_TRADE", "WAIT")
+
+
+def test_rr_gate_shown_in_today_trade_plan():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "rr_gate" in report
+    assert report["rr_gate"] in ("PASS", "FAIL")
+
+
+def test_rr_gate_shown_in_manual_risk_plan():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "manual_risk_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "rr_gate" in report
+    assert report["rr_gate"] in ("PASS", "FAIL")
+
+
+def test_rr_gate_shown_in_doctor_packet():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "rr_gate" in report
+    assert "rr_gate_reason" in report
+
+
+def test_rr_poor_downgrades_setup_quality():
+    from production_replay.today_trade_plan import grade_setup
+    assert grade_setup(50, 1.0, 2.5, 3.0, "LONG", rr_1=0.59) == "C"
+    assert grade_setup(50, 1.0, 2.5, 3.0, "LONG", rr_1=1.2) == "B"
+
+
+def test_today_trade_plan_no_api_imports_rr():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "today_trade_plan.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
