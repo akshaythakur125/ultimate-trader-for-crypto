@@ -1118,7 +1118,7 @@ def test_today_trade_plan_runs():
 
 
 def test_today_trade_plan_has_setup_levels():
-    """today_trade_plan output must include direction and setup_levels fields."""
+    """today_trade_plan output must include candidates and selected_levels."""
     from production_replay.today_trade_plan import main as tp_main
     import json
     rc = tp_main()
@@ -1127,10 +1127,10 @@ def test_today_trade_plan_has_setup_levels():
     assert os.path.exists(path)
     with open(path) as f:
         report = json.load(f)
-    assert "direction" in report
-    assert "setup_levels" in report
-    levels = report["setup_levels"]
-    assert isinstance(levels, dict)
+    assert "candidates" in report
+    assert "selected_candidate" in report
+    assert "selected_levels" in report
+    assert isinstance(report["candidates"], list)
 
 
 def test_today_trade_plan_never_approves_before_gates():
@@ -1157,7 +1157,7 @@ def test_today_trade_plan_never_approves_before_gates():
 
 
 def test_today_trade_plan_direction_unknown_causes_wait():
-    """When direction is UNKNOWN, trade_decision should be WAIT."""
+    """When all candidates have UNKNOWN direction, trade_decision should be WAIT."""
     from production_replay.today_trade_plan import main as tp_main
     import json
     rc = tp_main()
@@ -1165,8 +1165,21 @@ def test_today_trade_plan_direction_unknown_causes_wait():
     path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
     with open(path) as f:
         report = json.load(f)
-    if report["direction"] == "UNKNOWN":
-        assert report["trade_decision"] == "WAIT"
+    # Check candidates for UNKNOWN direction
+    any_unknown = any(c.get("direction") == "UNKNOWN" for c in report.get("candidates", []))
+    if any_unknown and report.get("selected_candidate") is None:
+        assert report["trade_decision"] in ("WAIT",)
+
+
+def test_today_trade_plan_scans_multiple_candidates():
+    """today_trade_plan must scan at least BTCUSDT 15m and 30m."""
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    labels = [c["label"] for c in report.get("candidates", [])]
+    assert "BTCUSDT 15m" in labels
+    assert "BTCUSDT 30m" in labels
 
 
 def test_today_trade_plan_no_api_imports():
@@ -1304,9 +1317,9 @@ def test_doctor_daily_packet_has_candidate_and_levels():
     path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
     with open(path) as f:
         report = json.load(f)
-    assert "best_candidate" in report
-    assert "direction" in report
-    assert "setup_levels" in report
+    assert "candidates" in report
+    assert "selected_candidate" in report
+    assert "selected_levels" in report
     assert "final_decision" in report
     assert "reason" in report
 
@@ -1403,8 +1416,9 @@ def test_rr_gate_shown_in_today_trade_plan():
     path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
     with open(path) as f:
         report = json.load(f)
-    assert "rr_gate" in report
-    assert report["rr_gate"] in ("PASS", "FAIL")
+    for c in report.get("candidates", []):
+        assert "rr_gate" in c
+        assert c["rr_gate"] in ("PASS", "FAIL")
 
 
 def test_rr_gate_shown_in_manual_risk_plan():
@@ -1421,8 +1435,10 @@ def test_rr_gate_shown_in_doctor_packet():
     path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
     with open(path) as f:
         report = json.load(f)
-    assert "rr_gate" in report
-    assert "rr_gate_reason" in report
+    assert "candidates" in report
+    assert "selected_candidate" in report
+    for c in report.get("candidates", []):
+        assert "rr_gate" in c
 
 
 def test_rr_poor_downgrades_setup_quality():
@@ -1440,4 +1456,72 @@ def test_today_trade_plan_no_api_imports_rr():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+# --- Multi-Candidate Scanner (Phase 29) ---
+
+def test_multi_candidate_weak_rr_rejected():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    for c in report.get("candidates", []):
+        if c["rr_gate"] == "FAIL":
+            assert c["verdict"] == "REJECTED"
+
+
+def test_multi_candidate_all_fail_rr_leads_do_not_trade():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    any_pass = any(c.get("rr_gate") == "PASS" for c in report.get("candidates", []))
+    if not any_pass:
+        assert report["final_decision"] == "DO_NOT_TRADE"
+
+
+def test_multi_candidate_never_approves_before_gates():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["final_decision"] != "APPROVED"
+
+
+def test_multi_candidate_live_paper_disabled():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_disabled") is True
+    assert report.get("paper_disabled") is True
+
+
+def test_multi_candidate_safety_lock_pass():
+    from production_replay.safety_lock import run_safety_lock
+    rc = run_safety_lock()
+    assert rc.get("pass")
+
+
+def test_multi_candidate_launch_check_pass():
+    from production_replay.launch_check import run_launch_check
+    results = run_launch_check()
+    reason = results.get("reason", "")
+    assert results.get("verdict") != "BLOCKED" or "git_tree_clean" in reason
+
+
+def test_multi_candidate_no_api_imports():
+    import ast
+    for mod in ("today_trade_plan.py", "manual_risk_console.py", "doctor_daily_packet.py"):
+        path = os.path.join(os.path.dirname(__file__), "..", "production_replay", mod)
+        with open(path) as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import in {mod}: {alias.name}"
 

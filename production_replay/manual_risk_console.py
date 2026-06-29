@@ -69,15 +69,23 @@ def main():
         dd = ev.get("max_drawdown_r", 0)
         kill = ev.get("kill_switch") == "KILL"
         decision = trade_plan.get("trade_decision", "WAIT")
-        best_candidate = trade_plan.get("best_candidate", "none")
-        setup_quality = trade_plan.get("setup_quality", "C")
-        direction = trade_plan.get("direction", "UNKNOWN")
-        levels = trade_plan.get("setup_levels", {})
+        best_candidate = trade_plan.get("selected_candidate") or trade_plan.get("best_candidate", "none")
+        setup_quality = "N/A"
+        direction = "UNKNOWN"
+        levels = trade_plan.get("selected_levels", {})
         system_safe = trade_plan.get("system_safe", False)
         live_disabled = trade_plan.get("live_disabled", False)
         paper_disabled = trade_plan.get("paper_disabled", False)
-        rr_gate = trade_plan.get("rr_gate", "FAIL")
-        rr_gate_reason = trade_plan.get("rr_gate_reason", "unknown")
+        rr_gate = "FAIL"
+        rr_gate_reason = "no passing candidate"
+        candidates = trade_plan.get("candidates", [])
+        for c in candidates:
+            if c.get("verdict") == "CANDIDATE":
+                rr_gate = "PASS"
+                rr_gate_reason = "OK"
+                setup_quality = c.get("quality", "C")
+                direction = c.get("direction", "UNKNOWN")
+                break
     elif entry:
         trades = entry.get("total_trades", 0)
         days = entry.get("calendar_days", 0)

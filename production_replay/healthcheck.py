@@ -152,7 +152,7 @@ def main():
         with open(packet_json) as f:
             pk = json.load(f)
         fd = pk.get("final_decision", "?")
-        bc = pk.get("best_candidate", "?")
+        bc = pk.get("selected_candidate") or "none"
         print(f"  Decision: {fd}, Candidate: {bc}  | OK")
     else:
         print("  Not generated yet -- run `python -m production_replay.doctor_daily_packet`  | SKIP")

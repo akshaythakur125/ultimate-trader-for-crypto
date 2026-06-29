@@ -1,8 +1,7 @@
 """Daily trade candidate report -- decision-support only.
 
-Evaluates whether there is a valid setup today using the
-latest dry-forward and accelerated evidence data, plus
-actionable manual setup levels from recent candle data.
+Scans all allowed configs, computes setup levels, applies RR/direction
+gates, ranks candidates, and selects the best. Multi-candidate doctor mode.
 
 Usage:
     python -m production_replay.today_trade_plan
@@ -34,15 +33,13 @@ def _read_accelerated() -> dict | None:
         return json.load(f)
 
 
-def _best_candidate_from_accelerated(acc: dict | None) -> dict | None:
+def _get_accelerated_for(acc: dict | None, symbol: str, tf: str) -> dict | None:
     if not acc:
         return None
-    candidates = acc.get("candidates", [])
-    completed = [c for c in candidates if c.get("status") == "completed" and c.get("trades", 0) > 0]
-    if not completed:
-        return None
-    completed.sort(key=lambda c: c.get("ev", 0), reverse=True)
-    return completed[0]
+    for c in acc.get("candidates", []):
+        if c.get("symbol") == symbol and c.get("timeframe") == tf:
+            return c
+    return None
 
 
 def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str, rr_1: float | None = None) -> str:
@@ -59,12 +56,86 @@ def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str, rr
 
 
 def check_rr_gate(rr_2: float | None) -> tuple[bool, str]:
-    """Returns (pass: bool, reason: str). Pass requires rr_2 >= 1.5."""
     if rr_2 is None:
         return False, "RR cannot be calculated"
     if rr_2 < 1.5:
         return False, "RR too poor"
     return True, "RR OK"
+
+
+def scan_candidate(symbol: str, tf: str, acc: dict | None, trades_global: int, days_global: int) -> dict:
+    """Scan one config and return a dict with all computed fields."""
+    acc_data = _get_accelerated_for(acc, symbol, tf)
+    ev = acc_data.get("ev", 0) if acc_data else 0
+    pf = acc_data.get("pf", 0) if acc_data else 0
+    dd = acc_data.get("max_dd", 0) if acc_data else 0
+    trades = acc_data.get("trades", 0) if acc_data else 0
+
+    candles = load_candles(symbol, tf)
+    direction = "UNKNOWN"
+    levels = {"direction": "UNKNOWN", "latest_close": None,
+              "entry_zone": None, "stop": None,
+              "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
+    if len(candles) >= 5:
+        direction = infer_direction(candles)
+    if len(candles) >= 20 and direction != "UNKNOWN":
+        atr = compute_atr(candles)
+        levels = compute_setup_levels(candles, atr, direction)
+    elif candles:
+        levels = {"direction": direction, "latest_close": candles[-1]["close"] if candles else None,
+                  "entry_zone": None, "stop": None,
+                  "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
+
+    direction = levels["direction"]
+    rr_1 = levels.get("rr_1")
+    rr_2 = levels.get("rr_2")
+    rr_pass, rr_reason = check_rr_gate(rr_2)
+    setup_grade = grade_setup(trades, ev, pf, dd, direction, rr_1)
+
+    # Candidate verdict
+    if direction == "UNKNOWN":
+        verdict = "REJECTED"
+        reason = "direction UNKNOWN"
+    elif not rr_pass:
+        verdict = "REJECTED"
+        reason = rr_reason
+    else:
+        verdict = "CANDIDATE"
+        reason = "OK"
+
+    return {
+        "label": f"{symbol} {tf}",
+        "symbol": symbol,
+        "timeframe": tf,
+        "direction": direction,
+        "setup_quality": setup_grade,
+        "entry_zone": levels.get("entry_zone"),
+        "stop": levels.get("stop"),
+        "target_1": levels.get("target_1"),
+        "target_2": levels.get("target_2"),
+        "rr_1": rr_1,
+        "rr_2": rr_2,
+        "rr_gate": "PASS" if rr_pass else "FAIL",
+        "rr_gate_reason": rr_reason,
+        "ev": ev,
+        "pf": pf,
+        "dd": dd,
+        "trades": trades,
+        "verdict": verdict,
+        "verdict_reason": reason,
+    }
+
+
+def _build_config_list() -> list[tuple[str, str]]:
+    """Build list of (symbol, timeframe) to scan."""
+    config = load_config()
+    allowed = config.get("allowed_configs", [])
+    pairs = [(c["symbol"], c["timeframe"]) for c in allowed if isinstance(c, dict)]
+    # Also include SOLUSDT 15m if data exists
+    sol_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", "SOLUSDT_15m.csv")
+    if os.path.exists(sol_path) and ("SOLUSDT", "15m") not in pairs:
+        pairs.append(("SOLUSDT", "15m"))
+    return pairs
 
 
 def main():
@@ -80,43 +151,24 @@ def main():
     if entry:
         trades = entry.get("total_trades", 0)
         days = entry.get("calendar_days", 0)
-        ev = entry.get("ev_r", 0)
-        pf = entry.get("profit_factor", 0)
-        dd = entry.get("max_drawdown_r", 0)
         kill = entry.get("kill_status") == "KILL"
         safety_ok = entry.get("safety_lock_verdict") == "ALL LOCKS ENGAGED"
         launch_ok = entry.get("launch_check_verdict") == "PASS"
     else:
-        trades = 0; days = 0; ev = 0; pf = 0; dd = 0
+        trades = 0; days = 0
         kill = False; safety_ok = True; launch_ok = True
 
-    best = _best_candidate_from_accelerated(acc)
-    best_symbol = best["symbol"] if best else None
-    best_tf = best["timeframe"] if best else None
-    best_label = f"{best_symbol} {best_tf}" if best else "none"
+    # Scan all candidates
+    config_pairs = _build_config_list()
+    candidates = [scan_candidate(sym, tf, acc, trades, days) for sym, tf in config_pairs]
 
-    # Compute setup levels from candle data
-    levels = {"direction": "UNKNOWN", "latest_close": None,
-              "entry_zone": None, "stop": None,
-              "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
-    if best_symbol and best_tf:
-        candles = load_candles(best_symbol, best_tf)
-        if len(candles) >= 20:
-            atr = compute_atr(candles)
-            direction = infer_direction(candles)
-            levels = compute_setup_levels(candles, atr, direction)
-        elif candles:
-            direction = "UNKNOWN"
-            levels = {"direction": direction,
-                      "latest_close": candles[-1]["close"] if candles else None,
-                      "entry_zone": None, "stop": None,
-                      "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
-
-    direction = levels["direction"]
-    rr_1 = levels.get("rr_1")
-    rr_2 = levels.get("rr_2")
-    rr_gate_pass, rr_gate_reason = check_rr_gate(rr_2)
-    setup_grade = grade_setup(trades, ev, pf, dd, direction, rr_1)
+    # Select best passing candidate
+    passing = [c for c in candidates if c["verdict"] == "CANDIDATE"]
+    if passing:
+        passing.sort(key=lambda c: (c.get("rr_2") or 0), reverse=True)
+        selected = passing[0]
+    else:
+        selected = None
 
     # Decision rules
     decision = "MANUAL_REVIEW_ONLY"
@@ -137,12 +189,9 @@ def main():
     if kill:
         decision = "WAIT"
         reasons.append("kill switch triggered")
-    if direction == "UNKNOWN" and decision != "WAIT":
+    if selected is None:
         decision = "WAIT"
-        reasons.append("direction UNKNOWN -- cannot determine setup")
-    if not rr_gate_pass:
-        decision = "WAIT"
-        reasons.append(rr_gate_reason)
+        reasons.append("no candidate passes RR gate")
     if trades < MIN_TRADES or days < MIN_DAYS:
         if decision not in ("WAIT",):
             decision = "MANUAL_REVIEW_ONLY"
@@ -151,6 +200,21 @@ def main():
         reasons.append("evidence gates not met -- trade at your own risk")
 
     reason_str = "; ".join(reasons) if reasons else "all checks pass"
+
+    # Build candidate table for report
+    cand_rows = []
+    for c in candidates:
+        rr1s = f"1:{c['rr_1']:.2f}" if c["rr_1"] is not None else "N/A"
+        rr2s = f"1:{c['rr_2']:.2f}" if c["rr_2"] is not None else "N/A"
+        cand_rows.append({
+            "label": c["label"],
+            "direction": c["direction"],
+            "rr_t1": rr1s,
+            "rr_t2": rr2s,
+            "quality": c["setup_quality"],
+            "rr_gate": c["rr_gate"],
+            "verdict": c["verdict"],
+        })
 
     report: dict[str, Any] = {
         "mode": "today_trade_plan",
@@ -162,18 +226,20 @@ def main():
         "live_disabled": live_disabled,
         "paper_disabled": paper_disabled,
         "trade_decision": decision,
-        "direction": direction,
-        "best_candidate": best_label,
-        "setup_quality": setup_grade,
-        "rr_gate": "PASS" if rr_gate_pass else "FAIL",
-        "rr_gate_reason": rr_gate_reason,
-        "setup_levels": levels,
+        "candidates": cand_rows,
+        "selected_candidate": selected["label"] if selected else None,
+        "selected_levels": {
+            "direction": selected["direction"] if selected else "UNKNOWN",
+            "entry_zone": selected["entry_zone"] if selected else None,
+            "stop": selected["stop"] if selected else None,
+            "target_1": selected["target_1"] if selected else None,
+            "target_2": selected["target_2"] if selected else None,
+            "rr_1": selected["rr_1"] if selected else None,
+            "rr_2": selected["rr_2"] if selected else None,
+        } if selected else {},
         "evidence": {
             "trades_collected": trades,
             "calendar_days_collected": days,
-            "ev_r": ev,
-            "profit_factor": pf,
-            "max_drawdown_r": dd,
             "kill_switch": "KILL" if kill else "OK",
         },
         "reason": reason_str,
@@ -183,13 +249,7 @@ def main():
     with open(JSON_REPORT, "w") as f:
         json.dump(report, f, indent=2)
 
-    entry_str = f"{levels['entry_zone']:.2f}" if levels["entry_zone"] is not None else "N/A"
-    stop_str = f"{levels['stop']:.2f}" if levels["stop"] is not None else "N/A"
-    t1_str = f"{levels['target_1']:.2f}" if levels["target_1"] is not None else "N/A"
-    t2_str = f"{levels['target_2']:.2f}" if levels["target_2"] is not None else "N/A"
-    rr1_str = f"1:{levels['rr_1']:.2f}" if levels["rr_1"] is not None else "N/A"
-    rr2_str = f"1:{levels['rr_2']:.2f}" if levels["rr_2"] is not None else "N/A"
-
+    # Build text output
     lines = [
         "=" * 60,
         "  TODAY TRADE PLAN -- Decision Support Only",
@@ -201,23 +261,35 @@ def main():
         f"  PAPER DISABLED: {'YES' if paper_disabled else 'NO'}",
         "",
         f"  TRADE DECISION: {decision}",
-        f"  Best candidate: {best_label}",
-        f"  Direction:      {direction}",
-        f"  Setup quality:  {setup_grade}",
-        f"  RR Gate:        {'PASS' if rr_gate_pass else 'FAIL'} ({rr_gate_reason})",
         "",
-        "  Setup Levels (manual review only):",
-        f"    Entry zone:     {entry_str}",
-        f"    Stop/Invalid:   {stop_str}",
-        f"    Target 1:       {t1_str}  (RR {rr1_str})",
-        f"    Target 2:       {t2_str}  (RR {rr2_str})",
+        "  Candidate Scan:",
+        "  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
+            "Config", "Direction", "RR T1", "RR T2", "Quality", "RR Gate", "Verdict"),
+        "  " + "-" * 70,
+    ]
+    for c in cand_rows:
+        lines.append("  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
+            c["label"], c["direction"], c["rr_t1"], c["rr_t2"], c["quality"], c["rr_gate"], c["verdict"]))
+    lines.append("  " + "-" * 70)
+
+    if selected:
+        sel = selected
+        lines += [
+            "",
+            f"  Selected: {sel['label']} ({sel['direction']})",
+            f"    Entry zone:  {sel['entry_zone']:.2f}" if sel["entry_zone"] is not None else "    Entry zone:  N/A",
+            f"    Stop:        {sel['stop']:.2f}" if sel["stop"] is not None else "    Stop:        N/A",
+            f"    Target 1:    {sel['target_1']:.2f}  (RR 1:{sel['rr_1']:.2f})" if sel["target_1"] is not None else "    Target 1:    N/A",
+            f"    Target 2:    {sel['target_2']:.2f}  (RR 1:{sel['rr_2']:.2f})" if sel["target_2"] is not None else "    Target 2:    N/A",
+        ]
+    else:
+        lines += ["", "  Selected: NONE (no candidate passes all gates)"]
+
+    lines += [
         "",
         "  Evidence Status:",
         f"    Trades:  {trades} / {MIN_TRADES}",
         f"    Days:    {days} / {MIN_DAYS}",
-        f"    EV:      {ev:+.3f}R",
-        f"    PF:      {pf:.2f}",
-        f"    DD:      {dd:.2f}R",
         f"    Kill:    {'KILL' if kill else 'OK'}",
         "",
         f"  Reason: {reason_str}",
