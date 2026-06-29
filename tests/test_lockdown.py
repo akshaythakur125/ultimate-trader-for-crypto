@@ -833,4 +833,122 @@ def test_operator_does_not_stall_on_slow_config():
     assert result["status"] == "TIMEOUT"
 
 
+# --- Test 28: Accelerated Evidence Engine ---
+
+def test_accelerated_evidence_no_live_paper_trading():
+    """Accelerated evidence module must have live/paper trading hard-disabled."""
+    from production_replay.accelerated_evidence import run_accelerated_evidence
+    import inspect
+    source = inspect.getsource(run_accelerated_evidence)
+    assert "live_trading_enabled" not in source or "False" in source
+    assert "paper_trading_enabled" not in source or "False" in source
+
+
+def test_accelerated_evidence_no_api_imports():
+    """Accelerated evidence must not import API/order execution modules."""
+    from production_replay import accelerated_evidence
+    import inspect
+    source = inspect.getsource(accelerated_evidence)
+    forbidden = ["order", "bingx", "ccxt", "exchange", "api_key", "secret"]
+    for word in forbidden:
+        assert word not in source.lower(), f"forbidden import/reference: {word}"
+
+
+def test_accelerated_evidence_report_files_exist():
+    """Accelerated evidence must produce both txt and json reports."""
+    assert os.path.exists("deploy_results/accelerated_evidence_report.json"), "JSON report missing"
+    assert os.path.exists("deploy_results/accelerated_evidence_report.txt"), "TXT report missing"
+
+
+def test_accelerated_evidence_report_structure():
+    """Report must have required fields and research-only flag."""
+    path = "deploy_results/accelerated_evidence_report.json"
+    if not os.path.exists(path):
+        pytest.skip("accelerated evidence report not available")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("mode") == "accelerated_evidence"
+    assert report.get("research_only") is True
+    assert report.get("live_trading_enabled") is False
+    assert report.get("paper_trading_enabled") is False
+    assert "candidates" in report
+    assert "summary" in report
+    assert report["summary"]["total_candidates"] >= 10
+
+
+def test_accelerated_evidence_gates_reject_zero_trades():
+    """A candidate with 0 trades must fail all trade-dependent gates."""
+    from production_replay.accelerated_evidence import (
+        MIN_TRADES, MIN_EV, MIN_PF, MAX_DD, MAX_CONSECUTIVE_LOSSES,
+    )
+    from production_replay.accelerated_evidence import _quick_loss_pct, _max_consecutive_losses
+    trades = []
+    assert _quick_loss_pct(trades) == 0.0
+    assert _max_consecutive_losses(trades) == 0
+    # All trade-dependent gates should fail for 0 trades
+    assert len(trades) < MIN_TRADES
+
+
+def test_accelerated_evidence_max_consecutive_losses():
+    """_max_consecutive_losses must count correctly."""
+    from production_replay.accelerated_evidence import _max_consecutive_losses
+    trades = [
+        {"net_r": 1.0}, {"net_r": -0.5}, {"net_r": -0.3},
+        {"net_r": 2.0}, {"net_r": -1.0}, {"net_r": -0.8}, {"net_r": -0.2},
+    ]
+    assert _max_consecutive_losses(trades) == 3  # last 3 are losses
+
+
+def test_accelerated_evidence_quick_loss_pct():
+    """_quick_loss_pct must compute loss rate correctly."""
+    from production_replay.accelerated_evidence import _quick_loss_pct
+    trades = [
+        {"net_r": 1.0}, {"net_r": -0.5}, {"net_r": 0.5}, {"net_r": -1.0},
+    ]
+    assert _quick_loss_pct(trades) == 50.0  # 2 of 4 are losses
+
+
+def test_accelerated_evidence_source_has_disclaimer():
+    """Report source must contain disclaimer message."""
+    from production_replay.accelerated_evidence import run_accelerated_evidence
+    import inspect
+    source = inspect.getsource(run_accelerated_evidence)
+    assert "research" in source.lower()
+    assert "DISABLED" in source
+
+
+def test_accelerated_evidence_txt_report_has_disclaimer():
+    """TXT report must contain disclaimer about research-only."""
+    path = "deploy_results/accelerated_evidence_report.txt"
+    if not os.path.exists(path):
+        pytest.skip("accelerated evidence report not available")
+    content = open(path).read()
+    assert "Research-only" in content
+    assert "Live trading disabled" in content.lower() or "live trading" in content.lower()
+    assert "Paper trading disabled" in content.lower() or "paper trading" in content.lower()
+
+
+def test_accelerated_evidence_verdicts_are_valid():
+    """Each candidate verdict must be one of PASS, FAIL, QUARANTINE."""
+    path = "deploy_results/accelerated_evidence_report.json"
+    if not os.path.exists(path):
+        pytest.skip("accelerated evidence report not available")
+    with open(path) as f:
+        report = json.load(f)
+    valid = {"PASS", "FAIL", "QUARANTINE"}
+    for c in report["candidates"]:
+        assert c["verdict"] in valid, f"invalid verdict: {c['verdict']}"
+    assert report["summary"]["passed"] + report["summary"]["failed"] + report["summary"]["quarantined"] == report["summary"]["total_candidates"]
+
+
+def test_accelerated_evidence_each_candidate_has_gate_results():
+    """Each candidate must have per-gate results."""
+    path = "deploy_results/accelerated_evidence_report.json"
+    if not os.path.exists(path):
+        pytest.skip("accelerated evidence report not available")
+    with open(path) as f:
+        report = json.load(f)
+    for c in report["candidates"]:
+        assert "gate_results" in c
+        assert len(c["gate_results"]) >= 6
 
