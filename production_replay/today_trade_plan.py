@@ -136,45 +136,27 @@ def scan_candidate(symbol: str, tf: str, acc: dict | None, trades_global: int, d
 
 
 def _load_display_configs() -> list[tuple[str, str, bool]]:
-    """Load configs for display scanning.
+    """Load configs for display scanning from DOCTOR_DISPLAY_UNIVERSE.
 
-    Tries locked_config_loader first. On any failure, falls back to
-    DOCTOR_DISPLAY_UNIVERSE — a hardcoded list guaranteed to include
-    BTCUSDT 15m and BTCUSDT 30m. This is display/scanner only.
+    Always includes BTCUSDT 15m and BTCUSDT 30m.
+    SOLUSDT 15m is optional — included only if candle data exists.
+    This is display/scanner only. NEVER enables live or paper trading.
 
     Returns list of (symbol, timeframe, is_allowed) triples.
     """
     global CONFIG_SOURCE
-    source = "doctor_display_fallback"
+    CONFIG_SOURCE = "doctor_display_universe"
+
     pairs = []
-
-    try:
-        from production_replay.locked_config_loader import load_allowed_configs as lcl
-        pairs_list, source, error = lcl()
-        pairs = [(s, t, True) for s, t in pairs_list]
-    except Exception:
-        source = "doctor_display_fallback"
-
-    if source == "safe_display_fallback":
-        print(f"  [config] Using safe_display_fallback", file=sys.stderr)
-
-    if not pairs:
-        # Absolute last resort: hardcoded doctor display universe
-        source = "doctor_display_fallback"
-        for entry in DOCTOR_DISPLAY_UNIVERSE:
-            if not entry.get("optional"):
-                pairs.append((entry["symbol"], entry["timeframe"], True))
-
-    # Always include optional entries from DOCTOR_DISPLAY_UNIVERSE if data exists
     for entry in DOCTOR_DISPLAY_UNIVERSE:
+        sym, tf = entry["symbol"], entry["timeframe"]
         if entry.get("optional"):
-            sym, tf = entry["symbol"], entry["timeframe"]
-            if not any(p[0] == sym and p[1] == tf for p in pairs):
-                data_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", f"{sym}_{tf}.csv")
-                if os.path.exists(data_path):
-                    pairs.append((sym, tf, False))
+            data_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", f"{sym}_{tf}.csv")
+            if os.path.exists(data_path):
+                pairs.append((sym, tf, False))
+        else:
+            pairs.append((sym, tf, True))
 
-    CONFIG_SOURCE = source
     return pairs
 
 
