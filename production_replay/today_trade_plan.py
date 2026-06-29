@@ -126,10 +126,65 @@ def scan_candidate(symbol: str, tf: str, acc: dict | None, trades_global: int, d
     }
 
 
-def _build_config_list() -> list[tuple[str, str, bool]]:
-    """Build list of (symbol, timeframe, is_allowed) to scan."""
-    config = load_config()
-    allowed = config.get("allowed_configs", [])
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config_locked.yaml")
+
+
+def _load_allowed_configs() -> list[tuple[str, str, bool]]:
+    """Load allowed configs from config_locked.yaml directly.
+
+    Uses yaml if available, otherwise a simple line parser.
+    Raises RuntimeError if no configs are found.
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "config_locked.yaml")
+    if not os.path.exists(path):
+        raise RuntimeError(f"config_locked.yaml not found at {path}")
+
+    try:
+        import yaml
+        with open(path) as f:
+            config = yaml.safe_load(f)
+    except ImportError:
+        # Minimal fallback: search for allowed_configs block
+        config = {}
+        with open(path) as f:
+            lines = f.readlines()
+        in_block = False
+        current = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "allowed_configs:":
+                in_block = True
+                continue
+            if in_block:
+                if stripped.startswith("- "):
+                    current.append(stripped[2:])
+                elif stripped.startswith("#") or stripped == "":
+                    continue
+                elif ":" in stripped and not stripped.startswith("-"):
+                    in_block = False
+        if current:
+            pairs_list = []
+            for item in current:
+                parts = item.split(", ")
+                sym = None
+                tf = None
+                for p in parts:
+                    if p.startswith("symbol: "):
+                        sym = p[8:]
+                    elif p.startswith("timeframe: "):
+                        tf = p[11:]
+                if sym and tf:
+                    pairs_list.append((sym, tf))
+            if pairs_list:
+                config["allowed_configs"] = [{"symbol": s, "timeframe": t} for s, t in pairs_list]
+
+    allowed = config.get("allowed_configs", []) if isinstance(config, dict) else []
+    if not allowed:
+        raise RuntimeError(
+            f"allowed_configs is empty or missing in {path}. "
+            "Check config_locked.yaml is valid."
+        )
+
     pairs = []
     for c in allowed:
         if isinstance(c, dict):
@@ -137,6 +192,11 @@ def _build_config_list() -> list[tuple[str, str, bool]]:
             tf = c.get("timeframe", "")
             if sym and tf:
                 pairs.append((sym, tf, True))
+    if not pairs:
+        raise RuntimeError(
+            f"allowed_configs yielded zero valid pairs in {path}. "
+            "Expected at least BTCUSDT 15m and BTCUSDT 30m."
+        )
     # Also include SOLUSDT 15m if data exists
     sol_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", "SOLUSDT_15m.csv")
     if os.path.exists(sol_path) and not any(p[0] == "SOLUSDT" and p[1] == "15m" for p in pairs):
@@ -165,18 +225,23 @@ def main():
         kill = False; safety_ok = True; launch_ok = True
 
     # Scan all candidates (SKIPPED for non-allowed if data not available)
-    config_items = _build_config_list()
-    candidates = []
-    if not config_items:
-        candidates.append({
-            "label": "(no configs)", "symbol": "", "timeframe": "",
+    try:
+        config_items = _load_allowed_configs()
+    except RuntimeError as e:
+        print(f"  ERROR: {e}")
+        # Still produce a minimal report so doctor packet doesn't crash
+        config_items = []
+        candidates = [{
+            "label": "(config error)", "symbol": "", "timeframe": "",
             "direction": "SKIPPED", "setup_quality": "N/A",
             "entry_zone": None, "stop": None,
             "target_1": None, "target_2": None, "rr_1": None, "rr_2": None,
-            "rr_gate": "SKIPPED", "rr_gate_reason": "no configs defined",
+            "rr_gate": "SKIPPED", "rr_gate_reason": str(e),
             "ev": 0, "pf": 0, "dd": 0, "trades": 0,
-            "verdict": "SKIPPED", "verdict_reason": "no configs defined",
-        })
+            "verdict": "SKIPPED", "verdict_reason": str(e),
+        }]
+    else:
+        candidates = []
     for sym, tf, is_allowed in config_items:
         if not is_allowed:
             # SOLUSDT 15m is a bonus scan — include as SKIPPED if no candle data
