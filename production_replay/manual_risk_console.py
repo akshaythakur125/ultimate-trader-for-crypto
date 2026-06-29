@@ -1,4 +1,6 @@
-"""Manual risk console — converts today_trade_plan into a safe doctor-mode risk plan.
+"""Manual risk console -- converts today_trade_plan into a safe doctor-mode risk plan.
+
+Reads setup levels from today_trade_plan and calculates position sizing.
 
 Usage:
     python -m production_replay.manual_risk_console
@@ -28,8 +30,24 @@ def _read_trade_plan() -> dict | None:
         return json.load(f)
 
 
+def _calc_position_size(entry: float | None, stop: float | None, risk_usdt: float) -> dict:
+    if entry is None or stop is None or entry == stop or risk_usdt <= 0:
+        return {"position_size": None, "risk_distance": None,
+                "max_loss_if_hit": None,
+                "warning": "cannot calculate position size -- entry or stop missing"}
+    risk_dist = abs(entry - stop)
+    if risk_dist <= 0:
+        return {"position_size": None, "risk_distance": None,
+                "max_loss_if_hit": None,
+                "warning": "risk distance is zero or negative"}
+    size = risk_usdt / risk_dist
+    return {"position_size": round(size, 6), "risk_distance": round(risk_dist, 2),
+            "max_loss_if_hit": round(risk_usdt, 2),
+            "warning": None}
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Manual risk console — decision-support only")
+    parser = argparse.ArgumentParser(description="Manual risk console -- decision-support only")
     parser.add_argument("--capital", type=float, default=20.0, help="Capital in USDT (default: 20)")
     parser.add_argument("--risk-per-trade", type=float, default=1.0, help="Max risk per trade in USDT (default: 1)")
     parser.add_argument("--max-daily-loss", type=float, default=2.0, help="Max daily loss in USDT (default: 2)")
@@ -53,6 +71,8 @@ def main():
         decision = trade_plan.get("trade_decision", "WAIT")
         best_candidate = trade_plan.get("best_candidate", "none")
         setup_quality = trade_plan.get("setup_quality", "C")
+        direction = trade_plan.get("direction", "UNKNOWN")
+        levels = trade_plan.get("setup_levels", {})
         system_safe = trade_plan.get("system_safe", False)
         live_disabled = trade_plan.get("live_disabled", False)
         paper_disabled = trade_plan.get("paper_disabled", False)
@@ -66,6 +86,8 @@ def main():
         decision = "WAIT"
         best_candidate = "none"
         setup_quality = "C"
+        direction = "UNKNOWN"
+        levels = {}
         system_safe = entry.get("safety_lock_verdict") == "ALL LOCKS ENGAGED"
         live_disabled = not entry.get("live_trading_enabled", True)
         paper_disabled = not entry.get("paper_trading_enabled", True)
@@ -73,7 +95,17 @@ def main():
         trades = 0; days = 0; ev_r = 0; pf = 0; dd = 0
         kill = False; decision = "WAIT"
         best_candidate = "none"; setup_quality = "C"
+        direction = "UNKNOWN"; levels = {}
         system_safe = True; live_disabled = True; paper_disabled = True
+
+    # Read setup levels
+    entry_price = levels.get("entry_zone") if isinstance(levels, dict) else None
+    stop_price = levels.get("stop") if isinstance(levels, dict) else None
+    t1_price = levels.get("target_1") if isinstance(levels, dict) else None
+    t2_price = levels.get("target_2") if isinstance(levels, dict) else None
+
+    # Calculate position size
+    pos = _calc_position_size(entry_price, stop_price, args.risk_per_trade)
 
     # Decision rules
     risk_instruction = "MANUAL_REVIEW_ONLY"
@@ -94,7 +126,10 @@ def main():
     if decision == "WAIT":
         risk_instruction = "DO_NOT_TRADE"
         reasons.append("trade plan says WAIT")
-    if decision == "MANUAL_REVIEW_ONLY" and risk_instruction != "DO_NOT_TRADE":
+    if direction == "UNKNOWN" and risk_instruction != "DO_NOT_TRADE":
+        risk_instruction = "WAIT"
+        reasons.append("direction UNKNOWN")
+    if decision == "MANUAL_REVIEW_ONLY" and risk_instruction not in ("DO_NOT_TRADE", "WAIT"):
         if trades < MIN_TRADES or days < MIN_DAYS:
             risk_instruction = "MANUAL_REVIEW_ONLY"
             reasons.append(f"evidence incomplete ({trades}/{MIN_TRADES} trades, {days}/{MIN_DAYS} days)")
@@ -105,6 +140,15 @@ def main():
         reasons.append("all checks pass")
 
     reason_str = "; ".join(reasons) if reasons else "unknown"
+
+    # Format levels for report
+    entry_str = f"{entry_price:.2f}" if entry_price is not None else "N/A"
+    stop_str = f"{stop_price:.2f}" if stop_price is not None else "N/A"
+    t1_str = f"{t1_price:.2f}" if t1_price is not None else "N/A"
+    t2_str = f"{t2_price:.2f}" if t2_price is not None else "N/A"
+    pos_str = f"{pos['position_size']:.6f}" if pos["position_size"] is not None else "N/A"
+    risk_dist_str = f"{pos['risk_distance']:.2f}" if pos["risk_distance"] is not None else "N/A"
+    loss_str = f"{pos['max_loss_if_hit']:.2f}" if pos["max_loss_if_hit"] is not None else "N/A"
 
     report = {
         "mode": "manual_risk_plan",
@@ -117,8 +161,14 @@ def main():
         "paper_disabled": paper_disabled,
         "trade_decision": decision,
         "risk_instruction": risk_instruction,
+        "direction": direction,
         "best_candidate": best_candidate,
         "setup_quality": setup_quality,
+        "setup_levels": {
+            "entry_zone": entry_price, "stop": stop_price,
+            "target_1": t1_price, "target_2": t2_price,
+        },
+        "position_sizing": pos,
         "evidence": {
             "trades_collected": trades,
             "calendar_days_collected": days,
@@ -142,7 +192,7 @@ def main():
 
     lines = [
         "=" * 60,
-        "  MANUAL RISK PLAN — Decision Support Only",
+        "  MANUAL RISK PLAN -- Decision Support Only",
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
@@ -152,8 +202,25 @@ def main():
         "",
         f"  Trade decision:   {decision}",
         f"  RISK INSTRUCTION: {risk_instruction}",
+        f"  Direction:        {direction}",
         f"  Best candidate:   {best_candidate}",
         f"  Setup quality:    {setup_quality}",
+        "",
+        "  Setup Levels:",
+        f"    Entry zone:     {entry_str}",
+        f"    Stop/Invalid:   {stop_str}",
+        f"    Target 1:       {t1_str}",
+        f"    Target 2:       {t2_str}",
+        "",
+        "  Position Sizing:",
+        f"    Risk distance:      {risk_dist_str}",
+        f"    Estimated position: {pos_str} units",
+        f"    Max loss if hit:    {loss_str} USDT",
+    ]
+    if pos.get("warning"):
+        lines.append(f"    Warning:            {pos['warning']}")
+
+    lines += [
         "",
         "  Evidence Status:",
         f"    Trades:  {trades} / {MIN_TRADES}",
@@ -183,7 +250,6 @@ def main():
     print("\n".join(lines))
     print(f"\n[JSON] {JSON_REPORT}")
     print(f"[TXT]  {TXT_REPORT}")
-
     return 0
 
 

@@ -1,7 +1,8 @@
-"""Daily trade candidate report — decision-support only.
+"""Daily trade candidate report -- decision-support only.
 
 Evaluates whether there is a valid setup today using the
-latest dry-forward and accelerated evidence data.
+latest dry-forward and accelerated evidence data, plus
+actionable manual setup levels from recent candle data.
 
 Usage:
     python -m production_replay.today_trade_plan
@@ -9,11 +10,13 @@ Usage:
 
 import json, os, sys
 from datetime import datetime
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from production_replay.evidence_ledger import read_latest_entry
 from production_replay.launch_check import load_config
+from production_replay.setup_compute import load_candles, compute_atr, compute_setup_levels, infer_direction
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 TXT_REPORT = os.path.join(RESULTS_DIR, "today_trade_plan.txt")
@@ -42,31 +45,15 @@ def _best_candidate_from_accelerated(acc: dict | None) -> dict | None:
     return completed[0]
 
 
-def grade_setup(candidate: dict | None, trades: int, days: int, ev: float, pf: float, dd: float) -> str:
-    if not candidate or trades == 0:
+def grade_setup(trades: int, ev: float, pf: float, dd: float, direction: str) -> str:
+    if direction == "UNKNOWN" or trades == 0:
         return "C"
     ev_ok = ev > 0
     pf_ok = pf >= 1.5
     dd_ok = dd < 12.0
-    kill_ok = not candidate.get("kill_triggered", False)
-    trades_ok = candidate.get("trades", 0) >= 75
-    gap = candidate.get("max_consecutive_losses", 99) <= 6
-    gate_r = candidate.get("gate_results", {})
-    all_6 = all(gate_r.values()) if gate_r else False
-
-    if trades_ok and all_6 and ev_ok and pf_ok and dd_ok and kill_ok:
-        return "A"
-    if ev_ok and pf_ok and dd_ok and kill_ok and gap:
+    if ev_ok and pf_ok and dd_ok:
         return "B"
     return "C"
-
-
-def _check_safety() -> tuple[bool, bool, bool]:
-    """Returns (system_safe, live_disabled, paper_disabled)."""
-    config = load_config()
-    live_disabled = not config.get("live_trading", True)
-    paper_disabled = not config.get("paper_trading", True)
-    return True, live_disabled, paper_disabled
 
 
 def main():
@@ -75,9 +62,10 @@ def main():
     entry = read_latest_entry()
     acc = _read_accelerated()
 
-    system_safe, live_disabled, paper_disabled = _check_safety()
+    config = load_config()
+    live_disabled = not config.get("live_trading", True)
+    paper_disabled = not config.get("paper_trading", True)
 
-    # Extract evidence from ledger
     if entry:
         trades = entry.get("total_trades", 0)
         days = entry.get("calendar_days", 0)
@@ -88,19 +76,33 @@ def main():
         safety_ok = entry.get("safety_lock_verdict") == "ALL LOCKS ENGAGED"
         launch_ok = entry.get("launch_check_verdict") == "PASS"
     else:
-        trades = 0
-        days = 0
-        ev = 0
-        pf = 0
-        dd = 0
-        kill = False
-        safety_ok = True
-        launch_ok = True
+        trades = 0; days = 0; ev = 0; pf = 0; dd = 0
+        kill = False; safety_ok = True; launch_ok = True
 
-    # Find best candidate
     best = _best_candidate_from_accelerated(acc)
-    best_label = f"{best['symbol']} {best['timeframe']}" if best else "none"
-    setup_grade = grade_setup(best, trades, days, ev, pf, dd)
+    best_symbol = best["symbol"] if best else None
+    best_tf = best["timeframe"] if best else None
+    best_label = f"{best_symbol} {best_tf}" if best else "none"
+
+    # Compute setup levels from candle data
+    levels = {"direction": "UNKNOWN", "latest_close": None,
+              "entry_zone": None, "stop": None,
+              "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
+    if best_symbol and best_tf:
+        candles = load_candles(best_symbol, best_tf)
+        if len(candles) >= 20:
+            atr = compute_atr(candles)
+            direction = infer_direction(candles)
+            levels = compute_setup_levels(candles, atr, direction)
+        elif candles:
+            direction = "UNKNOWN"
+            levels = {"direction": direction,
+                      "latest_close": candles[-1]["close"] if candles else None,
+                      "entry_zone": None, "stop": None,
+                      "target_1": None, "target_2": None, "rr_1": None, "rr_2": None}
+
+    direction = levels["direction"]
+    setup_grade = grade_setup(trades, ev, pf, dd, direction)
 
     # Decision rules
     decision = "MANUAL_REVIEW_ONLY"
@@ -121,28 +123,32 @@ def main():
     if kill:
         decision = "WAIT"
         reasons.append("kill switch triggered")
+    if direction == "UNKNOWN" and decision != "WAIT":
+        decision = "WAIT"
+        reasons.append("direction UNKNOWN -- cannot determine setup")
     if trades < MIN_TRADES or days < MIN_DAYS:
         if decision != "WAIT":
             decision = "MANUAL_REVIEW_ONLY"
         reasons.append(f"evidence incomplete ({trades}/{MIN_TRADES} trades, {days}/{MIN_DAYS} days)")
     if decision == "MANUAL_REVIEW_ONLY" and not reasons:
-        reasons.append("evidence gates not met — trade at your own risk")
+        reasons.append("evidence gates not met -- trade at your own risk")
 
     reason_str = "; ".join(reasons) if reasons else "all checks pass"
 
-    # Build report
-    report = {
+    report: dict[str, Any] = {
         "mode": "today_trade_plan",
         "research_only": True,
         "timestamp": datetime.now().isoformat(),
         "live_trading_enabled": False,
         "paper_trading_enabled": False,
-        "system_safe": system_safe,
+        "system_safe": safety_ok and launch_ok,
         "live_disabled": live_disabled,
         "paper_disabled": paper_disabled,
         "trade_decision": decision,
+        "direction": direction,
         "best_candidate": best_label,
         "setup_quality": setup_grade,
+        "setup_levels": levels,
         "evidence": {
             "trades_collected": trades,
             "calendar_days_collected": days,
@@ -155,24 +161,36 @@ def main():
         "disclaimer": "This system is not approved for live trading. Manual trading is at user's own risk.",
     }
 
-    # Write JSON
     with open(JSON_REPORT, "w") as f:
         json.dump(report, f, indent=2)
 
-    # Write text report
+    entry_str = f"{levels['entry_zone']:.2f}" if levels["entry_zone"] is not None else "N/A"
+    stop_str = f"{levels['stop']:.2f}" if levels["stop"] is not None else "N/A"
+    t1_str = f"{levels['target_1']:.2f}" if levels["target_1"] is not None else "N/A"
+    t2_str = f"{levels['target_2']:.2f}" if levels["target_2"] is not None else "N/A"
+    rr1_str = f"1:{levels['rr_1']:.2f}" if levels["rr_1"] is not None else "N/A"
+    rr2_str = f"1:{levels['rr_2']:.2f}" if levels["rr_2"] is not None else "N/A"
+
     lines = [
         "=" * 60,
-        "  TODAY TRADE PLAN — Decision Support Only",
+        "  TODAY TRADE PLAN -- Decision Support Only",
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
-        f"  SYSTEM SAFE:    {'YES' if system_safe else 'NO'}",
+        f"  SYSTEM SAFE:    {'YES' if report['system_safe'] else 'NO'}",
         f"  LIVE DISABLED:  {'YES' if live_disabled else 'NO'}",
         f"  PAPER DISABLED: {'YES' if paper_disabled else 'NO'}",
         "",
         f"  TRADE DECISION: {decision}",
         f"  Best candidate: {best_label}",
+        f"  Direction:      {direction}",
         f"  Setup quality:  {setup_grade}",
+        "",
+        "  Setup Levels (manual review only):",
+        f"    Entry zone:     {entry_str}",
+        f"    Stop/Invalid:   {stop_str}",
+        f"    Target 1:       {t1_str}  (RR {rr1_str})",
+        f"    Target 2:       {t2_str}  (RR {rr2_str})",
         "",
         "  Evidence Status:",
         f"    Trades:  {trades} / {MIN_TRADES}",
@@ -193,11 +211,9 @@ def main():
     with open(TXT_REPORT, "w") as f:
         f.write("\n".join(lines) + "\n")
 
-    # Print to console
     print("\n".join(lines))
     print(f"\n[JSON] {JSON_REPORT}")
     print(f"[TXT]  {TXT_REPORT}")
-
     return 0
 
 

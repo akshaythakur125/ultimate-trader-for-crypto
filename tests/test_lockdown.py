@@ -1117,9 +1117,25 @@ def test_today_trade_plan_runs():
     assert rc == 0
 
 
+def test_today_trade_plan_has_setup_levels():
+    """today_trade_plan output must include direction and setup_levels fields."""
+    from production_replay.today_trade_plan import main as tp_main
+    import json
+    rc = tp_main()
+    assert rc == 0
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    assert os.path.exists(path)
+    with open(path) as f:
+        report = json.load(f)
+    assert "direction" in report
+    assert "setup_levels" in report
+    levels = report["setup_levels"]
+    assert isinstance(levels, dict)
+
+
 def test_today_trade_plan_never_approves_before_gates():
-    import tempfile, json, os
-    from production_replay.evidence_ledger import LEDGER_FILE, append_ledger_entry
+    import tempfile, os
+    from production_replay.evidence_ledger import append_ledger_entry
     from production_replay.today_trade_plan import main as tp_main
 
     with tempfile.TemporaryDirectory() as td:
@@ -1140,6 +1156,19 @@ def test_today_trade_plan_never_approves_before_gates():
             os.environ.pop("EVIDENCE_LEDGER_PATH", None)
 
 
+def test_today_trade_plan_direction_unknown_causes_wait():
+    """When direction is UNKNOWN, trade_decision should be WAIT."""
+    from production_replay.today_trade_plan import main as tp_main
+    import json
+    rc = tp_main()
+    assert rc == 0
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    if report["direction"] == "UNKNOWN":
+        assert report["trade_decision"] == "WAIT"
+
+
 def test_today_trade_plan_no_api_imports():
     import ast
     path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "today_trade_plan.py")
@@ -1151,12 +1180,67 @@ def test_today_trade_plan_no_api_imports():
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
 
 
+# --- Setup Compute ---
+
+def test_setup_compute_no_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "setup_compute.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+def test_setup_compute_direction_and_levels():
+    from production_replay.setup_compute import compute_atr, infer_direction, compute_setup_levels
+    candles = [
+        {"open": 100.0, "high": 105.0, "low": 99.0, "close": 104.0, "volume": 100},
+        {"open": 104.0, "high": 108.0, "low": 103.0, "close": 107.0, "volume": 100},
+        {"open": 107.0, "high": 110.0, "low": 106.0, "close": 109.0, "volume": 100},
+        {"open": 109.0, "high": 112.0, "low": 108.0, "close": 111.0, "volume": 100},
+        {"open": 111.0, "high": 113.0, "low": 110.0, "close": 112.0, "volume": 100},
+    ]
+    # Extend to 20 candles with uptrend
+    for i in range(15):
+        base = 112 + i * 0.5
+        candles.append({"open": base, "high": base + 2, "low": base - 1, "close": base + 1, "volume": 100})
+
+    atr = compute_atr(candles)
+    assert atr > 0
+    direction = infer_direction(candles)
+    levels = compute_setup_levels(candles, atr, direction)
+    assert "entry_zone" in levels
+    if direction == "LONG":
+        assert levels["stop"] is not None and levels["stop"] < levels["entry_zone"]
+        assert levels["target_1"] is not None and levels["target_1"] > levels["entry_zone"]
+
+
 # --- Manual Risk Console ---
 
 def test_manual_risk_console_runs():
     from production_replay.manual_risk_console import main as rc_main
     rc = rc_main()
     assert rc == 0
+
+
+def test_manual_risk_console_calculates_position_size():
+    from production_replay.manual_risk_console import _calc_position_size
+    res = _calc_position_size(100.0, 98.0, 1.0)
+    assert res["position_size"] == 0.5
+    assert res["risk_distance"] == 2.0
+    assert res["max_loss_if_hit"] == 1.0
+    assert res["warning"] is None
+
+
+def test_manual_risk_console_position_size_invalid():
+    from production_replay.manual_risk_console import _calc_position_size
+    res = _calc_position_size(None, 98.0, 1.0)
+    assert res["position_size"] is None
+    assert res["warning"] is not None
+    res2 = _calc_position_size(100.0, 100.0, 1.0)
+    assert res2["position_size"] is None
 
 
 def test_manual_risk_console_never_approves_before_gates():

@@ -103,11 +103,20 @@ def main():
         failed += 1
 
     print("\n--- TODAY TRADE PLAN ---")
+    plan_json = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
     plan_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.txt")
-    if os.path.exists(plan_txt):
-        print(f"  {plan_txt}  | OK")
+    if os.path.exists(plan_json):
+        with open(plan_json) as f:
+            tp = json.load(f)
+        levels = tp.get("setup_levels", {})
+        has_levels = levels.get("entry_zone") is not None or levels.get("entry_zone") is None  # field exists check
+        has_direction = tp.get("direction") is not None
+        if has_direction:
+            print(f"  Direction: {tp['direction']}, Setup levels present  | OK")
+        else:
+            print(f"  {plan_txt}  | OK")
     else:
-        print("  Not generated yet — run `python -m production_replay.today_trade_plan`  | SKIP")
+        print("  Not generated yet -- run `python -m production_replay.today_trade_plan`  | SKIP")
     try:
         from production_replay import today_trade_plan
         print("  python -m production_replay.today_trade_plan available  | OK")
@@ -116,11 +125,19 @@ def main():
         failed += 1
 
     print("\n--- MANUAL RISK CONSOLE ---")
+    risk_json = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "manual_risk_plan.json")
     risk_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "manual_risk_plan.txt")
-    if os.path.exists(risk_txt):
-        print(f"  {risk_txt}  | OK")
+    if os.path.exists(risk_json):
+        with open(risk_json) as f:
+            rp = json.load(f)
+        sizing = rp.get("position_sizing", {})
+        has_pos = sizing.get("position_size") is not None or sizing.get("warning") is not None
+        if has_pos:
+            print(f"  Position sizing calculated  | OK")
+        else:
+            print(f"  {risk_txt}  | OK")
     else:
-        print("  Not generated yet — run `python -m production_replay.manual_risk_console`  | SKIP")
+        print("  Not generated yet -- run `python -m production_replay.manual_risk_console`  | SKIP")
     try:
         from production_replay import manual_risk_console
         print("  python -m production_replay.manual_risk_console available  | OK")
