@@ -126,15 +126,21 @@ def scan_candidate(symbol: str, tf: str, acc: dict | None, trades_global: int, d
     }
 
 
-def _build_config_list() -> list[tuple[str, str]]:
-    """Build list of (symbol, timeframe) to scan."""
+def _build_config_list() -> list[tuple[str, str, bool]]:
+    """Build list of (symbol, timeframe, is_allowed) to scan."""
     config = load_config()
     allowed = config.get("allowed_configs", [])
-    pairs = [(c["symbol"], c["timeframe"]) for c in allowed if isinstance(c, dict)]
+    pairs = []
+    for c in allowed:
+        if isinstance(c, dict):
+            sym = c.get("symbol", "")
+            tf = c.get("timeframe", "")
+            if sym and tf:
+                pairs.append((sym, tf, True))
     # Also include SOLUSDT 15m if data exists
     sol_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", "SOLUSDT_15m.csv")
-    if os.path.exists(sol_path) and ("SOLUSDT", "15m") not in pairs:
-        pairs.append(("SOLUSDT", "15m"))
+    if os.path.exists(sol_path) and not any(p[0] == "SOLUSDT" and p[1] == "15m" for p in pairs):
+        pairs.append(("SOLUSDT", "15m", False))
     return pairs
 
 
@@ -158,9 +164,35 @@ def main():
         trades = 0; days = 0
         kill = False; safety_ok = True; launch_ok = True
 
-    # Scan all candidates
-    config_pairs = _build_config_list()
-    candidates = [scan_candidate(sym, tf, acc, trades, days) for sym, tf in config_pairs]
+    # Scan all candidates (SKIPPED for non-allowed if data not available)
+    config_items = _build_config_list()
+    candidates = []
+    if not config_items:
+        candidates.append({
+            "label": "(no configs)", "symbol": "", "timeframe": "",
+            "direction": "SKIPPED", "setup_quality": "N/A",
+            "entry_zone": None, "stop": None,
+            "target_1": None, "target_2": None, "rr_1": None, "rr_2": None,
+            "rr_gate": "SKIPPED", "rr_gate_reason": "no configs defined",
+            "ev": 0, "pf": 0, "dd": 0, "trades": 0,
+            "verdict": "SKIPPED", "verdict_reason": "no configs defined",
+        })
+    for sym, tf, is_allowed in config_items:
+        if not is_allowed:
+            # SOLUSDT 15m is a bonus scan — include as SKIPPED if no candle data
+            candle_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", f"{sym}_{tf}.csv")
+            if not os.path.exists(candle_path):
+                candidates.append({
+                    "label": f"{sym} {tf}", "symbol": sym, "timeframe": tf,
+                    "direction": "SKIPPED", "setup_quality": "N/A",
+                    "entry_zone": None, "stop": None,
+                    "target_1": None, "target_2": None, "rr_1": None, "rr_2": None,
+                    "rr_gate": "SKIPPED", "rr_gate_reason": "no data file",
+                    "ev": 0, "pf": 0, "dd": 0, "trades": 0,
+                    "verdict": "SKIPPED", "verdict_reason": "no data file",
+                })
+                continue
+        candidates.append(scan_candidate(sym, tf, acc, trades, days))
 
     # Select best passing candidate
     passing = [c for c in candidates if c["verdict"] == "CANDIDATE"]
@@ -206,6 +238,7 @@ def main():
     for c in candidates:
         rr1s = f"1:{c['rr_1']:.2f}" if c["rr_1"] is not None else "N/A"
         rr2s = f"1:{c['rr_2']:.2f}" if c["rr_2"] is not None else "N/A"
+        reason = c.get("verdict_reason", "")
         cand_rows.append({
             "label": c["label"],
             "direction": c["direction"],
@@ -214,6 +247,7 @@ def main():
             "quality": c["setup_quality"],
             "rr_gate": c["rr_gate"],
             "verdict": c["verdict"],
+            "reason": reason,
         })
 
     report: dict[str, Any] = {
@@ -263,14 +297,15 @@ def main():
         f"  TRADE DECISION: {decision}",
         "",
         "  Candidate Scan:",
-        "  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
-            "Config", "Direction", "RR T1", "RR T2", "Quality", "RR Gate", "Verdict"),
-        "  " + "-" * 70,
+        "  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s} {:<20s}".format(
+            "Config", "Direction", "RR T1", "RR T2", "Quality", "RR Gate", "Verdict", "Reason"),
+        "  " + "-" * 88,
     ]
     for c in cand_rows:
-        lines.append("  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
-            c["label"], c["direction"], c["rr_t1"], c["rr_t2"], c["quality"], c["rr_gate"], c["verdict"]))
-    lines.append("  " + "-" * 70)
+        lines.append("  {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s} {:<20s}".format(
+            c["label"], c["direction"], c["rr_t1"], c["rr_t2"],
+            c["quality"], c["rr_gate"], c["verdict"], c["reason"][:20]))
+    lines.append("  " + "-" * 88)
 
     if selected:
         sel = selected

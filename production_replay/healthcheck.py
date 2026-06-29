@@ -153,7 +153,11 @@ def main():
             pk = json.load(f)
         fd = pk.get("final_decision", "?")
         bc = pk.get("selected_candidate") or "none"
-        print(f"  Decision: {fd}, Candidate: {bc}  | OK")
+        n_cand = len(pk.get("candidates", []))
+        if n_cand == 0:
+            print(f"  Decision: {fd}, Candidate table EMPTY  | WARN")
+        else:
+            print(f"  Decision: {fd}, Candidate: {bc} ({n_cand} scanned)  | OK")
     else:
         print("  Not generated yet -- run `python -m production_replay.doctor_daily_packet`  | SKIP")
     try:

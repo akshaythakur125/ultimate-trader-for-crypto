@@ -1525,3 +1525,45 @@ def test_multi_candidate_no_api_imports():
                 for alias in node.names:
                     assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import in {mod}: {alias.name}"
 
+
+# --- Phase 29B: Fix Empty Candidate Table ---
+
+def test_candidate_table_never_empty():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert len(report.get("candidates", [])) > 0, "candidate table must not be empty"
+
+
+def test_failed_candidates_appear_in_packet():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    candidates = report.get("candidates", [])
+    assert len(candidates) > 0
+    rejected = [c for c in candidates if c["verdict"] in ("REJECTED", "SKIPPED")]
+    assert len(rejected) > 0, "failed/skipped candidates should still appear"
+
+
+def test_candidate_table_includes_reason():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    for c in report.get("candidates", []):
+        assert "reason" in c
+
+
+def test_all_rr_fail_gives_do_not_trade_in_tp():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
+    with open(path) as f:
+        report = json.load(f)
+    all_fail = all(c.get("rr_gate") == "FAIL" or c.get("verdict") == "SKIPPED" for c in report.get("candidates", []))
+    if all_fail:
+        assert report.get("trade_decision") == "WAIT"
+

@@ -139,11 +139,16 @@ def main():
     pos_str = f"{pos_sizing.get('position_size'):.6f}" if pos_sizing.get("position_size") is not None else "N/A"
     loss_str = f"{pos_sizing.get('max_loss_if_hit'):.2f}" if pos_sizing.get("max_loss_if_hit") is not None else "N/A"
 
-    # Candidate table
+    # Candidate table (never empty — show placeholder if no rows)
     cand_lines = []
+    if not candidates:
+        cand_lines.append("    {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s} {:<20s}".format(
+            "(no configs)", "", "", "", "", "", "", ""))
     for c in candidates:
-        cand_lines.append("    {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
-            c["label"], c["direction"], c["rr_t1"], c["rr_t2"], c["quality"], c["rr_gate"], c["verdict"]))
+        reason = c.get("reason", "")
+        cand_lines.append("    {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s} {:<20s}".format(
+            c["label"], c["direction"], c["rr_t1"], c["rr_t2"],
+            c["quality"], c["rr_gate"], c["verdict"], reason[:20]))
 
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
@@ -160,13 +165,13 @@ def main():
         f"  EVIDENCE:       {trades}/{MIN_TRADES} trades, {days}/{MIN_DAYS} days",
         "",
         "  Candidate Table:",
-        "    {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s}".format(
-            "Config", "Direction", "RR T1", "RR T2", "Quality", "RR Gate", "Verdict"),
-        "    " + "-" * 70,
+        "    {:<18s} {:<10s} {:<8s} {:<8s} {:<9s} {:<8s} {:<10s} {:<20s}".format(
+            "Config", "Direction", "RR T1", "RR T2", "Quality", "RR Gate", "Verdict", "Reason"),
+        "    " + "-" * 88,
     ]
     lines += cand_lines
     lines += [
-        "    " + "-" * 70,
+        "    " + "-" * 88,
         "",
         sel_line,
     ]
