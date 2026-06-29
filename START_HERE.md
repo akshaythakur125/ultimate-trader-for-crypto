@@ -80,10 +80,12 @@ required outside the operator layer). Do not simply flip config_locked.yaml.
 
 ## Doctor/Busy Operator Mode
 
-Forget the manual checks. Just run one of:
+Forget the manual checks. Run any of these:
 
 ```
 python -m production_replay.healthcheck
+python -m production_replay.daily_status
+cat deploy_results/daily_brief.txt
 ```
 
 Or (Linux/Mac):
@@ -92,4 +94,6 @@ Or (Linux/Mac):
 bash scripts/doctor_check.sh
 ```
 
-This runs safety locks, launch check, verifies live/paper disabled, checks for API imports, and reports test status. All in one command.
+`healthcheck` — runs safety locks, launch check, verifies live/paper disabled, checks evidence ledger and daily brief.
+`daily_status` — prints trades/days progress, EV, PF, DD, paper eligibility, next action.
+`daily_brief.txt` — one-page brief with system safety, progress, and final instruction.

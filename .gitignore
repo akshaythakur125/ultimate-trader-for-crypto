@@ -45,3 +45,7 @@ phase7_results/
 deploy_results/
 !deploy_results/.gitkeep
 !deploy_results/.gitignore
+
+# Runtime state (persistent, not cleaned)
+runtime_state/evidence_ledger.jsonl
+!runtime_state/.gitkeep

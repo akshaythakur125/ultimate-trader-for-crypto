@@ -9,6 +9,9 @@ import json, os, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 REPORT_PATH = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "accelerated_evidence_report.json")
+LEDGER_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
+LEDGER_FILE = os.path.join(LEDGER_DIR, "evidence_ledger.jsonl")
+BRIEF_FILE = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "daily_brief.txt")
 
 
 def _run(label, cmd):
@@ -75,6 +78,31 @@ def main():
     else:
         print("  Not generated yet — run `python -m production_replay.accelerated_evidence`  | SKIP")
 
+    print("\n--- EVIDENCE LEDGER ---")
+    if os.path.exists(LEDGER_FILE):
+        with open(LEDGER_FILE) as f:
+            count = sum(1 for l in f if l.strip())
+        print(f"  {count} entry(ies) in runtime_state/evidence_ledger.jsonl  | OK")
+    else:
+        print("  No ledger yet — run `python -m production_replay.operator`  | SKIP")
+
+    print("\n--- DAILY BRIEF ---")
+    if os.path.exists(BRIEF_FILE):
+        with open(BRIEF_FILE) as f:
+            first = f.readline().strip()
+        print(f"  {first}  | OK")
+    else:
+        print("  No brief yet — run `python -m production_replay.operator`  | SKIP")
+
+    print("\n--- DAILY STATUS ---")
+    try:
+        import importlib
+        from production_replay import daily_status
+        print("  python -m production_replay.daily_status available  | OK")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n" + "=" * 60)
     if failed == 0:
         print("  SYSTEM SAFE    | YES")
@@ -86,7 +114,9 @@ def main():
         print("  LIVE DISABLED  | YES")
         print("  PAPER DISABLED | YES")
         print("  LOOP STATUS    | Fix above failures first")
-    print("  TEST STATUS    | python -m pytest -q -k \"quick_regime or replay_runner or accelerated or safety or launch\"")
+    print("  TEST STATUS    | python -m pytest -q -k \"ledger or daily_status or healthcheck or safety or launch\"")
+    print("  DAILY STATUS   | python -m production_replay.daily_status")
+    print("  DOCTOR BRIEF   | cat deploy_results/daily_brief.txt")
     print("=" * 60)
     return 0 if failed == 0 else 1
 

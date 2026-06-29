@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from production_replay.launch_check import run_launch_check, load_config
 from production_replay.evidence_tracker import track_evidence, print_evidence_summary
+from production_replay.evidence_ledger import append_ledger_entry, generate_daily_brief
 from production_replay.safety_lock import run_safety_lock
 from production_replay.forward_test_runner import run_forward_test
 from production_replay.kill_switch import check_kill_switch
@@ -578,6 +579,11 @@ def operator_run(
     evidence = track_evidence(dry_result)
     operator_result["evidence"] = evidence
     print_evidence_summary(evidence)
+
+    # Append to evidence ledger and generate daily brief
+    append_ledger_entry(operator_result)
+    brief = generate_daily_brief(operator_result)
+    print(f"\n[DAILY BRIEF] {os.path.join(RESULTS_DIR, 'daily_brief.txt')}")
 
     # Determine overall operator verdict (never TIMEOUT)
     operator_verdict = _determine_operator_verdict(all_results, dry_result, evidence)

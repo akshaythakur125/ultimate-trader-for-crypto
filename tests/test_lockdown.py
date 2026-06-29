@@ -1014,3 +1014,97 @@ def test_run_selective_replay_with_atr14_20():
     assert isinstance(m, dict)
     assert "total_trades" in m
 
+
+# --- Evidence Ledger & Daily Status ---
+
+def test_evidence_ledger_appends_valid_jsonl():
+    from production_replay.evidence_ledger import append_ledger_entry, read_latest_entry
+    import tempfile, os, json
+
+    with tempfile.TemporaryDirectory() as td:
+        ledger_path = os.path.join(td, "test_ledger.jsonl")
+        os.environ["EVIDENCE_LEDGER_PATH"] = ledger_path
+        try:
+            sample = {
+                "mode": "test", "dry_forward": {"verdict": "TEST", "total_trades": 5, "total_wr": 50,
+                    "total_ev": 0.5, "total_pf": 2.0, "total_dd_r": 3.0, "kill_triggered": False,
+                    "live_trading_enabled": False, "paper_trading_enabled": False, "per_config": []},
+                "evidence": {"calendar_days_logged": 1, "paper_unlock_blocked": True},
+                "safety_lock": {"pass": True}, "launch_check": {"verdict": "PASS"},
+            }
+            entry = append_ledger_entry(sample)
+            assert isinstance(entry, dict)
+            assert "timestamp" in entry
+            assert entry["total_trades"] == 5
+            assert entry["safety_lock_verdict"] == "ALL LOCKS ENGAGED"
+
+            latest = read_latest_entry()
+            assert latest is not None
+            assert latest["total_trades"] == 5
+        finally:
+            os.environ.pop("EVIDENCE_LEDGER_PATH", None)
+
+
+def test_deploy_results_cleaning_does_not_delete_ledger():
+    """Verify evidence ledger lives in runtime_state/, not deploy_results/."""
+    from production_replay.evidence_ledger import LEDGER_FILE
+    assert "runtime_state" in LEDGER_FILE
+    assert "deploy_results" not in LEDGER_FILE
+
+
+def test_daily_status_works_empty_ledger():
+    from production_replay.daily_status import main as ds_main
+    import sys
+    rc = ds_main()
+    assert rc == 0
+
+
+def test_daily_status_works_with_entry():
+    from production_replay.evidence_ledger import append_ledger_entry
+    import tempfile, os, json
+
+    with tempfile.TemporaryDirectory() as td:
+        ledger_path = os.path.join(td, "test_ledger.jsonl")
+        os.environ["EVIDENCE_LEDGER_PATH"] = ledger_path
+        try:
+            sample = {
+                "mode": "test", "dry_forward": {"verdict": "TEST", "total_trades": 42, "total_wr": 55,
+                    "total_ev": 0.8, "total_pf": 1.9, "total_dd_r": 4.5, "kill_triggered": False,
+                    "live_trading_enabled": False, "paper_trading_enabled": False, "per_config": []},
+                "evidence": {"calendar_days_logged": 5, "paper_unlock_blocked": True},
+                "safety_lock": {"pass": True}, "launch_check": {"verdict": "PASS"},
+            }
+            append_ledger_entry(sample)
+            from production_replay.daily_status import main as ds_main
+            rc = ds_main()
+            assert rc == 0
+        finally:
+            os.environ.pop("EVIDENCE_LEDGER_PATH", None)
+
+
+def test_healthcheck_imports_work():
+    from production_replay.healthcheck import main as hc_main
+    assert callable(hc_main)
+
+
+def test_evidence_ledger_no_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "evidence_ledger.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+def test_daily_status_no_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "daily_status.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
