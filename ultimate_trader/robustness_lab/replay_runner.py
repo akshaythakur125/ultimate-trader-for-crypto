@@ -152,7 +152,13 @@ def run_selective_replay(
     rcfg: ReplayConfig,
     invert: bool = False,
     collect_trade_timestamps: bool = False,
+    stop_method: str | None = None,
 ) -> tuple[dict[str, Any], RejectionReasonAnalyzer, dict[str, int]]:
+    if stop_method is None:
+        if isinstance(rcfg, dict):
+            stop_method = rcfg.get("stop_method", "atr14_20")
+        else:
+            stop_method = getattr(rcfg, "stop_method", "atr14_20")
     strat_cfg = StrategyConfig(confidence_threshold=frozen_cfg.strategy_confidence_threshold)
     engine = StrategyEngine(strat_cfg)
     sim = TradeSimulator(rcfg)
@@ -179,9 +185,11 @@ def run_selective_replay(
     ra = RejectionReasonAnalyzer()
 
     lsm_pipeline = _LsmPipeline()
+    range_buffer = deque(maxlen=20)
 
     for i, candle in enumerate(candles):
         engine.add_candle(candle)
+        range_buffer.append(candle.high - candle.low)
         if i < rcfg.warmup_candles:
             lsm_pipeline.process_candle(candle)
             continue

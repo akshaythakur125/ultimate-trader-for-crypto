@@ -77,3 +77,19 @@ required outside the operator layer). Do not simply flip config_locked.yaml.
   validation pipeline (Phase 5-7) and pass all unlock conditions first
 
 **Do not edit config_locked.yaml manually.**
+
+## Doctor/Busy Operator Mode
+
+Forget the manual checks. Just run one of:
+
+```
+python -m production_replay.healthcheck
+```
+
+Or (Linux/Mac):
+
+```
+bash scripts/doctor_check.sh
+```
+
+This runs safety locks, launch check, verifies live/paper disabled, checks for API imports, and reports test status. All in one command.

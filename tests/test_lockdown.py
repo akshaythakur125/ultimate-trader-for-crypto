@@ -952,3 +952,65 @@ def test_accelerated_evidence_each_candidate_has_gate_results():
         assert "gate_results" in c
         assert len(c["gate_results"]) >= 6
 
+
+# --- Regression: run_selective_replay without stop_method ---
+
+def test_run_selective_replay_no_stop_method_does_not_crash():
+    """run_selective_replay must not raise NameError when called without stop_method (defaults to "atr14_20")."""
+    from ultimate_trader.robustness_lab.replay_runner import run_selective_replay
+    from ultimate_trader.robustness_lab.frozen_config import FrozenConfig
+    from ultimate_trader.historical_replay.models import HistoricalCandle, ReplayConfig
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    frozen = FrozenConfig()
+    rcfg = ReplayConfig(warmup_candles=2, taker_fee_percent=0.04,
+                        slippage_percent=0.02, funding_per_candle_percent=0.001)
+
+    candles = []
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    for i in range(50):
+        candles.append(HistoricalCandle(
+            symbol="BTCUSDT", timeframe="15m",
+            timestamp=base,
+            open=Decimal(str(50000 + i)),
+            high=Decimal(str(50100 + i)),
+            low=Decimal(str(49900 + i)),
+            close=Decimal(str(50050 + i)),
+            volume=Decimal("100"),
+        ))
+
+    m, ra, db = run_selective_replay(candles, frozen, rcfg)
+    assert isinstance(m, dict)
+    assert "total_trades" in m
+
+
+def test_run_selective_replay_with_atr14_20():
+    """run_selective_replay must work when stop_method="atr14_20"."""
+    from ultimate_trader.robustness_lab.replay_runner import run_selective_replay
+    from ultimate_trader.robustness_lab.frozen_config import FrozenConfig
+    from ultimate_trader.historical_replay.models import HistoricalCandle, ReplayConfig
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    frozen = FrozenConfig()
+    rcfg = ReplayConfig(warmup_candles=2, taker_fee_percent=0.04,
+                        slippage_percent=0.02, funding_per_candle_percent=0.001)
+
+    candles = []
+    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    for i in range(50):
+        candles.append(HistoricalCandle(
+            symbol="BTCUSDT", timeframe="15m",
+            timestamp=base,
+            open=Decimal(str(50000 + i)),
+            high=Decimal(str(50100 + i)),
+            low=Decimal(str(49900 + i)),
+            close=Decimal(str(50050 + i)),
+            volume=Decimal("100"),
+        ))
+
+    m, ra, db = run_selective_replay(candles, frozen, rcfg, stop_method="atr14_20")
+    assert isinstance(m, dict)
+    assert "total_trades" in m
+
