@@ -57,9 +57,11 @@ def main():
     _run_module("production_replay.healthcheck")
     _run_module("production_replay.today_trade_plan")
     _run_module("production_replay.manual_risk_console")
+    _run_module("production_replay.strategy_tournament")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
+    tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -150,6 +152,25 @@ def main():
             c["label"], c["direction"], c["rr_t1"], c["rr_t2"],
             c["quality"], c["rr_gate"], c["verdict"], reason[:20]))
 
+    # Tournament section
+    tournament_lines = []
+    if tournament:
+        top_strat = tournament.get("top_strategy")
+        if top_strat:
+            tournament_lines = [
+                "",
+                "  TOURNAMENT TOP STRATEGY:",
+                f"    {top_strat['display_name']} on {top_strat['config_label']}",
+                f"    EV: {top_strat['ev_r']}R  PF: {top_strat['pf']}  WR: {top_strat['win_rate']:.1%}",
+                f"    Verdict: {top_strat['verdict']}",
+            ]
+        else:
+            tournament_lines = ["", "  TOURNAMENT: No passing strategy", ""]
+        tournament_lines += [
+            f"    PASS: {tournament['passing']}  WATCH: {tournament['watching']}  "
+            f"REJECT: {tournament['rejected']}  SKIP: {tournament['skipped']}",
+        ]
+
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
     lines = [
@@ -187,6 +208,8 @@ def main():
             f"    POSITION SIZE: {pos_str}",
             f"    MAX LOSS IF STOP HIT: {loss_str} USDT",
         ]
+    lines += tournament_lines
+
     lines += [
         "",
         f"  FINAL DECISION: {decision}",
@@ -223,6 +246,13 @@ def main():
         "final_decision": decision,
         "reason": "; ".join(reasons),
         "disclaimer": "This system is not approved for live trading. Manual trading is at user's own risk.",
+        "strategy_tournament": {
+            "top_strategy": tournament.get("top_strategy") if tournament else None,
+            "passing": tournament.get("passing", 0) if tournament else 0,
+            "watching": tournament.get("watching", 0) if tournament else 0,
+            "rejected": tournament.get("rejected", 0) if tournament else 0,
+            "skipped": tournament.get("skipped", 0) if tournament else 0,
+        } if tournament else None,
     }
 
     with open(JSON_PATH, "w") as f:

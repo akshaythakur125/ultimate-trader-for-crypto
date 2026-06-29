@@ -1645,3 +1645,87 @@ def test_locked_config_loader_no_api_imports():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+# --- Phase 30: Strategy Tournament Engine ---
+
+def test_tournament_runs():
+    from production_replay.strategy_tournament import main
+    assert main() == 0
+
+
+def test_tournament_report_exists():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("mode") == "strategy_tournament"
+
+
+def test_tournament_no_live_paper_trading():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_trading_enabled") is False
+    assert report.get("paper_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_tournament_produces_structured_results():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["total_results"] >= 30
+    for r in report["strategies"]:
+        assert "trades" in r
+        assert "win_rate" in r
+        assert "ev_r" in r
+        assert "profit_factor" in r
+        assert "verdict" in r
+
+
+def test_tournament_verdicts_valid():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    for r in report["strategies"]:
+        assert r["verdict"] in ("PASS", "WATCH", "REJECT", "SKIP")
+
+
+def test_tournament_includes_btc_configs():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    labels = {r["config_label"] for r in report["strategies"]}
+    assert "BTCUSDT 15m" in labels
+    assert "BTCUSDT 30m" in labels
+    assert "BTCUSDT 1h" in labels
+    assert "ETHUSDT 15m" in labels
+    assert "SOLUSDT 15m" in labels
+
+
+def test_tournament_no_forbidden_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "strategy_tournament.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+def test_doctor_packet_includes_tournament():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "strategy_tournament" in report
+    assert report["strategy_tournament"] is not None
+    assert "top_strategy" in report["strategy_tournament"]
