@@ -167,6 +167,19 @@ def main():
             print(f"  Decision: {fd}, Candidate table EMPTY  | WARN")
         else:
             print(f"  Decision: {fd}, Candidate: {bc} ({n_cand} scanned)  | OK")
+        if fd == "APPROVED":
+            print(f"  CRITICAL: final_decision is APPROVED — evidence gates may be bypassed  | FAIL")
+            failed += 1
+        live_ok = pk.get("live_disabled", True)
+        paper_ok = pk.get("paper_disabled", True)
+        if not live_ok:
+            print(f"  Live trading NOT disabled in packet  | FAIL")
+            failed += 1
+        if not paper_ok:
+            print(f"  Paper trading NOT disabled in packet  | FAIL")
+            failed += 1
+        if live_ok and paper_ok:
+            print(f"  Live/paper disabled  | OK")
     else:
         print("  Not generated yet -- run `python -m production_replay.doctor_daily_packet`  | SKIP")
     try:

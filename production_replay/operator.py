@@ -326,6 +326,17 @@ def _write_summary(result: dict, start: float):
     lines.append(f"  Live trading:  {'DISABLED' if not dry or not dry.get('live_trading_enabled', False) else 'ENABLED'}")
     lines.append(f"  Paper trading: {'DISABLED' if not dry or not dry.get('paper_trading_enabled', False) else 'ENABLED'}")
     lines.append("")
+    lines.append("")
+    lines.append("--- Doctor Packet ---")
+    dp = result.get("doctor_packet")
+    if dp:
+        lines.append(f"  Status: {dp.get('status', '?')}")
+        lines.append(f"  Decision: {dp.get('decision', '?')}")
+        lines.append(f"  Path: {dp.get('path', '?')}")
+    else:
+        lines.append("  (not run)")
+
+    lines.append("")
     lines.append("--- Generated Files ---")
     lines.append(f"  {JSON_REPORT}")
     lines.append(f"  {TEXT_REPORT}")
@@ -339,7 +350,7 @@ def _write_summary(result: dict, start: float):
 
 
 def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
-                       operator_verdict: str, start: float):
+                       operator_verdict: str, start: float, result: dict | None = None):
     elapsed = time.time() - start
     print_sep()
     print("  OPERATOR FINAL STATUS")
@@ -357,6 +368,9 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print(f"  {'Paper Unlock':<20s} {'BLOCKED' if evidence.get('paper_unlock_blocked', True) else 'UNLOCKED':<20s}")
     print(f"  {'Live Unlock':<20s} {'BLOCKED' if evidence.get('live_unlock_blocked', True) else 'UNLOCKED':<20s}")
     print(f"  {'Elapsed':<20s} {elapsed:.1f}s")
+    dp = result.get("doctor_packet", {}) if result else {}
+    print(f"  {'Doctor Packet':<20s} {dp.get('status', 'N/A'):<20s}")
+    print(f"  {'Final Decision':<20s} {dp.get('decision', 'N/A'):<20s}")
     print("-" * 42)
     print("  Per-Config:")
     for cfg in dry.get("per_config", []):
@@ -366,6 +380,7 @@ def _print_final_table(dry: dict, lc: dict, safety: dict, evidence: dict,
     print("-" * 42)
     next_action = evidence.get("paper_unlock_reason", "unknown")
     print(f"  Next action: {next_action}")
+    print(f"  Packet cmd:  cat deploy_results/doctor_daily_packet.txt")
     print(f"  Daily cmd:   python -m production_replay.operator")
     print_sep()
 
@@ -585,10 +600,46 @@ def operator_run(
     brief = generate_daily_brief(operator_result)
     print(f"\n[DAILY BRIEF] {os.path.join(RESULTS_DIR, 'daily_brief.txt')}")
 
+    # Step 5: Auto-generate doctor daily packet
+    print(f"\n  {'='*60}")
+    print(f"  [5/5] Generating doctor daily packet...")
+    doctor_packet_ok = True
+    doctor_packet_path = os.path.join(RESULTS_DIR, "doctor_daily_packet.txt")
+    try:
+        from production_replay.strategy_tournament import main as tournament_main
+        tournament_main()
+    except Exception as e:
+        print(f"  WARNING: strategy_tournament failed: {e}", file=sys.stderr)
+    try:
+        from production_replay.doctor_daily_packet import main as ddp_main
+        ddp_main()
+        print(f"  [5/5] Doctor daily packet generated: {doctor_packet_path} ({time.time()-start:.1f}s)")
+    except Exception as e:
+        print(f"  ERROR: doctor_daily_packet generation failed: {e}", file=sys.stderr)
+        doctor_packet_ok = False
+
+    doctor_packet_status = "GENERATED" if doctor_packet_ok else "FAILED"
+    doctor_final_decision = "UNKNOWN"
+    if doctor_packet_ok:
+        try:
+            doctor_json = os.path.join(RESULTS_DIR, "doctor_daily_packet.json")
+            if os.path.exists(doctor_json):
+                with open(doctor_json) as f:
+                    dp = json.load(f)
+                doctor_final_decision = dp.get("final_decision", "UNKNOWN")
+        except Exception:
+            pass
+
+    operator_result["doctor_packet"] = {
+        "status": doctor_packet_status,
+        "decision": doctor_final_decision,
+        "path": doctor_packet_path,
+    }
+
     # Determine overall operator verdict (never TIMEOUT)
     operator_verdict = _determine_operator_verdict(all_results, dry_result, evidence)
     operator_result["operator_verdict"] = operator_verdict
-    _print_final_table(dry_result, lc, safety, evidence, operator_verdict, start)
+    _print_final_table(dry_result, lc, safety, evidence, operator_verdict, start, result=operator_result)
     _write_summary(operator_result, start)
 
     return operator_result

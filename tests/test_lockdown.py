@@ -1729,3 +1729,82 @@ def test_doctor_packet_includes_tournament():
     assert "strategy_tournament" in report
     assert report["strategy_tournament"] is not None
     assert "top_strategy" in report["strategy_tournament"]
+
+
+# --- Phase 31: Auto-Generate Doctor Packet in Operator ---
+
+def test_operator_generates_doctor_packet():
+    from production_replay.operator import operator_run
+    result = operator_run(
+        quick_mode=True, config_labels=["BTC 15m"],
+        fast_daily=True, allow_dirty=True,
+    )
+    dp = result.get("doctor_packet", {})
+    assert dp.get("status") == "GENERATED"
+    assert dp.get("decision") in ("DO_NOT_TRADE", "WAIT", "MANUAL_REVIEW_ONLY")
+    assert os.path.exists(dp.get("path", ""))
+    assert dp.get("decision") != "APPROVED"
+
+
+def test_operator_doctor_packet_not_approved():
+    import json
+    from production_replay.operator import operator_run
+    result = operator_run(
+        quick_mode=True, config_labels=["BTC 15m"],
+        fast_daily=True, allow_dirty=True,
+    )
+    dp = result.get("doctor_packet", {})
+    assert dp.get("decision") != "APPROVED"
+
+
+def test_operator_doctor_packet_live_paper_disabled():
+    import json
+    from production_replay.operator import operator_run
+    result = operator_run(
+        quick_mode=True, config_labels=["BTC 15m"],
+        fast_daily=True, allow_dirty=True,
+    )
+    dp = result.get("doctor_packet", {})
+    assert dp.get("decision") != "APPROVED"
+    # Verify live/paper remain disabled in operator result
+    dry = result.get("dry_forward", {})
+    assert dry.get("live_trading_enabled") is False
+    assert dry.get("paper_trading_enabled") is False
+
+
+def test_operator_summary_mentions_doctor_packet():
+    import json
+    from production_replay.operator import operator_run
+    result = operator_run(
+        quick_mode=True, config_labels=["BTC 15m"],
+        fast_daily=True, allow_dirty=True,
+    )
+    import os
+    summary_path = os.path.join("deploy_results", "operator_summary.txt")
+    with open(summary_path) as f:
+        content = f.read()
+    assert "Doctor Packet" in content
+    assert "GENERATED" in content or "FAILED" in content
+
+
+def test_healthcheck_never_approved():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("final_decision") != "APPROVED"
+    assert report.get("live_disabled") is True
+    assert report.get("paper_disabled") is True
+
+
+def test_operator_no_api_or_order_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "operator.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
