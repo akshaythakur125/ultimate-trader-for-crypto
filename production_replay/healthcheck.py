@@ -115,6 +115,19 @@ def main():
         print(f"  ERROR: {e}")
         failed += 1
 
+    print("\n--- MANUAL RISK CONSOLE ---")
+    risk_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "manual_risk_plan.txt")
+    if os.path.exists(risk_txt):
+        print(f"  {risk_txt}  | OK")
+    else:
+        print("  Not generated yet — run `python -m production_replay.manual_risk_console`  | SKIP")
+    try:
+        from production_replay import manual_risk_console
+        print("  python -m production_replay.manual_risk_console available  | OK")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n" + "=" * 60)
     if failed == 0:
         print("  SYSTEM SAFE    | YES")

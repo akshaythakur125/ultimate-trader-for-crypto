@@ -94,10 +94,11 @@ Or (Linux/Mac):
 bash scripts/doctor_check.sh
 ```
 
-`healthcheck` — runs safety locks, launch check, verifies live/paper disabled, checks evidence ledger, daily brief, and today_trade_plan.
+`healthcheck` — runs safety locks, launch check, verifies live/paper disabled, checks evidence ledger, daily brief, today_trade_plan, and manual risk console.
 `daily_status` — prints trades/days progress, EV, PF, DD, paper eligibility, next action.
 `daily_brief.txt` — one-page brief with system safety, progress, and final instruction.
 `today_trade_plan` — daily trade/no-trade decision support based on latest evidence.
+`manual_risk_console` — converts trade plan into a risk plan with user-defined capital/risk limits.
 
 ## Daily Trade Decision
 
@@ -112,3 +113,17 @@ Shows:
 - Best candidate and setup quality (A/B/C/REJECT)
 - Evidence status (trades, days, EV, PF, DD, kill)
 - Clear warning that this is decision-support only, not trading approval
+
+## Manual Risk Plan
+
+```
+python -m production_replay.manual_risk_console
+python -m production_replay.manual_risk_console --capital 50 --risk-per-trade 2
+cat deploy_results/manual_risk_plan.txt
+```
+
+Converts the trade plan into a doctor-mode risk plan:
+- RISK INSTRUCTION: WAIT / MANUAL_REVIEW_ONLY / DO_NOT_TRADE
+- Risk parameters (capital, risk per trade, daily/weekly loss limits)
+- Evidence status
+- Always blocks if system unsafe, kill triggered, or evidence incomplete

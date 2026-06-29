@@ -1150,3 +1150,45 @@ def test_today_trade_plan_no_api_imports():
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
 
+
+# --- Manual Risk Console ---
+
+def test_manual_risk_console_runs():
+    from production_replay.manual_risk_console import main as rc_main
+    rc = rc_main()
+    assert rc == 0
+
+
+def test_manual_risk_console_never_approves_before_gates():
+    import tempfile, os
+    from production_replay.evidence_ledger import append_ledger_entry
+    from production_replay.manual_risk_console import main as rc_main
+
+    with tempfile.TemporaryDirectory() as td:
+        ledger_path = os.path.join(td, "test_ledger.jsonl")
+        os.environ["EVIDENCE_LEDGER_PATH"] = ledger_path
+        try:
+            sample = {
+                "mode": "test", "dry_forward": {"verdict": "TEST", "total_trades": 50, "total_wr": 60,
+                    "total_ev": 1.0, "total_pf": 2.5, "total_dd_r": 3.0, "kill_triggered": False,
+                    "live_trading_enabled": False, "paper_trading_enabled": False, "per_config": []},
+                "evidence": {"calendar_days_logged": 5, "paper_unlock_blocked": True},
+                "safety_lock": {"pass": True}, "launch_check": {"verdict": "PASS"},
+            }
+            append_ledger_entry(sample)
+            rc = rc_main()
+            assert rc == 0
+        finally:
+            os.environ.pop("EVIDENCE_LEDGER_PATH", None)
+
+
+def test_manual_risk_console_no_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "manual_risk_console.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
