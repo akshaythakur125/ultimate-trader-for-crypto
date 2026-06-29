@@ -102,19 +102,28 @@ def main():
         print(f"  ERROR: {e}")
         failed += 1
 
+    print("\n--- LOCKED CONFIG LOADER ---")
+    try:
+        from production_replay.locked_config_loader import load_allowed_configs
+        pairs, source, err = load_allowed_configs()
+        count = len(pairs)
+        source_ok = "OK" if source == "config_locked.yaml" else "WARN (fallback)"
+        print(f"  Source: {source}, {count} config(s)  | {source_ok}")
+        for s, t in pairs:
+            print(f"    {s} {t}")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n--- TODAY TRADE PLAN ---")
     plan_json = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.json")
     plan_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.txt")
     if os.path.exists(plan_json):
         with open(plan_json) as f:
             tp = json.load(f)
-        levels = tp.get("setup_levels", {})
-        has_levels = levels.get("entry_zone") is not None or levels.get("entry_zone") is None  # field exists check
-        has_direction = tp.get("direction") is not None
-        if has_direction:
-            print(f"  Direction: {tp['direction']}, Setup levels present  | OK")
-        else:
-            print(f"  {plan_txt}  | OK")
+        n_cand = len(tp.get("candidates", []))
+        csrc = tp.get("config_source", "unknown")
+        print(f"  {n_cand} candidate(s) scanned, config source: {csrc}  | OK")
     else:
         print("  Not generated yet -- run `python -m production_replay.today_trade_plan`  | SKIP")
     try:

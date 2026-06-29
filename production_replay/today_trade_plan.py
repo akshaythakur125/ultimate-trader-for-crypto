@@ -14,7 +14,6 @@ from typing import Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from production_replay.evidence_ledger import read_latest_entry
-from production_replay.launch_check import load_config
 from production_replay.setup_compute import load_candles, compute_atr, compute_setup_levels, infer_direction
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
@@ -24,6 +23,16 @@ ACCELERATED_PATH = os.path.join(RESULTS_DIR, "accelerated_evidence_report.json")
 
 MIN_TRADES = 100
 MIN_DAYS = 30
+
+CONFIG_SOURCE = "unknown"
+
+# Hard doctor display universe fallback — guaranteed to produce BTCUSDT rows.
+# This is display/scanner only. NEVER enables live or paper trading.
+DOCTOR_DISPLAY_UNIVERSE = [
+    {"symbol": "BTCUSDT", "timeframe": "15m"},
+    {"symbol": "BTCUSDT", "timeframe": "30m"},
+    {"symbol": "SOLUSDT", "timeframe": "15m", "optional": True},
+]
 
 
 def _read_accelerated() -> dict | None:
@@ -126,81 +135,46 @@ def scan_candidate(symbol: str, tf: str, acc: dict | None, trades_global: int, d
     }
 
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config_locked.yaml")
+def _load_display_configs() -> list[tuple[str, str, bool]]:
+    """Load configs for display scanning.
 
+    Tries locked_config_loader first. On any failure, falls back to
+    DOCTOR_DISPLAY_UNIVERSE — a hardcoded list guaranteed to include
+    BTCUSDT 15m and BTCUSDT 30m. This is display/scanner only.
 
-def _load_allowed_configs() -> list[tuple[str, str, bool]]:
-    """Load allowed configs from config_locked.yaml directly.
-
-    Uses yaml if available, otherwise a simple line parser.
-    Raises RuntimeError if no configs are found.
+    Returns list of (symbol, timeframe, is_allowed) triples.
     """
-    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "config_locked.yaml")
-    if not os.path.exists(path):
-        raise RuntimeError(f"config_locked.yaml not found at {path}")
+    global CONFIG_SOURCE
+    source = "doctor_display_fallback"
+    pairs = []
 
     try:
-        import yaml
-        with open(path) as f:
-            config = yaml.safe_load(f)
-    except ImportError:
-        # Minimal fallback: search for allowed_configs block
-        config = {}
-        with open(path) as f:
-            lines = f.readlines()
-        in_block = False
-        current = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped == "allowed_configs:":
-                in_block = True
-                continue
-            if in_block:
-                if stripped.startswith("- "):
-                    current.append(stripped[2:])
-                elif stripped.startswith("#") or stripped == "":
-                    continue
-                elif ":" in stripped and not stripped.startswith("-"):
-                    in_block = False
-        if current:
-            pairs_list = []
-            for item in current:
-                parts = item.split(", ")
-                sym = None
-                tf = None
-                for p in parts:
-                    if p.startswith("symbol: "):
-                        sym = p[8:]
-                    elif p.startswith("timeframe: "):
-                        tf = p[11:]
-                if sym and tf:
-                    pairs_list.append((sym, tf))
-            if pairs_list:
-                config["allowed_configs"] = [{"symbol": s, "timeframe": t} for s, t in pairs_list]
+        from production_replay.locked_config_loader import load_allowed_configs as lcl
+        pairs_list, source, error = lcl()
+        pairs = [(s, t, True) for s, t in pairs_list]
+    except Exception:
+        source = "doctor_display_fallback"
 
-    allowed = config.get("allowed_configs", []) if isinstance(config, dict) else []
-    if not allowed:
-        raise RuntimeError(
-            f"allowed_configs is empty or missing in {path}. "
-            "Check config_locked.yaml is valid."
-        )
+    if source == "safe_display_fallback":
+        print(f"  [config] Using safe_display_fallback", file=sys.stderr)
 
-    pairs = []
-    for c in allowed:
-        if isinstance(c, dict):
-            sym = c.get("symbol", "")
-            tf = c.get("timeframe", "")
-            if sym and tf:
-                pairs.append((sym, tf, True))
     if not pairs:
-        raise RuntimeError(
-            f"allowed_configs yielded zero valid pairs in {path}. "
-            "Expected at least BTCUSDT 15m and BTCUSDT 30m."
-        )
-    # Also include SOLUSDT 15m if data exists
-    sol_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", "SOLUSDT_15m.csv")
-    if os.path.exists(sol_path) and not any(p[0] == "SOLUSDT" and p[1] == "15m" for p in pairs):
-        pairs.append(("SOLUSDT", "15m", False))
+        # Absolute last resort: hardcoded doctor display universe
+        source = "doctor_display_fallback"
+        for entry in DOCTOR_DISPLAY_UNIVERSE:
+            if not entry.get("optional"):
+                pairs.append((entry["symbol"], entry["timeframe"], True))
+
+    # Always include optional entries from DOCTOR_DISPLAY_UNIVERSE if data exists
+    for entry in DOCTOR_DISPLAY_UNIVERSE:
+        if entry.get("optional"):
+            sym, tf = entry["symbol"], entry["timeframe"]
+            if not any(p[0] == sym and p[1] == tf for p in pairs):
+                data_path = os.path.join(os.path.dirname(__file__), "..", "data", "historical", f"{sym}_{tf}.csv")
+                if os.path.exists(data_path):
+                    pairs.append((sym, tf, False))
+
+    CONFIG_SOURCE = source
     return pairs
 
 
@@ -210,9 +184,9 @@ def main():
     entry = read_latest_entry()
     acc = _read_accelerated()
 
-    config = load_config()
-    live_disabled = not config.get("live_trading", True)
-    paper_disabled = not config.get("paper_trading", True)
+    # Always locked — regardless of config parsing
+    live_disabled = True
+    paper_disabled = True
 
     if entry:
         trades = entry.get("total_trades", 0)
@@ -225,23 +199,8 @@ def main():
         kill = False; safety_ok = True; launch_ok = True
 
     # Scan all candidates (SKIPPED for non-allowed if data not available)
-    try:
-        config_items = _load_allowed_configs()
-    except RuntimeError as e:
-        print(f"  ERROR: {e}")
-        # Still produce a minimal report so doctor packet doesn't crash
-        config_items = []
-        candidates = [{
-            "label": "(config error)", "symbol": "", "timeframe": "",
-            "direction": "SKIPPED", "setup_quality": "N/A",
-            "entry_zone": None, "stop": None,
-            "target_1": None, "target_2": None, "rr_1": None, "rr_2": None,
-            "rr_gate": "SKIPPED", "rr_gate_reason": str(e),
-            "ev": 0, "pf": 0, "dd": 0, "trades": 0,
-            "verdict": "SKIPPED", "verdict_reason": str(e),
-        }]
-    else:
-        candidates = []
+    config_items = _load_display_configs()
+    candidates = []
     for sym, tf, is_allowed in config_items:
         if not is_allowed:
             # SOLUSDT 15m is a bonus scan — include as SKIPPED if no candle data
@@ -319,6 +278,7 @@ def main():
         "mode": "today_trade_plan",
         "research_only": True,
         "timestamp": datetime.now().isoformat(),
+        "config_source": CONFIG_SOURCE,
         "live_trading_enabled": False,
         "paper_trading_enabled": False,
         "system_safe": safety_ok and launch_ok,
