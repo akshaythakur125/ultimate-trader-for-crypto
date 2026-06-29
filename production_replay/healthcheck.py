@@ -96,9 +96,21 @@ def main():
 
     print("\n--- DAILY STATUS ---")
     try:
-        import importlib
         from production_replay import daily_status
         print("  python -m production_replay.daily_status available  | OK")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
+    print("\n--- TODAY TRADE PLAN ---")
+    plan_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "today_trade_plan.txt")
+    if os.path.exists(plan_txt):
+        print(f"  {plan_txt}  | OK")
+    else:
+        print("  Not generated yet — run `python -m production_replay.today_trade_plan`  | SKIP")
+    try:
+        from production_replay import today_trade_plan
+        print("  python -m production_replay.today_trade_plan available  | OK")
     except Exception as e:
         print(f"  ERROR: {e}")
         failed += 1

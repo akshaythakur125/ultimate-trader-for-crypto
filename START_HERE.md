@@ -94,6 +94,21 @@ Or (Linux/Mac):
 bash scripts/doctor_check.sh
 ```
 
-`healthcheck` — runs safety locks, launch check, verifies live/paper disabled, checks evidence ledger and daily brief.
+`healthcheck` — runs safety locks, launch check, verifies live/paper disabled, checks evidence ledger, daily brief, and today_trade_plan.
 `daily_status` — prints trades/days progress, EV, PF, DD, paper eligibility, next action.
 `daily_brief.txt` — one-page brief with system safety, progress, and final instruction.
+`today_trade_plan` — daily trade/no-trade decision support based on latest evidence.
+
+## Daily Trade Decision
+
+```
+python -m production_replay.today_trade_plan
+cat deploy_results/today_trade_plan.txt
+```
+
+Shows:
+- SYSTEM SAFE: YES/NO
+- TRADE DECISION: WAIT / MANUAL_REVIEW_ONLY
+- Best candidate and setup quality (A/B/C/REJECT)
+- Evidence status (trades, days, EV, PF, DD, kill)
+- Clear warning that this is decision-support only, not trading approval
