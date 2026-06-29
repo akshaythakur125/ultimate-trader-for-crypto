@@ -145,6 +145,24 @@ def main():
         print(f"  ERROR: {e}")
         failed += 1
 
+    print("\n--- DOCTOR DAILY PACKET ---")
+    packet_json = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    packet_txt = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.txt")
+    if os.path.exists(packet_json):
+        with open(packet_json) as f:
+            pk = json.load(f)
+        fd = pk.get("final_decision", "?")
+        bc = pk.get("best_candidate", "?")
+        print(f"  Decision: {fd}, Candidate: {bc}  | OK")
+    else:
+        print("  Not generated yet -- run `python -m production_replay.doctor_daily_packet`  | SKIP")
+    try:
+        from production_replay import doctor_daily_packet
+        print("  python -m production_replay.doctor_daily_packet available  | OK")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n" + "=" * 60)
     if failed == 0:
         print("  SYSTEM SAFE    | YES")
@@ -159,6 +177,7 @@ def main():
     print("  TEST STATUS    | python -m pytest -q -k \"ledger or daily_status or healthcheck or safety or launch\"")
     print("  DAILY STATUS   | python -m production_replay.daily_status")
     print("  DOCTOR BRIEF   | cat deploy_results/daily_brief.txt")
+    print("  DOCTOR PACKET  | cat deploy_results/doctor_daily_packet.txt")
     print("=" * 60)
     return 0 if failed == 0 else 1
 

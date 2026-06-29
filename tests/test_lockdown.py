@@ -1276,3 +1276,85 @@ def test_manual_risk_console_no_api_imports():
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
 
+
+# --- Doctor Daily Packet ---
+
+def test_doctor_daily_packet_runs():
+    from production_replay.doctor_daily_packet import main as ddp_main
+    rc = ddp_main()
+    assert rc == 0
+
+
+def test_doctor_daily_packet_has_safety_status():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "system_safe" in report
+    assert "live_disabled" in report
+    assert "paper_disabled" in report
+
+
+def test_doctor_daily_packet_has_candidate_and_levels():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "best_candidate" in report
+    assert "direction" in report
+    assert "setup_levels" in report
+    assert "final_decision" in report
+    assert "reason" in report
+
+
+def test_doctor_daily_packet_never_approves_before_gates():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    decision = report["final_decision"]
+    assert decision != "APPROVED"
+    assert decision in ("WAIT", "MANUAL_REVIEW_ONLY", "DO_NOT_TRADE")
+
+
+def test_doctor_daily_packet_live_paper_disabled():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_disabled") is True
+    assert report.get("paper_disabled") is True
+    assert report.get("research_only") is True
+
+
+def test_doctor_daily_packet_safety_lock_pass():
+    from production_replay.safety_lock import run_safety_lock
+    rc = run_safety_lock()
+    assert rc.get("pass")
+
+
+def test_doctor_daily_packet_launch_check_pass():
+    from production_replay.launch_check import run_launch_check
+    results = run_launch_check()
+    reason = results.get("reason", "")
+    assert results.get("verdict") != "BLOCKED" or "git_tree_clean" in reason
+
+
+def test_doctor_daily_packet_no_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "doctor_daily_packet.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+

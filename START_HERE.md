@@ -100,6 +100,24 @@ bash scripts/doctor_check.sh
 `today_trade_plan` — daily trade/no-trade decision support based on latest evidence.
 `manual_risk_console` — converts trade plan into a risk plan with user-defined capital/risk limits.
 
+## Final Daily Packet (one command)
+
+```
+python -m production_replay.doctor_daily_packet
+cat deploy_results/doctor_daily_packet.txt
+```
+
+Combines healthcheck, today_trade_plan, and manual_risk_console into a single short doctor-friendly report:
+
+- SYSTEM SAFE: YES/NO
+- LIVE/PAPER DISABLED
+- EVIDENCE progress (trades/days)
+- BEST CANDIDATE and DIRECTION
+- SETUP LEVELS (entry, stop, targets, RR)
+- POSITION SIZE and MAX LOSS
+- FINAL DECISION: WAIT / MANUAL_REVIEW_ONLY / DO_NOT_TRADE
+- ONE-LINE REASON
+
 ## Daily Trade Decision
 
 ```
