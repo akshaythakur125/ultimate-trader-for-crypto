@@ -101,3 +101,21 @@ def get_klines(symbol: str = "BTC-USDT", interval: str = "15m", limit: int = 100
         "/openApi/swap/v2/quote/klines", base_url,
         {"symbol": symbol, "interval": interval, "limit": str(limit)},
     )
+
+
+def get_swap_ticker(symbol: str = "BTC-USDT",
+                    base_url: str | None = None) -> dict[str, Any]:
+    """Fetch 24h ticker data (price, volume, change) for a swap symbol."""
+    if base_url is None:
+        base_url = load_credentials()["base_url"]
+    return _public_request(
+        "/openApi/swap/v2/quote/ticker", base_url,
+        {"symbol": symbol},
+    )
+
+
+def get_all_swap_tickers(base_url: str | None = None) -> dict[str, Any]:
+    """Fetch 24h ticker data for all swap symbols (no params = all)."""
+    if base_url is None:
+        base_url = load_credentials()["base_url"]
+    return _public_request("/openApi/swap/v2/quote/ticker", base_url)

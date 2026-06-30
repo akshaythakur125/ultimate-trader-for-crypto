@@ -1,25 +1,30 @@
-"""BingX tradable universe — USDT perpetual futures only.
+"""BingX tradable universe — expanded to 100+ ranked symbols.
 
-Fetches available swap contracts from BingX API.
-Falls back to a known curated list if API is unreachable.
+Fetches all active BingX USDT perpetual contracts from API.
+Ranks by 24h quote volume for the Dux scan universe.
+Outputs deploy_results/bingx_universe.json and .txt.
 
 Usage:
-    from production_replay.bingx_universe import load_universe, is_bingx_listed
+    python -m production_replay.bingx_universe
 """
 
-import os, sys
+import json, os, sys, time
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_client import load_credentials
+from production_replay.bingx_client import load_credentials, get_all_swap_tickers
 
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
+JSON_PATH = os.path.join(RESULTS_DIR, "bingx_universe.json")
+TXT_PATH = os.path.join(RESULTS_DIR, "bingx_universe.txt")
+
+SCAN_UNIVERSE_TARGET = 100
 KNOWN_MEMECOINS = {
     "DOGE-USDT", "SHIB-USDT", "PEPE-USDT", "BONK-USDT", "WIF-USDT",
     "FLOKI-USDT", "MEME-USDT", "TURBO-USDT", "PEOPLE-USDT", "1000PEPE-USDT",
     "1000BONK-USDT", "ORDI-USDT", "SATS-USDT", "RATS-USDT",
 }
-
 KNOWN_MAJORS = {"BTC-USDT", "ETH-USDT", "SOL-USDT"}
 
 FALLBACK_UNIVERSE: list[dict[str, Any]] = [
@@ -32,7 +37,9 @@ def _parse_contracts(raw: list[dict]) -> list[dict[str, Any]]:
     result = []
     for c in raw:
         sym = c.get("symbol", "")
-        if sym.endswith("-USDT"):
+        currency = c.get("currency", "")
+        status = c.get("status", 0)
+        if sym.endswith("-USDT") and currency == "USDT" and status == 1:
             result.append({
                 "symbol": sym,
                 "base": sym.split("-")[0],
@@ -46,8 +53,35 @@ def _parse_contracts(raw: list[dict]) -> list[dict[str, Any]]:
     return result
 
 
+def _rank_by_volume(contracts: list[dict]) -> list[dict]:
+    """Attach volume data and rank descending by quoteVolume using batch ticker."""
+    creds = load_credentials()
+    base_url = creds["base_url"]
+    try:
+        ticker_result = get_all_swap_tickers(base_url)
+        ticker_map = {}
+        if ticker_result["success"]:
+            raw = ticker_result.get("data", {})
+            items = raw.get("data", raw) if isinstance(raw, dict) else raw
+            if isinstance(items, list):
+                for t in items:
+                    sym = t.get("symbol", "")
+                    vol = float(t.get("quoteVolume", t.get("volume", 0)))
+                    change = abs(float(t.get("priceChangePercent", 0)))
+                    ticker_map[sym] = {"quote_volume": vol, "price_change_pct": change}
+    except Exception:
+        pass
+
+    ranked = []
+    for c in contracts:
+        t = ticker_map.get(c["symbol"], {"quote_volume": 0.0, "price_change_pct": 0.0})
+        ranked.append({**c, **t})
+    ranked.sort(key=lambda x: x.get("quote_volume", 0), reverse=True)
+    return ranked
+
+
 def load_universe() -> dict[str, Any]:
-    """Load BingX swap universe. Returns dict with success, contracts, source, error."""
+    """Load BingX swap universe, ranked by volume. Returns dict with success, contracts, source."""
     creds = load_credentials()
     base_url = creds["base_url"]
     try:
@@ -57,12 +91,51 @@ def load_universe() -> dict[str, Any]:
         data = resp.json()
         if data.get("code") == 0:
             raw = data.get("data", [])
-            contracts = _parse_contracts(raw)
-            return {"success": True, "contracts": contracts, "source": "api", "error": None}
+            parsed = _parse_contracts(raw)
+            ranked = _rank_by_volume(parsed)
+            return {"success": True, "contracts": ranked, "source": "api", "error": None,
+                    "total_raw": len(raw), "active_usdt": len(parsed)}
     except Exception as e:
         pass
     return {"success": False, "contracts": FALLBACK_UNIVERSE, "source": "fallback",
-            "error": "API unreachable, using fallback list"}
+            "error": "API unreachable, using fallback list",
+            "total_raw": 0, "active_usdt": len(FALLBACK_UNIVERSE)}
+
+
+def build_scan_universe(contracts: list[dict]) -> dict[str, Any]:
+    """Build ranked scan universe of at least SCAN_UNIVERSE_TARGET symbols."""
+    memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
+    major_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MAJORS})
+    priority = set(memecoin_syms + major_syms)
+
+    scan = []
+    seen = set()
+
+    # First pass: memecoins + majors
+    for c in contracts:
+        if c["symbol"] in priority and c["symbol"] not in seen:
+            scan.append(c)
+            seen.add(c["symbol"])
+        if len(scan) >= SCAN_UNIVERSE_TARGET:
+            break
+
+    # Second pass: top volume fill
+    if len(scan) < SCAN_UNIVERSE_TARGET:
+        for c in contracts:
+            if c["symbol"] not in seen:
+                scan.append(c)
+                seen.add(c["symbol"])
+            if len(scan) >= SCAN_UNIVERSE_TARGET:
+                break
+
+    return {
+        "symbols": [c["symbol"] for c in scan],
+        "contracts": scan,
+        "size": len(scan),
+        "memecoins": memecoin_syms,
+        "majors": major_syms,
+        "target": SCAN_UNIVERSE_TARGET,
+    }
 
 
 def is_bingx_listed(symbol: str, universe: list[dict] | None = None) -> bool:
@@ -73,7 +146,6 @@ def is_bingx_listed(symbol: str, universe: list[dict] | None = None) -> bool:
 
 
 def get_memecoin_symbols(universe: list[dict]) -> list[str]:
-    """Return symbols matching known memecoin names from the BingX universe."""
     available = {c["symbol"] for c in universe}
     return sorted(available & KNOWN_MEMECOINS)
 
@@ -81,3 +153,67 @@ def get_memecoin_symbols(universe: list[dict]) -> list[str]:
 def get_major_symbols(universe: list[dict]) -> list[str]:
     available = {c["symbol"] for c in universe}
     return sorted(available & KNOWN_MAJORS)
+
+
+def write_reports(universe_result: dict, scan: dict):
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    json_report = {
+        "mode": "bingx_universe",
+        "timestamp": __import__("datetime").datetime.now().isoformat(),
+        "source": universe_result["source"],
+        "total_raw_contracts": universe_result.get("total_raw", 0),
+        "active_usdt_perps": universe_result.get("active_usdt", 0),
+        "scan_universe_size": scan["size"],
+        "scan_universe_target": scan["target"],
+        "memecoin_count": len(scan["memecoins"]),
+        "major_count": len(scan["majors"]),
+        "scan_symbols": scan["symbols"],
+        "memecoin_symbols": scan["memecoins"],
+        "major_symbols": scan["majors"],
+    }
+    with open(JSON_PATH, "w") as f:
+        json.dump(json_report, f, indent=2)
+
+    lines = [
+        "=" * 60,
+        "  BINGX TRADABLE UNIVERSE",
+        f"  {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 60,
+        "",
+        f"  Source:              {universe_result['source']}",
+        f"  Total raw contracts: {universe_result.get('total_raw', 0)}",
+        f"  Active USDT perps:   {universe_result.get('active_usdt', 0)}",
+        f"  Dux scan target:     {scan['target']}",
+        f"  Dux scan universe:   {scan['size']}",
+        f"  Memecoin candidates: {len(scan['memecoins'])}",
+        f"  Major controls:      {len(scan['majors'])}",
+        "",
+        "  Top 20 by volume:",
+    ]
+    for i, s in enumerate(scan["symbols"][:20]):
+        lines.append(f"    {i + 1:>3}. {s}")
+    lines += [
+        "",
+        "=" * 60,
+    ]
+
+    with open(TXT_PATH, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print(f"\n[JSON] {JSON_PATH}")
+    print(f"[TXT]  {TXT_PATH}")
+
+
+def main():
+    result = load_universe()
+    if result["source"] == "fallback":
+        print(f"  WARNING: {result.get('error', '')}")
+    contracts = result["contracts"]
+    scan = build_scan_universe(contracts)
+    write_reports(result, scan)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

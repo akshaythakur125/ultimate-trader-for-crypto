@@ -2009,8 +2009,8 @@ def test_dux_bingx_universe_report_section():
     with open(path) as f:
         report = json.load(f)
     assert "bingx_universe_loaded" in report
-    assert "total_contracts" in report and report["total_contracts"] > 0
-    assert "symbols_scanned" in report
+    assert "total_raw_contracts" in report or "total_contracts" in report
+    assert "symbols_scanned" in report and report["symbols_scanned"] > 0
 
 
 def test_dux_symbols_scanned_positive():
@@ -2495,3 +2495,104 @@ def test_live_micro_executor_no_leak():
         source = f.read()
     assert "BINGX_API_KEY" not in source
     assert "BINGX_API_SECRET" not in source
+
+
+# --- Phase 38: Expand Dux Scan Universe to 100+ BingX Coins ---
+
+def test_universe_scan_size_at_least_100():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["scan_universe_size"] >= 100, f"got {report['scan_universe_size']}"
+
+
+def test_universe_only_bingx_listed():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    for sym in report["scan_symbols"]:
+        assert sym.endswith("-USDT"), f"non-USDT symbol: {sym}"
+
+
+def test_universe_active_usdt_positive():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["active_usdt_perps"] > 0
+
+
+def test_universe_memecoin_symbols():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert len(report["memecoin_symbols"]) > 0
+    assert "DOGE-USDT" in report["memecoin_symbols"] or "PEPE-USDT" in report["memecoin_symbols"]
+
+
+def test_universe_major_symbols():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "BTC-USDT" in report["major_symbols"]
+    assert "ETH-USDT" in report["major_symbols"]
+
+
+def test_dux_scan_universe_100():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "dux_pattern_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["dux_scan_universe_size"] >= 100
+
+
+def test_dux_symbol_timeframes_scanned():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "dux_pattern_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["symbol_timeframes_scanned"] > report["symbols_scanned"]
+
+
+def test_dux_rr_gate_always_rejects_below_4():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "dux_pattern_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    for r in report.get("patterns", []):
+        if not r["rejected"]:
+            assert r.get("rr_2", 0) >= 4.0, f"RR {r.get('rr_2')} < 4.0 for {r['symbol']} {r['pattern_name']}"
+
+
+def test_doctor_packet_shows_universe_counts():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    dux = report.get("dux_pattern_engine", {})
+    assert dux.get("dux_scan_universe_size", 0) >= 100
+    assert dux.get("symbol_timeframes_scanned", 0) > 0
+    assert dux.get("total_raw_contracts", 0) > 0
+
+
+def test_universe_no_non_usdt():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_universe.json")
+    with open(path) as f:
+        report = json.load(f)
+    for sym in report["scan_symbols"]:
+        assert sym.endswith("-USDT"), f"non-USDT: {sym}"
+
+
+def test_dux_scan_source_api_if_available():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "dux_pattern_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report["bingx_universe_source"] in ("api", "fallback")

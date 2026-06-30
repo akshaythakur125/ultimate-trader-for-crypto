@@ -13,15 +13,17 @@ from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_universe import load_universe, get_memecoin_symbols, get_major_symbols
-from production_replay.bingx_client import get_klines
+from production_replay.bingx_universe import load_universe, build_scan_universe, get_memecoin_symbols, get_major_symbols
+from production_replay.bingx_client import get_klines, load_credentials
 from production_replay.setup_compute import compute_atr, load_candles
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 TXT_REPORT = os.path.join(RESULTS_DIR, "dux_pattern_report.txt")
 JSON_REPORT = os.path.join(RESULTS_DIR, "dux_pattern_report.json")
 
-TIMEFRAMES = ["5m", "15m", "30m", "1h"]
+TIMEFRAMES = ["15m", "30m", "1h"]
+TIMEFRAMES_TOP = ["5m", "15m", "30m", "1h"]
+TOP_N_5M = 30
 RR_MIN = 4.0
 MIN_STAT_TRADES = 30
 MIN_STAT_EV_R = 0.30
@@ -459,22 +461,44 @@ def run_dux_engine() -> dict:
 
     universe_result = load_universe()
     contracts = universe_result["contracts"]
-    print(f"\n  BingX universe loaded: {'YES' if universe_result['source'] == 'api' else 'NO (fallback)'}")
-    print(f"  Source: {universe_result['source']}")
-    print(f"  Total contracts: {len(contracts)}")
+    source = universe_result["source"]
+    print(f"\n  BingX universe loaded: {'YES' if source == 'api' else 'NO (fallback)'}")
+    print(f"  Source: {source}")
+    print(f"  Total raw contracts: {universe_result.get('total_raw', 0)}")
+    print(f"  Active USDT perps:   {universe_result.get('active_usdt', len(contracts))}")
 
-    memecoins = get_memecoin_symbols(contracts)
-    majors = get_major_symbols(contracts)
-    scan_symbols = sorted(set(memecoins + majors))
+    scan = build_scan_universe(contracts)
+    scan_symbols = scan["symbols"]
+    total_symbols = len(scan_symbols)
+    memecoins = scan["memecoins"]
+    majors = scan["majors"]
+
+    print(f"  Dux scan universe:   {total_symbols} symbols")
     print(f"  Memecoin candidates: {len(memecoins)}")
-    print(f"  Major controls: {len(majors)}")
-    print(f"  Scanning: {len(scan_symbols)} symbols")
+    print(f"  Major controls:      {len(majors)}")
+    print(f"  Scanning {total_symbols} symbols...")
 
     all_results = []
-    for sym in scan_symbols:
-        for tf in TIMEFRAMES:
+    skipped = 0
+    scanned_st = 0
+    total_st = 0
+
+    for i, sym in enumerate(scan_symbols):
+        tfs = TIMEFRAMES_TOP if i < TOP_N_5M else TIMEFRAMES
+        symbol_skipped = True
+        for tf in tfs:
+            total_st += 1
             results = scan_symbol(sym, tf)
-            all_results.extend(results)
+            if results:
+                symbol_skipped = False
+                scanned_st += 1
+                all_results.extend(results)
+        status = "OK" if not symbol_skipped else "SKIP (no data)"
+        if not symbol_skipped:
+            skipped += 1
+        if (i + 1) % 25 == 0 or i == total_symbols - 1:
+            print(f"  [scan] {i + 1}/{total_symbols} symbols, {scanned_st} symbol-tf scanned, {len(all_results)} patterns")
+    print(f"  Scan complete: {total_symbols} symbols, {scanned_st} symbol-tf, {len(all_results)} patterns")
 
     passing = [r for r in all_results if not r["rejected"] and r["verdict"] in ("PASS", "WATCH")]
     rr_pass = [r for r in all_results if not r["rejected"]]
@@ -504,24 +528,22 @@ def run_dux_engine() -> dict:
         "mode": "dux_pattern_engine", "research_only": True,
         "live_trading_enabled": False, "paper_trading_enabled": False,
         "timestamp": datetime.now().isoformat(),
-        "bingx_universe_loaded": universe_result["source"] == "api",
-        "bingx_universe_source": universe_result["source"],
-        "total_contracts": len(contracts),
+        "bingx_universe_loaded": source == "api",
+        "bingx_universe_source": source,
+        "total_raw_contracts": universe_result.get("total_raw", 0),
+        "active_usdt_perps": universe_result.get("active_usdt", len(contracts)),
+        "dux_scan_universe_size": total_symbols,
+        "symbols_scanned": total_symbols,
+        "symbol_timeframes_scanned": scanned_st,
+        "total_patterns_scanned": len(all_results),
         "memecoin_candidates": len(memecoins),
         "major_controls": len(majors),
-        "symbols_scanned": len(scan_symbols),
-        "total_patterns_scanned": len(all_results),
         "rr_gate_pass": len(rr_pass),
         "stats_pass": len(passing),
         "best_candidate": {
-            "symbol": best_candidate["symbol"], "timeframe": best_candidate["timeframe"],
-            "pattern_name": best_candidate["pattern_name"],
-            "direction": best_candidate["direction"],
-            "entry": best_candidate["entry"], "stop": best_candidate["stop"],
-            "target_1": best_candidate["target_1"], "target_2": best_candidate["target_2"],
-            "rr_1": best_candidate["rr_1"], "rr_2": best_candidate["rr_2"],
-            "stats": best_candidate["stats"],
-            "verdict": best_candidate["verdict"],
+            k: best_candidate[k] for k in ("symbol", "timeframe", "pattern_name",
+                "direction", "entry", "stop", "target_1", "target_2",
+                "rr_1", "rr_2", "stats", "verdict")
         } if best_candidate else None,
         "final_decision": final_decision,
         "reason": reason,
@@ -551,14 +573,17 @@ def _write_text_report(report: dict, results: list, best: dict | None,
         "=" * 60,
         "",
         f"  BingX universe loaded: {'YES' if report['bingx_universe_loaded'] else 'NO'}",
-        f"  Total contracts:       {report['total_contracts']}",
+        f"  Total raw contracts:   {report['total_raw_contracts']}",
+        f"  Active USDT perps:     {report['active_usdt_perps']}",
+        f"  Dux scan universe:     {report['dux_scan_universe_size']}",
         f"  Memecoin candidates:   {report['memecoin_candidates']}",
         f"  Major controls:        {report['major_controls']}",
-        f"  Symbols scanned:       {report['symbols_scanned']}",
         "",
-        f"  Total patterns scanned: {report['total_patterns_scanned']}",
-        f"  RR >= 4 gate PASS:      {report['rr_gate_pass']}",
-        f"  Stats PASS:             {report['stats_pass']}",
+        f"  Symbols scanned:          {report['symbols_scanned']}",
+        f"  Symbol-timeframes:        {report['symbol_timeframes_scanned']}",
+        f"  Total patterns scanned:   {report['total_patterns_scanned']}",
+        f"  RR >= 4 gate PASS:        {report['rr_gate_pass']}",
+        f"  Stats PASS:               {report['stats_pass']}",
         "",
     ]
 

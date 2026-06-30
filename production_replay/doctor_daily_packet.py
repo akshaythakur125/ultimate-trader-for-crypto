@@ -181,6 +181,10 @@ def main():
     dux_lines = []
     if dux:
         best_dux = dux.get("best_candidate")
+        rr_count = dux.get("rr_gate_pass", 0)
+        dux_scan_size = dux.get("dux_scan_universe_size", dux.get("symbols_scanned", 0))
+        total_contracts = dux.get("total_raw_contracts", dux.get("total_contracts", 0))
+        st_scanned = dux.get("symbol_timeframes_scanned", 0)
         if best_dux:
             dux_lines = [
                 "",
@@ -193,9 +197,13 @@ def main():
         else:
             dux_lines = ["", "  DUX PATTERN ENGINE: No candidate passes RR >= 4 gate", ""]
         dux_lines += [
-            f"    RR >= 4 gate PASS: {dux['rr_gate_pass']}  "
-            f"Stats PASS: {dux['stats_pass']}",
-            f"    Dux decision: {dux['final_decision']}",
+            "",
+            "  DUX SCAN UNIVERSE:",
+            f"    BingX contracts discovered: {total_contracts}",
+            f"    Dux scan symbols:           {dux_scan_size}",
+            f"    Symbol-timeframes scanned:  {st_scanned}",
+            f"    RR >= 4 candidates:         {rr_count}",
+            f"    Dux decision:               {dux.get('final_decision', 'N/A')}",
         ]
 
     # BingX shadow execution section
@@ -326,6 +334,9 @@ def main():
         } if tournament else None,
         "dux_pattern_engine": {
             "best_candidate": dux.get("best_candidate") if dux else None,
+            "dux_scan_universe_size": dux.get("dux_scan_universe_size", dux.get("symbols_scanned", 0)) if dux else 0,
+            "symbol_timeframes_scanned": dux.get("symbol_timeframes_scanned", 0) if dux else 0,
+            "total_raw_contracts": dux.get("total_raw_contracts", dux.get("total_contracts", 0)) if dux else 0,
             "rr_gate_pass": dux.get("rr_gate_pass", 0) if dux else 0,
             "stats_pass": dux.get("stats_pass", 0) if dux else 0,
             "final_decision": dux.get("final_decision", "N/A") if dux else None,
