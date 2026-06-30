@@ -60,12 +60,14 @@ def main():
     _run_module("production_replay.strategy_tournament")
     _run_module("production_replay.dux_pattern_engine")
     _run_module("production_replay.bingx_shadow_executor")
+    _run_module("production_replay.bingx_live_micro_executor")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
     tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
+    live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -213,6 +215,30 @@ def main():
     else:
         shadow_lines = ["", "  BINGX SHADOW EXECUTION: MISSING (no report)", ""]
 
+    # BingX live micro execution section
+    live_lines = []
+    if live:
+        lmode = live.get("execution_mode", "?")
+        larmed = live.get("live_armed", False)
+        lks = live.get("kill_switch", "OFF")
+        ldec = live.get("decision", "?")
+        lrisk = live.get("risk_usdt", 0)
+        ldaily = live.get("environment", {}).get("MAX_DAILY_LOSS_USDT", 0)
+        lreasons = live.get("reasons", [])
+        live_lines = [
+            "",
+            "  BINGX LIVE MICRO EXECUTION:",
+            f"    Live Executor Available: {'YES' if lmode == 'live_micro' else 'NO'}",
+            f"    Live Armed: {'YES' if larmed else 'NO'}",
+            f"    Kill Switch: {lks}",
+            f"    Max Risk/Trade: {lrisk} USDT",
+            f"    Max Daily Loss: {ldaily} USDT",
+            f"    Latest Decision: {ldec}",
+            f"    Latest Reason: {'; '.join(lreasons[:3])}" if lreasons else "    Latest Reason: N/A",
+        ]
+    else:
+        live_lines = ["", "  BINGX LIVE MICRO EXECUTION: MISSING (no report)", ""]
+
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
     lines = [
@@ -253,6 +279,7 @@ def main():
     lines += tournament_lines
     lines += dux_lines
     lines += shadow_lines
+    lines += live_lines
 
     lines += [
         "",
@@ -308,6 +335,15 @@ def main():
             "shadow_decision": shadow.get("decision", "N/A") if shadow else None,
             "reason": "; ".join(shadow.get("reasons", ["no shadow report"])) if shadow else None,
         } if shadow else None,
+        "bingx_live_micro_execution": {
+            "executor_available": live.get("execution_mode") == "live_micro" if live else False,
+            "live_armed": live.get("live_armed", False) if live else False,
+            "kill_switch": live.get("kill_switch", "OFF") if live else None,
+            "max_risk_per_trade_usdt": live.get("risk_usdt", 0) if live else None,
+            "max_daily_loss_usdt": live.get("environment", {}).get("MAX_DAILY_LOSS_USDT") if live else None,
+            "latest_decision": live.get("decision") if live else None,
+            "latest_reason": "; ".join(live.get("reasons", [])) if live else None,
+        } if live else None,
     }
 
     with open(JSON_PATH, "w") as f:

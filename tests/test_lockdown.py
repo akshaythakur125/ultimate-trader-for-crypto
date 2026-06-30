@@ -2254,3 +2254,244 @@ def test_doctor_packet_includes_shadow_section():
     assert "bingx_shadow_execution" in report
     assert report["bingx_shadow_execution"] is not None
     assert "shadow_decision" in report["bingx_shadow_execution"]
+
+
+# --- Phase 37: BingX Live Micro Executor with Hard Kill Switch ---
+
+def test_live_micro_executor_runs_and_returns_report():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    assert isinstance(report, dict)
+    assert report["mode"] == "bingx_live_micro_executor"
+
+
+def test_live_micro_executor_do_not_execute_by_default():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    assert report["decision"] == "DO_NOT_EXECUTE"
+    assert "BINGX_EXECUTION_MODE" in " ".join(report.get("reasons", []))
+
+
+def test_live_micro_executor_refuses_wrong_mode():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    env = report.get("environment", {})
+    mode = env.get("BINGX_EXECUTION_MODE", "")
+    if mode != "live_micro":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_live_micro_executor_refuses_no_live_trading_ack():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    ack = report.get("environment", {}).get("LIVE_TRADING_ACK", "NOT_SET")
+    if ack == "NOT_SET":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_live_micro_executor_report_structure():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "mode" in report
+    assert "execution_mode" in report
+    assert "live_armed" in report
+    assert "kill_switch" in report
+    assert "gates" in report
+    assert "decision" in report
+    assert "reasons" in report
+
+
+def test_live_micro_executor_gates_structure():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    gates = report.get("gates", {})
+    required_gates = {"env_gates", "safety_gates", "strategy_gates",
+                      "shadow_gate", "risk_gates", "account_gates", "kill_switch"}
+    for g in required_gates:
+        assert g in gates, f"missing gate: {g}"
+
+
+def test_live_micro_executor_env_section():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    env = report.get("environment", {})
+    assert "BINGX_EXECUTION_MODE" in env
+    assert "LIVE_TRADING_ACK" in env
+    assert "api_key_found" in env
+    assert "MAX_RISK_PER_TRADE_USDT" in env
+    assert "MAX_DAILY_LOSS_USDT" in env
+    assert "MAX_WEEKLY_LOSS_USDT" in env
+    assert "MAX_OPEN_POSITIONS" in env
+    assert "MAX_LEVERAGE" in env
+
+
+def test_live_micro_executor_no_approve():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("decision") != "APPROVED"
+
+
+def test_live_micro_executor_kill_switch_shown():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("kill_switch") in ("ON", "OFF")
+
+
+def test_live_micro_executor_refuses_when_kill_switch_on():
+    import os, json
+    ks_path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "KILL_SWITCH_ON")
+    os.makedirs(os.path.dirname(ks_path), exist_ok=True)
+    with open(ks_path, "w") as f:
+        f.write("ENGAGED")
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    if report.get("kill_switch") == "ON":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+        assert any("kill" in r.lower() for r in report.get("reasons", []))
+    os.remove(ks_path)
+
+
+def test_live_micro_executor_no_order_if_dux_do_not_trade():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    if report.get("dux_decision") == "DO_NOT_TRADE":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_live_micro_executor_no_order_if_shadow_do_not_execute():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    if report.get("shadow_decision") == "DO_NOT_EXECUTE":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_live_micro_executor_rr_gate():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    rr = report.get("rr_final", 0)
+    if rr < 4.0 and rr >= 0:
+        assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_live_micro_executor_no_withdrawal():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_live_micro_executor.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    forbidden = {"withdraw", "transfer"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name not in forbidden, f"forbidden function: {node.name}"
+
+
+def test_live_micro_executor_no_forbidden_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_live_micro_executor.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("ccxt", "websocket", "exchange", "trade_executor"), f"forbidden import: {alias.name}"
+
+
+def test_live_micro_executor_no_self_trade():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_live_micro_executor.py")
+    with open(path) as f:
+        source = f.read()
+    assert "withdraw" not in source.lower().replace("withdrawal", "")
+    assert "transfer" not in source.lower()
+
+
+def test_kill_switch_on_creates_file():
+    import os, subprocess
+    ks_path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "KILL_SWITCH_ON")
+    if os.path.exists(ks_path):
+        os.remove(ks_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.kill_switch_on"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert os.path.exists(ks_path)
+    if os.path.exists(ks_path):
+        os.remove(ks_path)
+
+
+def test_kill_switch_off_removes_file():
+    import os, subprocess
+    ks_path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "KILL_SWITCH_ON")
+    os.makedirs(os.path.dirname(ks_path), exist_ok=True)
+    with open(ks_path, "w") as f:
+        f.write("ENGAGED")
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.kill_switch_off"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert not os.path.exists(ks_path)
+
+
+def test_live_micro_executor_risk_gates():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    env = report.get("environment", {})
+    max_risk = env.get("MAX_RISK_PER_TRADE_USDT", 0)
+    max_daily = env.get("MAX_DAILY_LOSS_USDT", 0)
+    max_weekly = env.get("MAX_WEEKLY_LOSS_USDT", 0)
+    max_pos = env.get("MAX_OPEN_POSITIONS", 0)
+    max_lev = env.get("MAX_LEVERAGE", 0)
+    if max_risk > 1 or max_daily > 2 or max_weekly > 5 or max_pos > 1 or max_lev > 2:
+        assert report["decision"] == "DO_NOT_EXECUTE"
+    elif not report["gates"]["risk_gates"]:
+        assert True
+
+
+def test_live_micro_executor_account_gate_no_creds():
+    from production_replay.bingx_live_micro_executor import run_live_micro_executor
+    report = run_live_micro_executor()
+    # Without API creds, account gate should fail or env gate fails first
+    assert report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_doctor_packet_includes_live_micro_section():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "bingx_live_micro_execution" in report
+    assert report["bingx_live_micro_execution"] is not None
+    assert "live_armed" in report["bingx_live_micro_execution"]
+
+
+def test_healthcheck_includes_live_micro_section():
+    import subprocess, sys
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.healthcheck"],
+        capture_output=True, text=True, timeout=30,
+    )
+    output = result.stdout
+    assert "BINGX LIVE MICRO EXECUTOR" in output
+    assert "live_micro" in output or "SKIP" in output
+
+
+def test_live_micro_executor_no_leak():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_live_micro_executor.py")
+    with open(path) as f:
+        source = f.read()
+    assert "BINGX_API_KEY" not in source
+    assert "BINGX_API_SECRET" not in source

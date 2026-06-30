@@ -204,6 +204,28 @@ def main():
         print(f"  ERROR: {e}")
         failed += 1
 
+    print("\n--- BINGX LIVE MICRO EXECUTOR ---")
+    live_json = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    if os.path.exists(live_json):
+        with open(live_json) as f:
+            lx = json.load(f)
+        armed = lx.get("live_armed", False)
+        ks = lx.get("kill_switch", "OFF")
+        lmode = lx.get("execution_mode", "?")
+        ldec = lx.get("decision", "?")
+        print(f"  Execution mode: {lmode}  | {'OK' if lmode == 'live_micro' else 'INFO'}")
+        print(f"  Live armed: {'YES' if armed else 'NO'}  | {'OK' if armed else 'INFO'}")
+        print(f"  Kill switch: {ks}  | {'WARN' if ks == 'ON' else 'OK'}")
+        print(f"  Latest decision: {ldec}  | {'OK' if ldec == 'EXECUTED' else 'INFO'}")
+    else:
+        print("  Not generated yet -- run `python -m production_replay.bingx_live_micro_executor`  | SKIP")
+    try:
+        from production_replay import bingx_live_micro_executor
+        print("  python -m production_replay.bingx_live_micro_executor available  | OK")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n" + "=" * 60)
     if failed == 0:
         print("  SYSTEM SAFE    | YES")
