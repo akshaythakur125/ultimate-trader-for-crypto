@@ -1,0 +1,305 @@
+"""BingX shadow execution bridge — converts Dux candidates to simulated order intents.
+
+SHADOW_ONLY mode. Never places real orders.
+Reads dux_pattern_report.json, doctor_daily_packet.json, manual_risk_plan.json.
+"""
+
+import json, os, sys
+from datetime import datetime
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from production_replay.bingx_universe import is_bingx_listed, load_universe
+
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
+STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
+TXT_PATH = os.path.join(RESULTS_DIR, "bingx_order_intent.txt")
+JSON_PATH = os.path.join(RESULTS_DIR, "bingx_order_intent.json")
+SHADOW_LEDGER = os.path.join(STATE_DIR, "bingx_shadow_orders.jsonl")
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _shadow_order_intent(
+    candidate: dict,
+    symbol: str,
+    side: str,
+    entry: float,
+    stop_loss: float,
+    final_target: float,
+    rr_final: float,
+    source_pattern: str,
+    pattern_id: str,
+    pattern_name: str,
+    verdict: str,
+    position_size: float = 0.0,
+    risk_usdt: float = 0.0,
+    max_loss_usdt: float = 0.0,
+    reason: str = "",
+) -> dict:
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "mode": "SHADOW_ONLY",
+        "real_order": False,
+        "symbol": symbol,
+        "side": side,
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "target_1": round(entry + (entry - stop_loss) * 1.0 if side == "LONG" else entry - (stop_loss - entry) * 1.0, 2),
+        "final_target": final_target,
+        "rr_final": rr_final,
+        "position_size": position_size,
+        "risk_usdt": risk_usdt,
+        "max_loss_usdt": max_loss_usdt,
+        "source_pattern": source_pattern,
+        "pattern_id": pattern_id,
+        "pattern_name": pattern_name,
+        "verdict": verdict,
+        "reason": reason,
+    }
+
+
+def run_shadow_executor() -> dict:
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
+
+    dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
+    risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
+
+    reasons = []
+    decision = "DO_NOT_EXECUTE"
+
+    # Gate 1: system safe
+    if not doctor.get("system_safe", False):
+        reasons.append("system not safe")
+
+    # Gate 2: live disabled
+    if not doctor.get("live_disabled", False):
+        reasons.append("live trading not disabled")
+
+    # Gate 3: paper disabled
+    if not doctor.get("paper_disabled", False):
+        reasons.append("paper trading not disabled")
+
+    # Gate 4: Dux decision
+    dux_decision = (dux.get("dux_pattern_engine") or dux).get("final_decision", dux.get("final_decision", "DO_NOT_TRADE"))
+    # dux_pattern_engine section might be nested inside doctor_packet; check direct too
+    if dux.get("mode") == "dux_pattern_engine":
+        dux_decision = dux.get("final_decision", "DO_NOT_TRADE")
+    elif "dux_pattern_engine" in doctor:
+        dux_decision = doctor["dux_pattern_engine"].get("final_decision", "DO_NOT_TRADE")
+
+    if dux_decision not in ("WATCH", "MANUAL_REVIEW_ONLY"):
+        reasons.append(f"Dux decision is {dux_decision}, not WATCH or MANUAL_REVIEW_ONLY")
+
+    # Gate 5: candidate exists
+    candidate = None
+    if dux.get("mode") == "dux_pattern_engine":
+        candidate = dux.get("best_candidate")
+    else:
+        dux_section = doctor.get("dux_pattern_engine", {})
+        candidate = dux_section.get("best_candidate")
+
+    if not candidate:
+        reasons.append("no valid Dux candidate")
+
+    # Gate 6: symbol BingX-listed
+    symbol = (candidate or {}).get("symbol", "")
+    if symbol:
+        universe = load_universe()["contracts"]
+        if not is_bingx_listed(symbol, universe):
+            reasons.append(f"{symbol} not BingX-listed")
+    else:
+        reasons.append("no symbol from candidate")
+
+    # Gate 7: direction
+    direction = (candidate or {}).get("direction", "")
+    if direction not in ("LONG", "SHORT"):
+        reasons.append(f"invalid direction: {direction}")
+
+    # Gate 8: RR final >= 4.0
+    rr_final = (candidate or {}).get("rr_2") or 0
+    if rr_final < 4.0:
+        reasons.append(f"RR {rr_final} < 4.0")
+
+    # Gate 9: entry valid
+    entry = (candidate or {}).get("entry") or 0
+    if entry <= 0:
+        reasons.append("invalid entry")
+
+    # Gate 10: stop valid
+    stop = (candidate or {}).get("stop") or 0
+    if stop <= 0 or stop == entry:
+        reasons.append("invalid stop")
+
+    # Gate 11: target valid
+    target = (candidate or {}).get("target_2") or 0
+    if target <= 0:
+        reasons.append("invalid target")
+
+    # Gate 12-14: risk parameters from manual_risk_plan
+    risk_params = risk_plan.get("risk_parameters", {})
+    max_risk_per_trade = risk_params.get("max_risk_per_trade_usdt", 1.0)
+    max_daily_loss = risk_params.get("max_daily_loss_usdt", 2.0)
+    max_weekly_loss = risk_params.get("max_weekly_loss_usdt", 5.0)
+    risk_per_trade = abs(entry - stop)
+    risk_usdt = risk_per_trade  # simplified: 1 unit = 1 USDT for shadow estimate
+    if risk_usdt > max_risk_per_trade:
+        reasons.append(f"risk {risk_usdt:.2f} USDT > max {max_risk_per_trade} USDT per trade")
+
+    # Gate 15: kill switch
+    evidence = risk_plan.get("evidence", {})
+    kill_switch = evidence.get("kill_switch", "OK")
+    if kill_switch == "STOP":
+        reasons.append("kill switch engaged")
+
+    order_intent = None
+    if not reasons:
+        decision = "SHADOW_READY"
+        risk_usdt = abs(entry - stop)
+        position_size = risk_usdt / max(risk_usdt, 1e-10)
+        order_intent = _shadow_order_intent(
+            candidate=candidate,
+            symbol=symbol,
+            side=direction,
+            entry=entry,
+            stop_loss=stop,
+            final_target=target,
+            rr_final=rr_final,
+            source_pattern=candidate.get("pattern_name", ""),
+            pattern_id=candidate.get("pattern_id", ""),
+            pattern_name=candidate.get("pattern_name", ""),
+            verdict=candidate.get("verdict", ""),
+            position_size=round(position_size, 4),
+            risk_usdt=round(risk_usdt, 2),
+            max_loss_usdt=round(max_risk_per_trade, 2),
+            reason="all gates passed",
+        )
+        _append_to_ledger(order_intent)
+
+    report = {
+        "mode": "bingx_shadow_executor",
+        "research_only": True,
+        "live_trading_enabled": False,
+        "paper_trading_enabled": False,
+        "execution_mode": "SHADOW_ONLY",
+        "real_order": False,
+        "timestamp": datetime.now().isoformat(),
+        "inputs": {
+            "dux_pattern_report": "dux_pattern_report.json",
+            "doctor_daily_packet": "doctor_daily_packet.json",
+            "manual_risk_plan": "manual_risk_plan.json",
+        },
+        "system_safe": doctor.get("system_safe", False),
+        "live_disabled": doctor.get("live_disabled", False),
+        "paper_disabled": doctor.get("paper_disabled", False),
+        "dux_decision": dux_decision,
+        "candidate_exists": candidate is not None,
+        "symbol_bingx_listed": bool(symbol) and is_bingx_listed(symbol, load_universe()["contracts"]) if symbol else False,
+        "direction": direction,
+        "rr_final": rr_final,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "kill_switch": kill_switch,
+        "risk_per_trade_usdt": risk_usdt,
+        "max_risk_per_trade_usdt": max_risk_per_trade,
+        "max_daily_loss_usdt": max_daily_loss,
+        "max_weekly_loss_usdt": max_weekly_loss,
+        "shadow_order_intent": order_intent,
+        "decision": decision,
+        "reasons": reasons if reasons else ["all gates passed"],
+    }
+
+    with open(JSON_PATH, "w") as f:
+        json.dump(report, f, indent=2)
+
+    _write_text_report(report, order_intent, decision, reasons)
+    return report
+
+
+def _append_to_ledger(intent: dict):
+    with open(SHADOW_LEDGER, "a") as f:
+        f.write(json.dumps(intent) + "\n")
+
+
+def _write_text_report(report: dict, intent: dict | None, decision: str, reasons: list[str]):
+    lines = [
+        "=" * 60,
+        "  BINGX SHADOW EXECUTION BRIDGE",
+        f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 60,
+        "",
+        f"  System Safe:           {'YES' if report['system_safe'] else 'NO'}",
+        f"  Live Disabled:         {'YES' if report['live_disabled'] else 'NO'}",
+        f"  Paper Disabled:        {'YES' if report['paper_disabled'] else 'NO'}",
+        f"  Dux Decision:          {report['dux_decision']}",
+        f"  Candidate Exists:      {'YES' if report['candidate_exists'] else 'NO'}",
+        f"  Symbol BingX-Listed:   {'YES' if report['symbol_bingx_listed'] else 'NO'}",
+        f"  Direction:             {report['direction'] or 'N/A'}",
+        f"  RR Final:              {report['rr_final']}",
+        f"  Risk per Trade (USDT): {report['risk_per_trade_usdt']:.2f}",
+        f"  Kill Switch:           {report['kill_switch']}",
+        "",
+        "  EXECUTION MODE: SHADOW_ONLY",
+        "  REAL ORDER:     FALSE",
+        "",
+    ]
+
+    if intent:
+        lines += [
+            "  SHADOW ORDER INTENT GENERATED:",
+            f"    Symbol:    {intent['symbol']}",
+            f"    Side:      {intent['side']}",
+            f"    Entry:     {intent['entry']}",
+            f"    Stop:      {intent['stop_loss']}",
+            f"    Target 1:  {intent['target_1']}",
+            f"    Final Tgt: {intent['final_target']}",
+            f"    RR Final:  1:{intent['rr_final']}",
+            f"    Size:      {intent['position_size']}",
+            f"    Risk:      {intent['risk_usdt']} USDT",
+            f"    Pattern:   {intent['pattern_name']}",
+            f"    Verdict:   {intent['verdict']}",
+            "",
+        ]
+    else:
+        lines += ["  SHADOW ORDER INTENT: NOT GENERATED", ""]
+
+    lines += [
+        f"  DECISION: {decision}",
+        "",
+    ]
+    if reasons:
+        for r in reasons:
+            lines.append(f"    - {r}")
+        lines.append("")
+
+    lines += [
+        "  WARNING: Shadow execution only. No real orders placed.",
+        "",
+        "=" * 60,
+    ]
+
+    with open(TXT_PATH, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print(f"\n[JSON] {JSON_PATH}")
+    print(f"[TXT]  {TXT_PATH}")
+    if intent:
+        print(f"[LEDGER] {SHADOW_LEDGER}")
+
+
+def main():
+    report = run_shadow_executor()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

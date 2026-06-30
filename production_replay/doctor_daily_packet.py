@@ -59,11 +59,13 @@ def main():
     _run_module("production_replay.manual_risk_console")
     _run_module("production_replay.strategy_tournament")
     _run_module("production_replay.dux_pattern_engine")
+    _run_module("production_replay.bingx_shadow_executor")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
     tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -194,6 +196,23 @@ def main():
             f"    Dux decision: {dux['final_decision']}",
         ]
 
+    # BingX shadow execution section
+    shadow_lines = []
+    if shadow:
+        shadow_decision = shadow.get("decision", "N/A")
+        has_intent = shadow.get("shadow_order_intent") is not None
+        shadow_lines = [
+            "",
+            "  BINGX SHADOW EXECUTION:",
+            f"    Shadow Intent: {'GENERATED' if has_intent else 'NOT_GENERATED'}",
+            f"    Shadow Decision: {shadow_decision}",
+        ]
+        shr_reasons = shadow.get("reasons", [])
+        if shr_reasons:
+            shadow_lines.append(f"    Reason: {'; '.join(shr_reasons)}")
+    else:
+        shadow_lines = ["", "  BINGX SHADOW EXECUTION: MISSING (no report)", ""]
+
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
     lines = [
@@ -233,6 +252,7 @@ def main():
         ]
     lines += tournament_lines
     lines += dux_lines
+    lines += shadow_lines
 
     lines += [
         "",
@@ -283,6 +303,11 @@ def main():
             "stats_pass": dux.get("stats_pass", 0) if dux else 0,
             "final_decision": dux.get("final_decision", "N/A") if dux else None,
         } if dux else None,
+        "bingx_shadow_execution": {
+            "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",
+            "shadow_decision": shadow.get("decision", "N/A") if shadow else None,
+            "reason": "; ".join(shadow.get("reasons", ["no shadow report"])) if shadow else None,
+        } if shadow else None,
     }
 
     with open(JSON_PATH, "w") as f:

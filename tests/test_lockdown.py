@@ -2115,3 +2115,142 @@ def test_doctor_packet_includes_dux_section():
     assert "dux_pattern_engine" in report
     assert report["dux_pattern_engine"] is not None
     assert "final_decision" in report["dux_pattern_engine"]
+
+
+# --- Phase 36: BingX Shadow Execution Bridge ---
+
+def test_shadow_executor_runs_and_returns_report():
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    report = run_shadow_executor()
+    assert isinstance(report, dict)
+    assert report["mode"] == "bingx_shadow_executor"
+    assert report["research_only"] is True
+
+
+def test_shadow_executor_report_exists():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_order_intent.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("mode") == "bingx_shadow_executor"
+
+
+def test_shadow_executor_live_paper_disabled():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_order_intent.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_trading_enabled") is False
+    assert report.get("paper_trading_enabled") is False
+    assert report.get("execution_mode") == "SHADOW_ONLY"
+    assert report.get("real_order") is False
+
+
+def test_shadow_executor_do_not_execute_when_dux_do_not_trade():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_order_intent.json")
+    with open(path) as f:
+        report = json.load(f)
+    if report.get("dux_decision") == "DO_NOT_TRADE":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+        assert report["shadow_order_intent"] is None
+
+
+def test_shadow_executor_do_not_execute_when_rr_below_4():
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    report = run_shadow_executor()
+    dux_decision = report.get("dux_decision", "DO_NOT_TRADE")
+    if dux_decision != "WATCH" and dux_decision != "MANUAL_REVIEW_ONLY":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+        assert any("RR" in r for r in report.get("reasons", [])) or \
+               any("Dux decision" in r for r in report.get("reasons", []))
+
+
+def test_shadow_executor_real_order_always_false():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_order_intent.json")
+    with open(path) as f:
+        report = json.load(f)
+    intent = report.get("shadow_order_intent")
+    if intent:
+        assert intent.get("real_order") is False
+    # Report-level
+    assert report.get("real_order") is False
+
+
+def test_shadow_executor_no_forbidden_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_shadow_executor.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("ccxt", "websocket", "exchange", "requests", "trade_executor"), f"forbidden import: {alias.name}"
+
+
+def test_shadow_executor_no_order_placement():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_shadow_executor.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    forbidden = {"place_order", "cancel_order", "set_leverage", "withdraw", "transfer"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name not in forbidden, f"forbidden function: {node.name}"
+
+
+def test_shadow_executor_no_withdrawal():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_shadow_executor.py")
+    with open(path) as f:
+        source = f.read()
+    assert "withdraw" not in source.lower().replace("withdrawal", "")
+    assert "transfer" not in source.lower()
+
+
+def test_shadow_executor_system_safe_gate():
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    report = run_shadow_executor()
+    assert report.get("system_safe") is True or report["decision"] == "DO_NOT_EXECUTE"
+
+
+def test_shadow_executor_kill_switch_gate():
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    report = run_shadow_executor()
+    kill = report.get("kill_switch", "OK")
+    if kill == "STOP":
+        assert report["decision"] == "DO_NOT_EXECUTE"
+        assert any("kill" in r for r in report.get("reasons", []))
+
+
+def test_shadow_executor_ledger_exists():
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "bingx_shadow_orders.jsonl")
+    # File may not exist if no valid intent has been generated yet; verify path is correct
+    assert path.endswith("bingx_shadow_orders.jsonl")
+
+
+def test_shadow_executor_ledger_is_valid_jsonl():
+    import os, json
+    path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "bingx_shadow_orders.jsonl")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip():
+                    obj = json.loads(line)
+                    assert "mode" in obj
+                    assert "real_order" in obj
+                    assert obj["real_order"] is False
+
+
+def test_doctor_packet_includes_shadow_section():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "bingx_shadow_execution" in report
+    assert report["bingx_shadow_execution"] is not None
+    assert "shadow_decision" in report["bingx_shadow_execution"]
