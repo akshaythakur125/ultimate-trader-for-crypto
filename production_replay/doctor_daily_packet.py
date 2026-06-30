@@ -58,10 +58,12 @@ def main():
     _run_module("production_replay.today_trade_plan")
     _run_module("production_replay.manual_risk_console")
     _run_module("production_replay.strategy_tournament")
+    _run_module("production_replay.dux_pattern_engine")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
     tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
+    dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -171,6 +173,27 @@ def main():
             f"REJECT: {tournament['rejected']}  SKIP: {tournament['skipped']}",
         ]
 
+    # Dux pattern engine section
+    dux_lines = []
+    if dux:
+        best_dux = dux.get("best_candidate")
+        if best_dux:
+            dux_lines = [
+                "",
+                "  DUX-STYLE PATTERN ENGINE:",
+                f"    {best_dux['pattern_name']} on {best_dux['symbol']} {best_dux['timeframe']}",
+                f"    Direction: {best_dux['direction']}  RR: 1:{best_dux['rr_2']}",
+                f"    Stats: {best_dux['stats']['trades']} trades, EV {best_dux['stats']['ev_r']}R",
+                f"    Verdict: {best_dux['verdict']}",
+            ]
+        else:
+            dux_lines = ["", "  DUX PATTERN ENGINE: No candidate passes RR >= 4 gate", ""]
+        dux_lines += [
+            f"    RR >= 4 gate PASS: {dux['rr_gate_pass']}  "
+            f"Stats PASS: {dux['stats_pass']}",
+            f"    Dux decision: {dux['final_decision']}",
+        ]
+
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
     lines = [
@@ -209,6 +232,7 @@ def main():
             f"    MAX LOSS IF STOP HIT: {loss_str} USDT",
         ]
     lines += tournament_lines
+    lines += dux_lines
 
     lines += [
         "",
@@ -253,6 +277,12 @@ def main():
             "rejected": tournament.get("rejected", 0) if tournament else 0,
             "skipped": tournament.get("skipped", 0) if tournament else 0,
         } if tournament else None,
+        "dux_pattern_engine": {
+            "best_candidate": dux.get("best_candidate") if dux else None,
+            "rr_gate_pass": dux.get("rr_gate_pass", 0) if dux else 0,
+            "stats_pass": dux.get("stats_pass", 0) if dux else 0,
+            "final_decision": dux.get("final_decision", "N/A") if dux else None,
+        } if dux else None,
     }
 
     with open(JSON_PATH, "w") as f:

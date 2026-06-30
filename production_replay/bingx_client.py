@@ -91,3 +91,13 @@ def get_open_positions(creds: dict | None = None) -> dict[str, Any]:
         "/openApi/swap/v2/user/positions",
         creds["api_key"], creds["api_secret"], creds["base_url"],
     )
+
+
+def get_klines(symbol: str = "BTC-USDT", interval: str = "15m", limit: int = 100,
+               base_url: str | None = None) -> dict[str, Any]:
+    if base_url is None:
+        base_url = load_credentials()["base_url"]
+    return _public_request(
+        "/openApi/swap/v2/quote/klines", base_url,
+        {"symbol": symbol, "interval": interval, "limit": str(limit)},
+    )
