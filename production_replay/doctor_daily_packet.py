@@ -61,6 +61,7 @@ def main():
     _run_module("production_replay.dux_pattern_engine")
     _run_module("production_replay.bingx_shadow_executor")
     _run_module("production_replay.bingx_live_micro_executor")
+    _run_module("production_replay.hourly_alert")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -68,6 +69,7 @@ def main():
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -247,6 +249,20 @@ def main():
     else:
         live_lines = ["", "  BINGX LIVE MICRO EXECUTION: MISSING (no report)", ""]
 
+    # Hourly final status section
+    hourly_lines = []
+    if hourly:
+        fa = hourly.get("final_action", "DO_NOTHING")
+        fareason = hourly.get("action_reason", "")
+        hourly_lines = [
+            "",
+            "  HOURLY FINAL STATUS:",
+            f"    Final Action: {fa}",
+            f"    Reason: {fareason}",
+        ]
+    else:
+        hourly_lines = ["", "  HOURLY FINAL STATUS: MISSING (no hourly alert)", ""]
+
     sel_line = f"  TOP CANDIDATE: {selected_label}" if selected_label else "  TOP CANDIDATE: NONE"
 
     lines = [
@@ -288,6 +304,7 @@ def main():
     lines += dux_lines
     lines += shadow_lines
     lines += live_lines
+    lines += hourly_lines
 
     lines += [
         "",
@@ -355,6 +372,10 @@ def main():
             "latest_decision": live.get("decision") if live else None,
             "latest_reason": "; ".join(live.get("reasons", [])) if live else None,
         } if live else None,
+        "hourly_final_status": {
+            "final_action": hourly.get("final_action") if hourly else None,
+            "reason": hourly.get("action_reason") if hourly else None,
+        } if hourly else None,
     }
 
     with open(JSON_PATH, "w") as f:

@@ -2596,3 +2596,138 @@ def test_dux_scan_source_api_if_available():
     with open(path) as f:
         report = json.load(f)
     assert report["bingx_universe_source"] in ("api", "fallback")
+
+
+# --- Phase 39: Hourly Alert and Final Status System ---
+
+def test_hourly_alert_runs_and_returns_report():
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    assert isinstance(report, dict)
+    assert report["mode"] == "hourly_alert"
+
+
+def test_hourly_alert_do_nothing_when_dux_do_not_trade():
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    if report.get("dux_decision") == "DO_NOT_TRADE":
+        assert report["final_action"] == "DO_NOTHING"
+
+
+def test_hourly_alert_report_structure():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "hourly_status.json")
+    with open(path) as f:
+        report = json.load(f)
+    required = {"mode", "timestamp", "dux_decision", "shadow_decision",
+                "live_decision", "execution_mode", "final_action", "action_reason",
+                "kill_switch", "open_positions", "rr_gate_pass_candidates"}
+    assert report["mode"] == "hourly_alert"
+    for key in required:
+        assert key in report, f"missing key: {key}"
+
+
+def test_hourly_alert_live_paper_disabled():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "hourly_status.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_trading_enabled") is False
+    assert report.get("paper_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_hourly_alert_no_approve():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "hourly_status.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("final_action") != "APPROVED"
+
+
+def test_hourly_alert_ledger_exists():
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "hourly_alerts.jsonl")
+    assert os.path.exists(path)
+
+
+def test_hourly_alert_ledger_valid():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "hourly_alerts.jsonl")
+    with open(path) as f:
+        for line in f:
+            if line.strip():
+                obj = json.loads(line)
+                assert "timestamp" in obj
+                assert "final_action" in obj
+
+
+def test_hourly_alert_best_candidate_field():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "hourly_status.json")
+    with open(path) as f:
+        report = json.load(f)
+    # Field must exist regardless of value
+    assert "best_candidate" in report
+
+
+def test_hourly_alert_no_order_placement():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "hourly_alert.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    forbidden = {"place_order", "cancel_order", "set_leverage", "withdraw", "transfer"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name not in forbidden, f"forbidden function: {node.name}"
+
+
+def test_hourly_alert_no_forbidden_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "hourly_alert.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("ccxt", "websocket", "exchange", "trade_executor"), f"forbidden import: {alias.name}"
+
+
+def test_hourly_alert_do_nothing_for_unmet_gates():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("DO_NOT_TRADE", 0, "DO_NOT_EXECUTE",
+                                              "DO_NOT_EXECUTE", False, "read_only")
+    assert action == "DO_NOTHING"
+
+
+def test_hourly_alert_review_now_for_rr_pass():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("WATCH", 1, "DO_NOT_EXECUTE",
+                                              "DO_NOT_EXECUTE", False, "read_only")
+    assert action == "REVIEW_NOW"
+
+
+def test_hourly_alert_shadow_ready():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, "SHADOW_READY",
+                                              "DO_NOT_EXECUTE", True, "live_micro")
+    assert action == "SHADOW_READY"
+
+
+def test_hourly_alert_live_blocked():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, "SHADOW_READY",
+                                              "DO_NOT_EXECUTE", False, "read_only")
+    assert action == "LIVE_BLOCKED"
+
+
+def test_doctor_packet_includes_hourly_status():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "hourly_final_status" in report
+    assert report["hourly_final_status"] is not None
+    assert "final_action" in report["hourly_final_status"]
