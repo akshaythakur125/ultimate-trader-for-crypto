@@ -189,6 +189,21 @@ def main():
         print(f"  ERROR: {e}")
         failed += 1
 
+    print("\n--- BINGX READ-ONLY CONNECTOR ---")
+    try:
+        from production_replay.bingx_healthcheck import main as bx_main
+        print("  python -m production_replay.bingx_healthcheck available  | OK")
+        from production_replay.bingx_client import credentials_found, load_credentials
+        creds = load_credentials()
+        has_creds = credentials_found(creds)
+        print(f"  Credentials: {'FOUND' if has_creds else 'NOT FOUND'}  | {'OK' if has_creds else 'INFO'}")
+        from production_replay.bingx_client import EXECUTION_MODE
+        mode_ok = EXECUTION_MODE == "read_only"
+        print(f"  Execution mode: {EXECUTION_MODE}  | {'OK' if mode_ok else 'WARN'}")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        failed += 1
+
     print("\n" + "=" * 60)
     if failed == 0:
         print("  SYSTEM SAFE    | YES")

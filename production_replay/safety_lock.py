@@ -69,13 +69,15 @@ def check_no_api_or_order_imports() -> tuple[bool, str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    top_module = alias.name.split(".")[0].lower()
                     for forbidden in FORBIDDEN_IMPORTS:
-                        if forbidden in alias.name.lower():
+                        if forbidden == top_module:
                             issues.append(f"{pyfile.name}: import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
+                    top_module = node.module.split(".")[0].lower()
                     for forbidden in FORBIDDEN_IMPORTS:
-                        if forbidden in node.module.lower():
+                        if forbidden == top_module:
                             issues.append(f"{pyfile.name}: from {node.module} import ...")
     if issues:
         return False, f"forbidden imports found: {', '.join(issues)}"

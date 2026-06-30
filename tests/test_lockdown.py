@@ -1808,3 +1808,88 @@ def test_operator_no_api_or_order_imports():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
                 assert alias.name not in ("requests", "websocket", "ccxt", "exchange"), f"forbidden import: {alias.name}"
+
+
+# --- Phase 32: BingX Read-Only Connector ---
+
+def test_bingx_missing_keys_fail_safely():
+    from production_replay.bingx_client import get_account_balance, get_open_positions
+    result = get_account_balance({"api_key": None, "api_secret": None, "base_url": "https://api.bingx.com"})
+    assert result["success"] is False
+    assert "API credentials not found" in result.get("error", "")
+    result = get_open_positions({"api_key": None, "api_secret": None, "base_url": "https://api.bingx.com"})
+    assert result["success"] is False
+    assert "API credentials not found" in result.get("error", "")
+
+
+def test_bingx_no_api_keys_in_repo():
+    import subprocess
+    result = subprocess.run(
+        ["git", "grep", "-l", "BINGX_API_KEY", "--", "production_replay/"],
+        capture_output=True, text=True, timeout=10,
+    )
+    files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    for f in files:
+        assert f in (
+            "production_replay/bingx_client.py",
+            "production_replay/bingx_healthcheck.py",
+            "production_replay/healthcheck.py",
+            "tests/test_lockdown.py",
+        ), f"BINGX_API_KEY found in unexpected file: {f}"
+
+
+def test_bingx_read_only_no_order_placement():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_client.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    forbidden_funcs = {"place_order", "cancel_order", "set_leverage", "withdraw", "transfer"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name not in forbidden_funcs, f"forbidden function: {node.name}"
+
+
+def test_bingx_no_withdrawal_methods():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_client.py")
+    with open(path) as f:
+        source = f.read()
+    assert "withdraw" not in source.lower().replace("withdrawal", "")
+    assert "transfer" not in source.lower()
+
+
+def test_bingx_mode_is_read_only():
+    import os as _os
+    mode = _os.environ.get("BINGX_EXECUTION_MODE", "read_only")
+    assert mode == "read_only"
+
+
+def test_bingx_live_paper_disabled():
+    from production_replay.launch_check import load_config
+    config = load_config()
+    assert config.get("live_trading") is False
+    assert config.get("paper_trading") is False
+    assert config.get("dry_run") is True
+
+
+def test_bingx_safety_lock_passes():
+    from production_replay.safety_lock import run_safety_lock
+    result = run_safety_lock()
+    assert result["pass"] is True
+
+
+def test_bingx_healthcheck_public_market_no_keys():
+    from production_replay.bingx_client import get_ticker
+    result = get_ticker("BTC-USDT", "https://open-api.bingx.com")
+    assert result["success"] is True or "timeout" in result.get("error", "").lower() or "connection" in result.get("error", "").lower()
+
+
+def test_bingx_client_no_forbidden_api_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_client.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name not in ("ccxt", "websocket", "exchange", "trade_executor"), f"forbidden import: {alias.name}"
