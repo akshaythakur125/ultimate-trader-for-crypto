@@ -138,6 +138,85 @@ def build_scan_universe(contracts: list[dict]) -> dict[str, Any]:
     }
 
 
+def build_adaptive_universe(contracts: list[dict]) -> dict[str, Any]:
+    """Build adaptive 3-tier scan universe from ranked contracts.
+    
+    Tier A:  Top 200 by volume      → 5m, 15m, 30m, 1h
+    Tier B:  Next 200 by volume     → 15m, 30m, 1h
+    Tier C:  Remaining valid perps  → 30m, 1h only
+    
+    Returns dict with tier breakdown, timeframes, and symbol list.
+    Minimum target: 400 symbols. Falls back gracefully if fewer contracts exist.
+    """
+    memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
+    major_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MAJORS})
+    priority = set(memecoin_syms + major_syms)
+
+    # Rank is already sorted desc by volume from _rank_by_volume
+    tier_a_raw = []
+    tier_b_raw = []
+    tier_c_raw = []
+    seen = set()
+
+    # First pass: memecoins + majors go to tier A (up to 200)
+    for c in contracts:
+        if c["symbol"] in priority and c["symbol"] not in seen:
+            tier_a_raw.append(c)
+            seen.add(c["symbol"])
+        if len(tier_a_raw) >= 200:
+            break
+
+    # Fill tier A to 200 with top volume
+    if len(tier_a_raw) < 200:
+        for c in contracts:
+            if c["symbol"] not in seen:
+                tier_a_raw.append(c)
+                seen.add(c["symbol"])
+            if len(tier_a_raw) >= 200:
+                break
+
+    # Tier B: next 200 by volume
+    for c in contracts:
+        if c["symbol"] not in seen:
+            tier_b_raw.append(c)
+            seen.add(c["symbol"])
+        if len(tier_b_raw) >= 200:
+            break
+
+    # Tier C: all remaining
+    for c in contracts:
+        if c["symbol"] not in seen:
+            tier_c_raw.append(c)
+            seen.add(c["symbol"])
+
+    all_symbols = [c["symbol"] for c in tier_a_raw + tier_b_raw + tier_c_raw]
+    all_contracts = tier_a_raw + tier_b_raw + tier_c_raw
+
+    return {
+        "symbols": all_symbols,
+        "contracts": all_contracts,
+        "size": len(all_symbols),
+        "memecoins": memecoin_syms,
+        "majors": major_syms,
+        "target": 400,
+        "tier_a": {
+            "symbols": [c["symbol"] for c in tier_a_raw],
+            "size": len(tier_a_raw),
+            "timeframes": ["5m", "15m", "30m", "1h"],
+        },
+        "tier_b": {
+            "symbols": [c["symbol"] for c in tier_b_raw],
+            "size": len(tier_b_raw),
+            "timeframes": ["15m", "30m", "1h"],
+        },
+        "tier_c": {
+            "symbols": [c["symbol"] for c in tier_c_raw],
+            "size": len(tier_c_raw),
+            "timeframes": ["30m", "1h"],
+        },
+    }
+
+
 def is_bingx_listed(symbol: str, universe: list[dict] | None = None) -> bool:
     if universe is None:
         result = load_universe()
@@ -155,8 +234,12 @@ def get_major_symbols(universe: list[dict]) -> list[str]:
     return sorted(available & KNOWN_MAJORS)
 
 
-def write_reports(universe_result: dict, scan: dict):
+def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = None):
     os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    tier_a = adaptive.get("tier_a", {}) if adaptive else {}
+    tier_b = adaptive.get("tier_b", {}) if adaptive else {}
+    tier_c = adaptive.get("tier_c", {}) if adaptive else {}
 
     json_report = {
         "mode": "bingx_universe",
@@ -171,6 +254,13 @@ def write_reports(universe_result: dict, scan: dict):
         "scan_symbols": scan["symbols"],
         "memecoin_symbols": scan["memecoins"],
         "major_symbols": scan["majors"],
+        "adaptive_mode": adaptive is not None,
+        "tier_a_size": tier_a.get("size", 0),
+        "tier_b_size": tier_b.get("size", 0),
+        "tier_c_size": tier_c.get("size", 0),
+        "tier_a_timeframes": tier_a.get("timeframes", []),
+        "tier_b_timeframes": tier_b.get("timeframes", []),
+        "tier_c_timeframes": tier_c.get("timeframes", []),
     }
     with open(JSON_PATH, "w") as f:
         json.dump(json_report, f, indent=2)
@@ -184,13 +274,25 @@ def write_reports(universe_result: dict, scan: dict):
         f"  Source:              {universe_result['source']}",
         f"  Total raw contracts: {universe_result.get('total_raw', 0)}",
         f"  Active USDT perps:   {universe_result.get('active_usdt', 0)}",
-        f"  Dux scan target:     {scan['target']}",
-        f"  Dux scan universe:   {scan['size']}",
+        f"  Scan target:         {scan['target']}+",
+        f"  Scan universe:       {scan['size']}",
         f"  Memecoin candidates: {len(scan['memecoins'])}",
         f"  Major controls:      {len(scan['majors'])}",
         "",
-        "  Top 20 by volume:",
     ]
+    if adaptive:
+        total_st = (tier_a.get("size", 0) * len(tier_a.get("timeframes", [])) +
+                     tier_b.get("size", 0) * len(tier_b.get("timeframes", [])) +
+                     tier_c.get("size", 0) * len(tier_c.get("timeframes", [])))
+        lines += [
+            "  ADAPTIVE 3-TIER UNIVERSE:",
+            f"    Tier A (5m/15m/30m/1h): {tier_a.get('size', 0)} symbols",
+            f"    Tier B (15m/30m/1h):    {tier_b.get('size', 0)} symbols",
+            f"    Tier C (30m/1h):         {tier_c.get('size', 0)} symbols",
+            f"    Total symbol-TFs:       {total_st}",
+            "",
+        ]
+    lines += ["  Top 20 by volume:"]
     for i, s in enumerate(scan["symbols"][:20]):
         lines.append(f"    {i + 1:>3}. {s}")
     lines += [
@@ -211,7 +313,8 @@ def main():
         print(f"  WARNING: {result.get('error', '')}")
     contracts = result["contracts"]
     scan = build_scan_universe(contracts)
-    write_reports(result, scan)
+    adaptive = build_adaptive_universe(contracts)
+    write_reports(result, scan, adaptive)
     return 0
 
 

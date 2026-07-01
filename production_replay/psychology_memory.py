@@ -50,7 +50,7 @@ def _append_jsonl(path: str, entry: dict):
 
 
 def _record_scan_snapshot(psych: dict):
-    top = psych.get("top_ranked", [])[:100]
+    top = psych.get("top_ranked", [])[:150]
     best = psych.get("best_candidate")
     ts = datetime.now().isoformat()
 

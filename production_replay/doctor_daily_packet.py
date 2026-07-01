@@ -210,9 +210,33 @@ def main():
             f"    BingX contracts discovered: {total_contracts}",
             f"    Dux scan symbols:           {dux_scan_size}",
             f"    Symbol-timeframes scanned:  {st_scanned}",
+            f"    Symbol-timeframes attempted: {dux.get('symbol_timeframes_attempted', st_scanned)}",
+            f"    Scan duration (seconds):    {dux.get('scan_duration_seconds', 0)}",
+            f"    Failed symbols:             {dux.get('failed_symbol_count', 0)}",
+            f"    API errors:                 {dux.get('api_error_count', 0)}",
             f"    RR >= 4 candidates:         {rr_count}",
             f"    Dux decision:               {dux.get('final_decision', 'N/A')}",
         ]
+
+    # Expanded universe scan section
+    expanded_lines = []
+    if dux:
+        t_a = dux.get("tier_a_size", 0)
+        t_b = dux.get("tier_b_size", 0)
+        t_c = dux.get("tier_c_size", 0)
+        if t_a or t_b or t_c:
+            expanded_lines = [
+                "",
+                "  EXPANDED UNIVERSE SCAN:",
+                f"    Tier A (5m/15m/30m/1h): {t_a}",
+                f"    Tier B (15m/30m/1h):    {t_b}",
+                f"    Tier C (30m/1h):         {t_c}",
+                f"    Total scan symbols:     {dux_scan_size}",
+                f"    Completed symbol-TFs:   {st_scanned}",
+                f"    Failed symbols:         {dux.get('failed_symbol_count', 0)}",
+                f"    Scan duration:          {dux.get('scan_duration_seconds', 0)}s",
+                f"    Scan status:            {'COMPLETE' if dux.get('failed_symbol_count', 0) == 0 and st_scanned > 0 else 'PARTIAL'}",
+            ]
 
     # Alpha intelligence section
     alpha_lines = []
@@ -417,6 +441,7 @@ def main():
         ]
     lines += tournament_lines
     lines += dux_lines
+    lines += expanded_lines
     lines += alpha_lines
     lines += psych_lines
     lines += memory_lines
@@ -472,10 +497,17 @@ def main():
             "best_candidate": dux.get("best_candidate") if dux else None,
             "dux_scan_universe_size": dux.get("dux_scan_universe_size", dux.get("symbols_scanned", 0)) if dux else 0,
             "symbol_timeframes_scanned": dux.get("symbol_timeframes_scanned", 0) if dux else 0,
+            "symbol_timeframes_attempted": dux.get("symbol_timeframes_attempted", 0) if dux else 0,
             "total_raw_contracts": dux.get("total_raw_contracts", dux.get("total_contracts", 0)) if dux else 0,
             "rr_gate_pass": dux.get("rr_gate_pass", 0) if dux else 0,
             "stats_pass": dux.get("stats_pass", 0) if dux else 0,
             "final_decision": dux.get("final_decision", "N/A") if dux else None,
+            "tier_a_size": dux.get("tier_a_size", 0) if dux else 0,
+            "tier_b_size": dux.get("tier_b_size", 0) if dux else 0,
+            "tier_c_size": dux.get("tier_c_size", 0) if dux else 0,
+            "failed_symbol_count": dux.get("failed_symbol_count", 0) if dux else 0,
+            "api_error_count": dux.get("api_error_count", 0) if dux else 0,
+            "scan_duration_seconds": dux.get("scan_duration_seconds", 0) if dux else 0,
         } if dux else None,
         "alpha_intelligence": {
             "best_candidate": alpha.get("best_candidate") if alpha else None,

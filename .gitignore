@@ -47,5 +47,5 @@ deploy_results/
 !deploy_results/.gitignore
 
 # Runtime state (persistent, not cleaned)
-runtime_state/evidence_ledger.jsonl
+runtime_state/*
 !runtime_state/.gitkeep

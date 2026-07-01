@@ -3330,3 +3330,136 @@ def test_hourly_alert_includes_memory_fields():
     report = run_hourly_alert()
     for key in ["memory_scan_records", "memory_outcomes", "memory_pending"]:
         assert key in report, f"missing field in report: {key}"
+
+
+# --- Phase 43: Adaptive Full BingX Universe Scanner ---
+
+def test_bingx_universe_build_adaptive_has_tiers():
+    from production_replay.bingx_universe import build_adaptive_universe, load_universe
+    result = load_universe()
+    adaptive = build_adaptive_universe(result["contracts"])
+    assert "tier_a" in adaptive
+    assert "tier_b" in adaptive
+    assert "tier_c" in adaptive
+    total = adaptive["tier_a"]["size"] + adaptive["tier_b"]["size"] + adaptive["tier_c"]["size"]
+    assert total == adaptive["size"]
+    assert adaptive["tier_a"]["timeframes"] == ["5m", "15m", "30m", "1h"]
+    assert adaptive["tier_b"]["timeframes"] == ["15m", "30m", "1h"]
+    assert adaptive["tier_c"]["timeframes"] == ["30m", "1h"]
+
+
+def test_bingx_universe_adaptive_target_at_least_400():
+    from production_replay.bingx_universe import build_adaptive_universe, load_universe
+    result = load_universe()
+    adaptive = build_adaptive_universe(result["contracts"])
+    assert adaptive["size"] >= 400, f"adaptive universe too small: {adaptive['size']}"
+
+
+def test_bingx_universe_adaptive_fallback_graceful():
+    from production_replay.bingx_universe import build_adaptive_universe
+    adaptive = build_adaptive_universe([])
+    assert adaptive["size"] == 0
+    assert adaptive["tier_a"]["size"] == 0
+    assert adaptive["tier_b"]["size"] == 0
+    assert adaptive["tier_c"]["size"] == 0
+
+
+def test_dux_engine_passes_rr_at_4():
+    from production_replay.dux_pattern_engine import _compute_setup
+    setup = _compute_setup("TEST-USDT", "1h", "LONG", 100.0, 99.0, 1.0)
+    assert not setup["rejected"], f"should pass at RR >=4, got reason: {setup.get('reason')}"
+    assert setup["rr_2"] >= 4.0
+
+
+def test_dux_engine_rr_gate_filters_below_4():
+    from production_replay.dux_pattern_engine import _compute_setup
+    # Zero risk should be rejected
+    setup = _compute_setup("TEST-USDT", "1h", "LONG", 100.0, 100.0, 1.0)
+    assert setup["rejected"]
+    assert "invalid risk" in setup.get("reason", "")
+
+
+def test_dux_engine_failed_symbol_does_not_crash():
+    from production_replay.dux_pattern_engine import scan_symbol
+    results = scan_symbol("INVALID-UNKNOWN-USDT", "1h")
+    assert isinstance(results, list)
+
+
+def test_dux_engine_scan_symbol_returns_list():
+    from production_replay.dux_pattern_engine import scan_symbol
+    results = scan_symbol("BTC-USDT", "1h")
+    assert isinstance(results, list)
+
+
+def test_dux_engine_report_has_expanded_stats():
+    import json, os
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "dux_pattern_report.json")
+    if not os.path.exists(path):
+        pytest.skip("dux report not generated yet")
+    with open(path) as f:
+        report = json.load(f)
+    for key in ["tier_a_size", "tier_b_size", "tier_c_size",
+                 "failed_symbol_count", "scan_duration_seconds",
+                 "symbol_timeframes_attempted"]:
+        assert key in report, f"missing field: {key}"
+
+
+def test_psychology_memory_cap_at_150():
+    from production_replay.psychology_memory import _record_scan_snapshot
+    psych_report = {"top_ranked": [
+        {"symbol": f"SYM{i}-USDT", "timeframe": "1h", "direction": "LONG",
+         "pattern_name": "test", "entry": 100.0, "stop": 99.0, "target_2": 104.0}
+        for i in range(300)
+    ]}
+    count = _record_scan_snapshot(psych_report)
+    assert count <= 150, f"records per run exceeded 150: {count}"
+
+
+def test_hourly_alert_includes_expanded_scan_fields():
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    for key in ["tier_a_size", "tier_b_size", "tier_c_size",
+                 "failed_symbol_count", "scan_duration_seconds",
+                 "symbol_timeframes_attempted"]:
+        assert key in report, f"missing expanded scan field: {key}"
+
+
+def test_doctor_packet_includes_expanded_universe_section():
+    import json, os
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    dux = report.get("dux_pattern_engine", {})
+    for key in ["tier_a_size", "tier_b_size", "tier_c_size",
+                 "failed_symbol_count", "scan_duration_seconds",
+                 "symbol_timeframes_attempted"]:
+        assert key in dux, f"missing field in doctor dux section: {key}"
+
+
+def test_expanded_scan_no_approved_output():
+    import io, contextlib
+    from production_replay.bingx_universe import main as universe_main
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        universe_main()
+    out = buf.getvalue()
+    assert "APPROVED" not in out
+
+
+def test_expanded_scan_live_trading_disabled():
+    from production_replay.bingx_universe import load_universe
+    result = load_universe()
+    assert "live_trading" not in result or not result.get("live_trading")
+
+
+def test_expanded_scan_no_withdrawal():
+    import ast
+    for mod in ["bingx_universe", "dux_pattern_engine"]:
+        path = os.path.join(os.path.dirname(__file__), "..", "production_replay", f"{mod}.py")
+        with open(path) as f:
+            tree = ast.parse(f.read())
+        funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        for bad in ["withdraw", "transfer", "send"]:
+            assert all(bad not in f for f in funcs), f"found {bad} in {mod}"

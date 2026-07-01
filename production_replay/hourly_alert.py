@@ -109,9 +109,16 @@ def run_hourly_alert() -> dict:
     alpha_best = alpha.get("best_candidate") if alpha else None
     dux_scan_size = dux.get("dux_scan_universe_size", dux.get("symbols_scanned", 0))
     st_scanned = dux.get("symbol_timeframes_scanned", 0)
+    st_attempted = dux.get("symbol_timeframes_attempted", st_scanned)
     rr_pass = dux.get("rr_gate_pass", 0)
     total_contracts = dux.get("total_raw_contracts", dux.get("total_contracts", 0))
     best = dux.get("best_candidate")
+    scan_duration = dux.get("scan_duration_seconds", 0)
+    failed_count = dux.get("failed_symbol_count", 0)
+    api_err_count = dux.get("api_error_count", 0)
+    tier_a = dux.get("tier_a_size", 0)
+    tier_b = dux.get("tier_b_size", 0)
+    tier_c = dux.get("tier_c_size", 0)
 
     shadow_decision = shadow.get("decision", "N/A") if shadow else "N/A"
     live_decision = live.get("decision", "N/A") if live else "N/A"
@@ -141,6 +148,13 @@ def run_hourly_alert() -> dict:
         "bingx_contracts_discovered": total_contracts,
         "dux_scan_symbols": dux_scan_size,
         "symbol_timeframes_scanned": st_scanned,
+        "symbol_timeframes_attempted": st_attempted,
+        "scan_duration_seconds": scan_duration,
+        "failed_symbol_count": failed_count,
+        "api_error_count": api_err_count,
+        "tier_a_size": tier_a,
+        "tier_b_size": tier_b,
+        "tier_c_size": tier_c,
         "rr_gate_pass_candidates": rr_pass,
         "alpha_score": alpha_score,
         "alpha_elite_candidates": alpha_elite,
@@ -215,7 +229,11 @@ def _write_text_report(report: dict, action: str, reason: str):
         f"  BingX contracts discovered: {report['bingx_contracts_discovered']}",
         f"  Dux scan symbols:           {report['dux_scan_symbols']}",
         f"  Symbol-timeframes scanned:  {report['symbol_timeframes_scanned']}",
-        f"  RR >= 4 candidates:         {report['rr_gate_pass_candidates']}",
+        f"  Symbol-timeframes attempted: {report.get('symbol_timeframes_attempted', report['symbol_timeframes_scanned'])}",
+        f"  Scan duration (s):           {report.get('scan_duration_seconds', 0)}",
+        f"  Failed symbols:              {report.get('failed_symbol_count', 0)}",
+        f"  Tier A/B/C:                  {report.get('tier_a_size', 0)}/{report.get('tier_b_size', 0)}/{report.get('tier_c_size', 0)}",
+        f"  RR >= 4 candidates:          {report['rr_gate_pass_candidates']}",
         "",
     ]
     alpha_score = report.get("alpha_score")

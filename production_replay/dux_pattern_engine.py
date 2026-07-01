@@ -7,15 +7,17 @@ Usage:
     python -m production_replay.dux_pattern_engine
 """
 
-import csv, json, math, os, sys
+import csv, json, math, os, sys, time
 from datetime import datetime
 from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_universe import load_universe, build_scan_universe, get_memecoin_symbols, get_major_symbols
+from production_replay.bingx_universe import load_universe, build_scan_universe, build_adaptive_universe, get_memecoin_symbols, get_major_symbols
 from production_replay.bingx_client import get_klines, load_credentials
 from production_replay.setup_compute import compute_atr, load_candles
+
+PARTIAL_PATH = os.path.join(os.path.join(os.path.dirname(__file__), ".."), "runtime_state", "dux_partial.json")
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 TXT_REPORT = os.path.join(RESULTS_DIR, "dux_pattern_report.txt")
@@ -405,52 +407,64 @@ PATTERN_DETECTORS = [
 
 
 def scan_symbol(symbol: str, tf: str) -> list[dict]:
-    candles = _load_candles(symbol, tf)
-    if len(candles) < 50:
+    try:
+        candles = _load_candles(symbol, tf)
+        if len(candles) < 50:
+            return []
+        results = []
+        for pid, pname, default_dir, detect_fn in PATTERN_DETECTORS:
+            atr_val = compute_atr(candles[-20:])
+            if atr_val <= 0:
+                continue
+            direction = default_dir
+            result = detect_fn(candles, len(candles) - 1)
+            if result and result.get("detected"):
+                direction = result["direction"]
+                setup = _compute_setup(symbol, tf, direction, result["entry"], result["stop"], atr_val)
+                stats_signals, stats = _backtest_pattern(candles, pid, direction, detect_fn)
+                verdict = _stat_verdict(stats)
+                results.append({
+                    "symbol": symbol, "timeframe": tf,
+                    "pattern_id": pid, "pattern_name": pname,
+                    "direction": direction,
+                    "entry": setup["entry"], "stop": setup["stop"],
+                    "target_1": setup["target_1"], "target_2": setup["target_2"],
+                    "rr_1": setup["rr_1"], "rr_2": setup["rr_2"],
+                    "rr_gate": "PASS" if not setup["rejected"] else "FAIL",
+                    "setup_quality": "A" if (not setup["rejected"] and stats["ev_r"] > MIN_STAT_EV_R) else "B" if not setup["rejected"] else "REJECT",
+                    "rejected": setup["rejected"],
+                    "reject_reason": setup.get("reason", ""),
+                    "pump_pct": result.get("pump_pct"),
+                    "wick_pct": result.get("wick_pct"),
+                    "vol_expansion": result.get("vol_expansion"),
+                    "funding_evidence": result.get("funding_evidence", "UNKNOWN"),
+                    "oi_evidence": result.get("oi_evidence", "UNKNOWN"),
+                    "stats": stats,
+                    "verdict": verdict,
+                })
+            else:
+                results.append({
+                    "symbol": symbol, "timeframe": tf,
+                    "pattern_id": pid, "pattern_name": pname,
+                    "direction": "UNKNOWN", "rejected": True,
+                    "reject_reason": "pattern not detected",
+                    "rr_gate": "FAIL",
+                    "setup_quality": "REJECT",
+                    "stats": _compute_stats([]),
+                    "verdict": "REJECT",
+                })
+        return results
+    except Exception:
         return []
-    results = []
-    for pid, pname, default_dir, detect_fn in PATTERN_DETECTORS:
-        atr_val = compute_atr(candles[-20:])
-        if atr_val <= 0:
-            continue
-        direction = default_dir
-        result = detect_fn(candles, len(candles) - 1)
-        if result and result.get("detected"):
-            direction = result["direction"]
-            setup = _compute_setup(symbol, tf, direction, result["entry"], result["stop"], atr_val)
-            stats_signals, stats = _backtest_pattern(candles, pid, direction, detect_fn)
-            verdict = _stat_verdict(stats)
-            results.append({
-                "symbol": symbol, "timeframe": tf,
-                "pattern_id": pid, "pattern_name": pname,
-                "direction": direction,
-                "entry": setup["entry"], "stop": setup["stop"],
-                "target_1": setup["target_1"], "target_2": setup["target_2"],
-                "rr_1": setup["rr_1"], "rr_2": setup["rr_2"],
-                "rr_gate": "PASS" if not setup["rejected"] else "FAIL",
-                "setup_quality": "A" if (not setup["rejected"] and stats["ev_r"] > MIN_STAT_EV_R) else "B" if not setup["rejected"] else "REJECT",
-                "rejected": setup["rejected"],
-                "reject_reason": setup.get("reason", ""),
-                "pump_pct": result.get("pump_pct"),
-                "wick_pct": result.get("wick_pct"),
-                "vol_expansion": result.get("vol_expansion"),
-                "funding_evidence": result.get("funding_evidence", "UNKNOWN"),
-                "oi_evidence": result.get("oi_evidence", "UNKNOWN"),
-                "stats": stats,
-                "verdict": verdict,
-            })
-        else:
-            results.append({
-                "symbol": symbol, "timeframe": tf,
-                "pattern_id": pid, "pattern_name": pname,
-                "direction": "UNKNOWN", "rejected": True,
-                "reject_reason": "pattern not detected",
-                "rr_gate": "FAIL",
-                "setup_quality": "REJECT",
-                "stats": _compute_stats([]),
-                "verdict": "REJECT",
-            })
-    return results
+
+
+def _get_timeframes_for_symbol(symbol: str, adaptive: dict) -> list[str]:
+    """Return tier-specific timeframes for a symbol."""
+    for tier_key in ("tier_a", "tier_b", "tier_c"):
+        tier = adaptive.get(tier_key, {})
+        if symbol in tier.get("symbols", []):
+            return tier.get("timeframes", ["30m", "1h"])
+    return ["30m", "1h"]
 
 
 def run_dux_engine() -> dict:
@@ -459,6 +473,7 @@ def run_dux_engine() -> dict:
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
+    start_ts = time.time()
     universe_result = load_universe()
     contracts = universe_result["contracts"]
     source = universe_result["source"]
@@ -467,38 +482,89 @@ def run_dux_engine() -> dict:
     print(f"  Total raw contracts: {universe_result.get('total_raw', 0)}")
     print(f"  Active USDT perps:   {universe_result.get('active_usdt', len(contracts))}")
 
-    scan = build_scan_universe(contracts)
-    scan_symbols = scan["symbols"]
+    adaptive = build_adaptive_universe(contracts)
+    tier_a = adaptive.get("tier_a", {})
+    tier_b = adaptive.get("tier_b", {})
+    tier_c = adaptive.get("tier_c", {})
+    scan_symbols = adaptive["symbols"]
     total_symbols = len(scan_symbols)
-    memecoins = scan["memecoins"]
-    majors = scan["majors"]
+    memecoins = adaptive["memecoins"]
+    majors = adaptive["majors"]
 
-    print(f"  Dux scan universe:   {total_symbols} symbols")
+    print(f"  Adaptive scan universe: {total_symbols} symbols")
+    print(f"    Tier A (5m/15m/30m/1h): {tier_a.get('size', 0)}")
+    print(f"    Tier B (15m/30m/1h):    {tier_b.get('size', 0)}")
+    print(f"    Tier C (30m/1h):         {tier_c.get('size', 0)}")
     print(f"  Memecoin candidates: {len(memecoins)}")
     print(f"  Major controls:      {len(majors)}")
     print(f"  Scanning {total_symbols} symbols...")
 
     all_results = []
-    skipped = 0
+    skipped_symbols = []
+    failed_symbols = []
     scanned_st = 0
     total_st = 0
+    api_errors = 0
+    MAX_API_ERRORS = 50
+    MAX_RUNTIME_SECONDS = 600
+
+    os.makedirs(os.path.dirname(PARTIAL_PATH), exist_ok=True)
 
     for i, sym in enumerate(scan_symbols):
-        tfs = TIMEFRAMES_TOP if i < TOP_N_5M else TIMEFRAMES
-        symbol_skipped = True
+        if time.time() - start_ts > MAX_RUNTIME_SECONDS:
+            print(f"\n  [guard] Runtime limit {MAX_RUNTIME_SECONDS}s reached, saving partial scan at symbol {i}/{total_symbols}")
+            break
+        if api_errors >= MAX_API_ERRORS:
+            print(f"\n  [guard] API error limit {MAX_API_ERRORS} reached, stopping scan")
+            break
+
+        tfs = _get_timeframes_for_symbol(sym, adaptive)
+        symbol_had_results = False
+        symbol_had_error = False
         for tf in tfs:
             total_st += 1
-            results = scan_symbol(sym, tf)
-            if results:
-                symbol_skipped = False
-                scanned_st += 1
-                all_results.extend(results)
-        status = "OK" if not symbol_skipped else "SKIP (no data)"
-        if not symbol_skipped:
-            skipped += 1
+            try:
+                results = scan_symbol(sym, tf)
+                if results:
+                    scanned_st += 1
+                    all_results.extend(results)
+                    symbol_had_results = True
+            except Exception:
+                api_errors += 1
+                symbol_had_error = True
+                continue
+        if symbol_had_error:
+            failed_symbols.append(sym)
+        elif not symbol_had_results:
+            skipped_symbols.append(sym)
+
         if (i + 1) % 25 == 0 or i == total_symbols - 1:
-            print(f"  [scan] {i + 1}/{total_symbols} symbols, {scanned_st} symbol-tf scanned, {len(all_results)} patterns")
-    print(f"  Scan complete: {total_symbols} symbols, {scanned_st} symbol-tf, {len(all_results)} patterns")
+            elapsed = time.time() - start_ts
+            print(f"  [scan] {i + 1}/{total_symbols} symbols, {scanned_st}/{total_st} sym-tf, "
+                  f"{len(all_results)} patterns, {len(failed_symbols)} failed, {elapsed:.0f}s")
+
+        # Save partial every 50 symbols
+        if (i + 1) % 50 == 0:
+            partial = {
+                "mode": "dux_partial",
+                "timestamp": datetime.now().isoformat(),
+                "symbols_attempted": i + 1,
+                "total_symbols": total_symbols,
+                "symbol_timeframes_scanned": scanned_st,
+                "total_patterns_scanned": len(all_results),
+                "failed_symbols": failed_symbols,
+                "skipped_symbols": skipped_symbols,
+                "scan_duration_seconds": int(time.time() - start_ts),
+            }
+            try:
+                with open(PARTIAL_PATH, "w") as f:
+                    json.dump(partial, f, indent=2)
+            except Exception:
+                pass
+
+    scan_duration = int(time.time() - start_ts)
+    print(f"\n  Scan complete: {total_symbols} symbols, {scanned_st} sym-tf, "
+          f"{len(all_results)} patterns, {len(failed_symbols)} failed, {scan_duration}s")
 
     passing = [r for r in all_results if not r["rejected"] and r["verdict"] in ("PASS", "WATCH")]
     rr_pass = [r for r in all_results if not r["rejected"]]
@@ -513,7 +579,7 @@ def run_dux_engine() -> dict:
     # Final decision
     if not rr_pass:
         final_decision = "DO_NOT_TRADE"
-        reason = "no candidate passes RR >= 4 gate"
+        reason = f"no candidate passes RR >= 4 gate ({len(all_results)} patterns scanned)"
     elif best_candidate and best_candidate["verdict"] == "PASS":
         final_decision = "MANUAL_REVIEW_ONLY"
         reason = f"best: {best_candidate['pattern_name']} {best_candidate['symbol']} RR {best_candidate['rr_2']}"
@@ -535,9 +601,19 @@ def run_dux_engine() -> dict:
         "dux_scan_universe_size": total_symbols,
         "symbols_scanned": total_symbols,
         "symbol_timeframes_scanned": scanned_st,
+        "symbol_timeframes_attempted": total_st,
         "total_patterns_scanned": len(all_results),
         "memecoin_candidates": len(memecoins),
         "major_controls": len(majors),
+        "tier_a_size": tier_a.get("size", 0),
+        "tier_b_size": tier_b.get("size", 0),
+        "tier_c_size": tier_c.get("size", 0),
+        "failed_symbols": failed_symbols,
+        "failed_symbol_count": len(failed_symbols),
+        "skipped_symbols": skipped_symbols,
+        "skipped_symbol_count": len(skipped_symbols),
+        "api_error_count": api_errors,
+        "scan_duration_seconds": scan_duration,
         "rr_gate_pass": len(rr_pass),
         "stats_pass": len(passing),
         "best_candidate": {
@@ -560,6 +636,13 @@ def run_dux_engine() -> dict:
     with open(JSON_REPORT, "w") as f:
         json.dump(report, f, indent=2)
 
+    # Remove partial file on success
+    try:
+        if os.path.exists(PARTIAL_PATH):
+            os.remove(PARTIAL_PATH)
+    except Exception:
+        pass
+
     _write_text_report(report, all_results, best_candidate, final_decision, reason)
     return report
 
@@ -575,15 +658,22 @@ def _write_text_report(report: dict, results: list, best: dict | None,
         f"  BingX universe loaded: {'YES' if report['bingx_universe_loaded'] else 'NO'}",
         f"  Total raw contracts:   {report['total_raw_contracts']}",
         f"  Active USDT perps:     {report['active_usdt_perps']}",
-        f"  Dux scan universe:     {report['dux_scan_universe_size']}",
+        f"  Scan universe:         {report['dux_scan_universe_size']}",
+        f"  Tier A (5m/15m/30m/1h): {report.get('tier_a_size', 0)}",
+        f"  Tier B (15m/30m/1h):    {report.get('tier_b_size', 0)}",
+        f"  Tier C (30m/1h):         {report.get('tier_c_size', 0)}",
         f"  Memecoin candidates:   {report['memecoin_candidates']}",
         f"  Major controls:        {report['major_controls']}",
         "",
-        f"  Symbols scanned:          {report['symbols_scanned']}",
-        f"  Symbol-timeframes:        {report['symbol_timeframes_scanned']}",
-        f"  Total patterns scanned:   {report['total_patterns_scanned']}",
-        f"  RR >= 4 gate PASS:        {report['rr_gate_pass']}",
-        f"  Stats PASS:               {report['stats_pass']}",
+        f"  Symbol-timeframes attempted: {report.get('symbol_timeframes_attempted', 0)}",
+        f"  Symbol-timeframes completed:  {report['symbol_timeframes_scanned']}",
+        f"  Total patterns scanned:       {report['total_patterns_scanned']}",
+        f"  Failed symbols:               {report.get('failed_symbol_count', 0)}",
+        f"  Skipped symbols:              {report.get('skipped_symbol_count', 0)}",
+        f"  API errors:                   {report.get('api_error_count', 0)}",
+        f"  Scan duration (seconds):      {report.get('scan_duration_seconds', 0)}",
+        f"  RR >= 4 gate PASS:            {report['rr_gate_pass']}",
+        f"  Stats PASS:                   {report['stats_pass']}",
         "",
     ]
 
