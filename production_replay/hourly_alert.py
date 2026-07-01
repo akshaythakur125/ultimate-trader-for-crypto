@@ -138,12 +138,23 @@ def run_hourly_alert() -> dict:
     position_open = position_monitor.get("position_found", False) if position_monitor else False
     emergency = position_monitor.get("emergency_status") == "CRITICAL" if position_monitor else False
 
-    executable_count = near_miss.get("executable_candidate_count", 0) if near_miss else 0
+    executable_count = near_miss.get("diagnostic_executable_count", 0) if near_miss else 0
+    trigger_confirmed_ct = near_miss.get("trigger_confirmed_count", 0) if near_miss else 0
+    arbiter_eligible_ct = near_miss.get("arbiter_eligible_count", 0) if near_miss else 0
     watchlist_count = near_miss.get("watchlist_ready_count", 0) if near_miss else 0
     near_miss_rr_ct = near_miss.get("near_miss_rr_count", 0) if near_miss else 0
     near_miss_psych_ct = near_miss.get("near_miss_psychology_count", 0) if near_miss else 0
     near_miss_total = near_miss_rr_ct + near_miss_psych_ct
     top_rejection = near_miss.get("top_rejection_reason", "N/A") if near_miss else "N/A"
+
+    # Candidate arbiter
+    arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
+    arbiter_shadow_eligible = arbiter.get("shadow_eligible", 0) if arbiter else 0
+    arbiter_review_candidate = arbiter.get("review_candidate", 0) if arbiter else 0
+    arbiter_do_not_trade = arbiter.get("do_not_trade", 0) if arbiter else 0
+    arbiter_best = arbiter.get("best_candidate") if arbiter else None
+    arbiter_psych_verdict = arbiter.get("psychology_alpha_best_candidate_verdict") if arbiter else None
+    arbiter_shadow_eligible_found = arbiter.get("has_shadow_eligible_candidates", False) if arbiter else False
 
     # Signal integrity from near_miss
     dedup_removed = near_miss.get("deduplicated_candidates_removed", 0) if near_miss else 0
@@ -185,6 +196,9 @@ def run_hourly_alert() -> dict:
         "tier_a_size": tier_a,
         "tier_b_size": tier_b,
         "tier_c_size": tier_c,
+        "diagnostic_executable_count": executable_count,
+        "trigger_confirmed_count": trigger_confirmed_ct,
+        "arbiter_eligible_count": arbiter_eligible_ct,
         "executable_candidate_count": executable_count,
         "watchlist_ready_count": watchlist_count,
         "near_miss_rr_count": near_miss_rr_ct,
@@ -197,6 +211,21 @@ def run_hourly_alert() -> dict:
         "psychology_score": psych_score,
         "memory_scan_records": memory.get("total_scan_records_stored", 0) if memory else 0,
         "memory_outcomes": memory.get("total_outcomes_evaluated", 0) if memory else 0,
+        "candidate_arbiter": {
+            "shadow_eligible": arbiter_shadow_eligible,
+            "review_candidate": arbiter_review_candidate,
+            "do_not_trade": arbiter_do_not_trade,
+            "has_shadow_eligible_candidates": arbiter_shadow_eligible_found,
+            "psychology_alpha_best_candidate_verdict": arbiter_psych_verdict,
+            "best_candidate": {
+                "symbol": arbiter_best["symbol"],
+                "timeframe": arbiter_best["timeframe"],
+                "direction": arbiter_best["direction"],
+                "rr": arbiter_best["rr"],
+                "thesis_score": arbiter_best["thesis_score"],
+                "trigger_status": arbiter_best["trigger_status"],
+            } if arbiter_best else None,
+        },
         "memory_pending": memory.get("pending_outcomes", 0) if memory else 0,
         "memory_best_pattern": ((memory.get("historical_edge_summary") or {}).get("best_pattern") or {}).get("name") if memory else None,
         "memory_worst_pattern": ((memory.get("historical_edge_summary") or {}).get("worst_pattern") or {}).get("name") if memory else None,
@@ -293,7 +322,9 @@ def _write_text_report(report: dict, action: str, reason: str):
     else:
         lines += ["  Psychology Score: NONE", ""]
 
-    exec_count = report.get("executable_candidate_count", 0)
+    exec_count = report.get("diagnostic_executable_count", report.get("executable_candidate_count", 0))
+    trigger_ct = report.get("trigger_confirmed_count", 0)
+    arbiter_ct = report.get("arbiter_eligible_count", 0)
     wl_count = report.get("watchlist_ready_count", 0)
     nm_rr = report.get("near_miss_rr_count", 0)
     nm_psych = report.get("near_miss_psychology_count", 0)
@@ -301,14 +332,16 @@ def _write_text_report(report: dict, action: str, reason: str):
     si = report.get("signal_integrity", {})
     dedup_removed = si.get("deduplicated_candidates_removed", 0)
     exec_downgraded = si.get("executable_downgraded_count", 0)
-    if exec_count > 0 or wl_count > 0 or nm_rr > 0 or nm_psych > 0:
+    if exec_count > 0 or wl_count > 0 or nm_rr > 0 or nm_psych > 0 or trigger_ct > 0 or arbiter_ct > 0:
         lines += [
             "  NEAR-MISS DIAGNOSTICS:",
-            f"    Executable candidates:    {exec_count}",
-            f"    Watchlist-ready:          {wl_count}",
-            f"    Near-miss RR:             {nm_rr}",
-            f"    Near-miss psychology:     {nm_psych}",
-            f"    Top rejection reason:     {top_rej}",
+            f"    Diagnostic executable:     {exec_count}",
+            f"    Trigger confirmed:         {trigger_ct}",
+            f"    Arbiter eligible:          {arbiter_ct}",
+            f"    Watchlist-ready:           {wl_count}",
+            f"    Near-miss RR:              {nm_rr}",
+            f"    Near-miss psychology:      {nm_psych}",
+            f"    Top rejection reason:      {top_rej}",
             "",
         ]
     if dedup_removed > 0 or exec_downgraded > 0:
@@ -317,6 +350,31 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Deduplicated removed:     {dedup_removed}",
             f"    Executable downgraded:    {exec_downgraded}",
             f"    Validated executables:    {si.get('validated_executable_after', exec_count)}",
+            "",
+        ]
+
+    # Candidate arbiter section
+    arb = report.get("candidate_arbiter", {})
+    if arb:
+        arb_shadow = arb.get("shadow_eligible", 0)
+        arb_review = arb.get("review_candidate", 0)
+        arb_dnt = arb.get("do_not_trade", 0)
+        arb_any = arb.get("has_shadow_eligible_candidates", False)
+        arb_best = arb.get("best_candidate")
+        lines += [
+            "  CANDIDATE ARBITER:",
+            f"    Shadow eligible:      {arb_shadow}",
+            f"    Review candidates:    {arb_review}",
+            f"    Do not trade:         {arb_dnt}",
+            f"    Shadow eligible YES/NO: {'YES' if arb_any else 'NO'}",
+        ]
+        if arb_best:
+            lines += [
+                f"    Best: {arb_best['symbol']} {arb_best['timeframe']} {arb_best['direction']} "
+                f"RR:1:{arb_best['rr']} Score:{arb_best['thesis_score']} Trigger:{arb_best['trigger_status']}",
+            ]
+        lines += [
+            f"    Psych alpha verdict:  {arb.get('psychology_alpha_best_candidate_verdict', 'N/A')}",
             "",
         ]
 

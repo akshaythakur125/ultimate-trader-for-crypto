@@ -349,6 +349,8 @@ def main():
             f"    Duplicate candidates removed: {dedup_removed}",
             f"    Executable before validation: {exec_before}",
             f"    Executable after validation:  {exec_after}",
+            f"    Trigger confirmed promoted:   {near_miss.get('trigger_confirmed_promoted', 0)}",
+            f"    Trigger invalidated:          {near_miss.get('trigger_invalidated', 0)}",
             "",
             "  CRYPTO-ONLY + THESIS SECTION:",
             f"    Excluded non-crypto symbols: {crypto_excluded}",
@@ -357,7 +359,9 @@ def main():
             f"      SHORT theses:             {short_ct}",
             "",
             "  NEAR-MISS DIAGNOSTICS:",
-            f"    Executable candidates:    {bkt.get('EXECUTABLE_CANDIDATE', 0)}",
+            f"    Diagnostic executable:    {bkt.get('DIAGNOSTIC_EXECUTABLE', 0)}",
+            f"    Trigger confirmed:        {bkt.get('TRIGGER_CONFIRMED', 0)}",
+            f"    Arbiter eligible:         {bkt.get('ARBITER_ELIGIBLE', 0)}",
             f"    Watchlist-ready:          {bkt.get('WATCHLIST_READY', 0)}",
             f"    Near-miss RR:             {bkt.get('NEAR_MISS_RR', 0)}",
             f"    Near-miss psychology:     {bkt.get('NEAR_MISS_PSYCHOLOGY', 0)}",
@@ -384,6 +388,29 @@ def main():
             ]
     else:
         near_miss_lines = ["", "  NEAR-MISS DIAGNOSTICS: MISSING (no report)", ""]
+
+    # Candidate arbiter section
+    arbiter_lines = []
+    arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
+    if arbiter:
+        arb_best = arbiter.get("best_candidate")
+        arbiter_lines = [
+            "",
+            "  CANDIDATE ARBITER:",
+            f"    Total evaluated:       {arbiter.get('total_candidates_evaluated', 0)}",
+            f"    Shadow eligible:       {arbiter.get('shadow_eligible', 0)}",
+            f"    Review candidates:     {arbiter.get('review_candidate', 0)}",
+            f"    Do not trade:          {arbiter.get('do_not_trade', 0)}",
+            f"    Psych alpha verdict:   {arbiter.get('psychology_alpha_best_candidate_verdict', 'N/A')}",
+        ]
+        if arb_best:
+            arbiter_lines += [
+                f"    Best: {arb_best['symbol']} {arb_best['timeframe']} {arb_best['direction']} "
+                f"RR:1:{arb_best['rr']} Score:{arb_best['thesis_score']} "
+                f"Trigger:{arb_best['trigger_status']}",
+            ]
+    else:
+        arbiter_lines = ["", "  CANDIDATE ARBITER: MISSING (no report)", ""]
 
     # BingX shadow execution section
     shadow_lines = []
@@ -507,6 +534,7 @@ def main():
     lines += psych_lines
     lines += memory_lines
     lines += near_miss_lines
+    lines += arbiter_lines
     lines += shadow_lines
     lines += live_lines
     lines += pos_lines
@@ -599,6 +627,15 @@ def main():
             "pending_outcomes": memory.get("pending_outcomes", 0) if memory else None,
             "historical_edge_summary": memory.get("historical_edge_summary") if memory else None,
         } if memory else None,
+        "candidate_arbiter": {
+            "total_candidates_evaluated": arbiter.get("total_candidates_evaluated", 0) if arbiter else 0,
+            "shadow_eligible": arbiter.get("shadow_eligible", 0) if arbiter else 0,
+            "review_candidate": arbiter.get("review_candidate", 0) if arbiter else 0,
+            "do_not_trade": arbiter.get("do_not_trade", 0) if arbiter else 0,
+            "has_shadow_eligible_candidates": arbiter.get("has_shadow_eligible_candidates", False) if arbiter else False,
+            "psychology_alpha_best_candidate_verdict": arbiter.get("psychology_alpha_best_candidate_verdict") if arbiter else None,
+            "best_candidate": arbiter.get("best_candidate") if arbiter else None,
+        } if arbiter else None,
         "near_miss_diagnostics": {
             "signal_integrity": {
                 "crypto_filter_pass": True,
@@ -608,7 +645,9 @@ def main():
                 "validated_executable_after": near_miss.get("validated_executable_after", 0) if near_miss else 0,
                 "executable_downgraded_count": near_miss.get("executable_downgraded_count", 0) if near_miss else 0,
             } if near_miss else None,
-            "executable_candidates": near_miss.get("bucket_counts", {}).get("EXECUTABLE_CANDIDATE", 0) if near_miss else 0,
+            "diagnostic_executable": near_miss.get("bucket_counts", {}).get("DIAGNOSTIC_EXECUTABLE", 0) if near_miss else 0,
+            "trigger_confirmed": near_miss.get("bucket_counts", {}).get("TRIGGER_CONFIRMED", 0) if near_miss else 0,
+            "arbiter_eligible": near_miss.get("bucket_counts", {}).get("ARBITER_ELIGIBLE", 0) if near_miss else 0,
             "watchlist_ready": near_miss.get("bucket_counts", {}).get("WATCHLIST_READY", 0) if near_miss else 0,
             "near_miss_rr": near_miss.get("bucket_counts", {}).get("NEAR_MISS_RR", 0) if near_miss else 0,
             "near_miss_psychology": near_miss.get("bucket_counts", {}).get("NEAR_MISS_PSYCHOLOGY", 0) if near_miss else 0,

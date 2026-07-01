@@ -32,7 +32,9 @@ RAW_ANOMALY_NEAR_MISS_MIN = 50
 RAW_ANOMALY_OBSERVE_MIN = 30
 
 BUCKETS = [
-    "EXECUTABLE_CANDIDATE",
+    "DIAGNOSTIC_EXECUTABLE",
+    "TRIGGER_CONFIRMED",
+    "ARBITER_ELIGIBLE",
     "WATCHLIST_READY",
     "NEAR_MISS_RR",
     "NEAR_MISS_PSYCHOLOGY",
@@ -394,9 +396,9 @@ def _classify_bucket(pattern: dict, psych: dict | None, raw_anomaly: dict | None
     thesis_rr = thesis.get("current_rr", 0) if thesis else 0
     thesis_score = thesis.get("trade_thesis_score", 0) if thesis else 0
 
-    if thesis_bucket in ("EXECUTABLE_CANDIDATE", "NEAR_MISS_RR", "NEAR_MISS_PSYCHOLOGY", "WATCHLIST_READY"):
+    if thesis_bucket in ("DIAGNOSTIC_EXECUTABLE", "NEAR_MISS_RR", "NEAR_MISS_PSYCHOLOGY", "WATCHLIST_READY"):
         if thesis_score >= 70 and thesis_rr >= RR_MIN:
-            return "EXECUTABLE_CANDIDATE"
+            return "DIAGNOSTIC_EXECUTABLE"
         if thesis_score >= 60 and 2.0 <= thesis_rr < RR_MIN:
             return "NEAR_MISS_RR"
         if thesis_score >= 50 and thesis_rr >= RR_MIN:
@@ -408,9 +410,9 @@ def _classify_bucket(pattern: dict, psych: dict | None, raw_anomaly: dict | None
 
     # Fallback to existing logic
     if not rejected and rr >= RR_MIN and psych_score >= PSYCH_ELITE_MIN:
-        return "EXECUTABLE_CANDIDATE"
+        return "DIAGNOSTIC_EXECUTABLE"
     if not rejected and rr >= RR_MIN and psych_score >= PSYCH_WATCH_MIN:
-        return "EXECUTABLE_CANDIDATE"
+        return "DIAGNOSTIC_EXECUTABLE"
     if not rejected and rr >= RR_MIN and NEAR_MISS_PSYCH_MIN <= psych_score < PSYCH_WATCH_MIN:
         return "NEAR_MISS_PSYCHOLOGY"
     if not rejected and rr >= RR_MIN and psych_score >= NEAR_MISS_PSYCH_MIN:
@@ -431,8 +433,8 @@ def _classify_bucket(pattern: dict, psych: dict | None, raw_anomaly: dict | None
 def _actionability_score(candidate: dict) -> int:
     score = 0
     bucket = candidate.get("bucket", "REJECTED")
-    bucket_ranks = {"EXECUTABLE_CANDIDATE": 100, "WATCHLIST_READY": 80,
-                    "NEAR_MISS_RR": 60, "NEAR_MISS_PSYCHOLOGY": 50,
+    bucket_ranks = {"DIAGNOSTIC_EXECUTABLE": 100, "TRIGGER_CONFIRMED": 110, "ARBITER_ELIGIBLE": 120,
+                    "WATCHLIST_READY": 80, "NEAR_MISS_RR": 60, "NEAR_MISS_PSYCHOLOGY": 50,
                     "RAW_TRAP_DETECTED": 30, "REJECTED": 0}
     score += bucket_ranks.get(bucket, 0)
     psych = candidate.get("psychology_score", 0) or 0
@@ -456,6 +458,8 @@ def _is_valid_watchlist_entry(candidate: dict) -> bool:
 
     if thesis_score >= 50 and thesis_direction in ("LONG", "SHORT") and thesis_type != "NONE":
         return True
+    if bucket in ("DIAGNOSTIC_EXECUTABLE", "TRIGGER_CONFIRMED", "ARBITER_ELIGIBLE"):
+        return True
 
     if bucket == "REJECTED" and candidate.get("raw_anomaly_score", 0) < RAW_ANOMALY_OBSERVE_MIN:
         return False
@@ -476,7 +480,11 @@ def _is_valid_watchlist_entry(candidate: dict) -> bool:
 
 def _classify_lifecycle(pattern: dict, bucket: str, psych: dict | None, raw_anomaly: dict | None = None) -> str:
     rr = pattern.get("rr_2") or 0
-    if bucket == "EXECUTABLE_CANDIDATE":
+    if bucket in ("DIAGNOSTIC_EXECUTABLE",):
+        return "EXECUTABLE"
+    if bucket == "TRIGGER_CONFIRMED":
+        return "TRIGGERED_BUT_UNCONFIRMED"
+    if bucket == "ARBITER_ELIGIBLE":
         return "EXECUTABLE"
     if bucket == "WATCHLIST_READY":
         return "CONFIRMED_BUT_RR_POOR" if rr < RR_MIN else "TRIGGERED_BUT_UNCONFIRMED"
@@ -625,7 +633,7 @@ def _determine_next_step(bucket: str, pattern: dict, lifecycle: str, raw_anomaly
         if "compression" in pid:
             return "wait for volatility expansion"
         return "wait for formation completion"
-    if bucket == "EXECUTABLE_CANDIDATE":
+    if bucket in ("DIAGNOSTIC_EXECUTABLE", "TRIGGER_CONFIRMED", "ARBITER_ELIGIBLE"):
         return "setup fully formed, ready for execution review"
     if pattern.get("entry", 0) and pattern.get("reject_reason", "").startswith("entry"):
         return "avoid because entry is already late"
@@ -998,7 +1006,7 @@ def build_trade_thesis(symbol: str, timeframe: str, candles: list[dict], anomaly
 
     # Determine bucket based on thesis quality
     if thesis["direction"] in ("LONG", "SHORT") and thesis["current_rr"] >= RR_MIN and thesis["trade_thesis_score"] >= 70:
-        thesis["bucket"] = "EXECUTABLE_CANDIDATE"
+        thesis["bucket"] = "DIAGNOSTIC_EXECUTABLE"
     elif thesis["direction"] in ("LONG", "SHORT") and 2.0 <= thesis["current_rr"] < RR_MIN and thesis["trade_thesis_score"] >= 60:
         thesis["bucket"] = "NEAR_MISS_RR"
     elif thesis["direction"] in ("LONG", "SHORT") and thesis["current_rr"] >= RR_MIN and 50 <= thesis["trade_thesis_score"] < 70:
@@ -1014,7 +1022,7 @@ def build_trade_thesis(symbol: str, timeframe: str, candles: list[dict], anomaly
 
 
 def _validate_executable_candidate(c: dict) -> str:
-    """Validate a candidate for EXECUTABLE_CANDIDATE label. Returns bucket name (downgraded if fails)."""
+    """Validate a candidate for DIAGNOSTIC_EXECUTABLE label. Returns bucket name (downgraded if fails)."""
     if not is_crypto_usdt_perp(c.get("symbol", "")):
         return "REJECTED"
     if c.get("direction") not in ("LONG", "SHORT"):
@@ -1072,7 +1080,134 @@ def _validate_executable_candidate(c: dict) -> str:
     # Synthetic warning
     if "NCSK" in c.get("symbol", "") or "NCCO" in c.get("symbol", "") or "NCSI" in c.get("symbol", ""):
         return "REJECTED"
-    return "EXECUTABLE_CANDIDATE"
+    return "DIAGNOSTIC_EXECUTABLE"
+
+
+def _confirm_trigger(c: dict, candles_cache: dict | None = None) -> dict:
+    """Confirm trigger for a diagnostic executable candidate using fresh candle data.
+
+    Returns dict with fields:
+      trigger_confirmed (bool)
+      trigger_status (str): TRIGGER_CONFIRMED / TRIGGER_PENDING / TRIGGER_INVALIDATED / NOT_APPLICABLE
+      trigger_bars_since_setup (int)
+      trigger_detail (str)
+      invalidation_reason (str or None)
+    """
+    thesis_type = c.get("thesis_type", "NONE")
+    direction = c.get("direction", "UNKNOWN")
+    symbol = c.get("symbol", "")
+    tf = c.get("timeframe", "5m")
+    entry = c.get("entry")
+    # Handle OBSERVE_ONLY early — no candle data needed
+    if thesis_type == "OBSERVE_ONLY":
+        return {
+            "trigger_confirmed": False,
+            "trigger_status": "NOT_APPLICABLE",
+            "trigger_bars_since_setup": 0,
+            "trigger_detail": "OBSERVE_ONLY theses cannot trigger trades",
+            "invalidation_reason": "OBSERVE_ONLY theses cannot trigger trades",
+        }
+    candles = None
+    if candles_cache and isinstance(candles_cache, dict):
+        candles = candles_cache.get(f"{symbol}_{tf}")
+    if not candles:
+        return {
+            "trigger_confirmed": False,
+            "trigger_status": "TRIGGER_PENDING",
+            "trigger_bars_since_setup": 0,
+            "trigger_detail": "No candle data available for trigger confirmation",
+            "invalidation_reason": None,
+        }
+    if not isinstance(candles, list) or len(candles) < 5:
+        return {
+            "trigger_confirmed": False,
+            "trigger_status": "TRIGGER_PENDING",
+            "trigger_bars_since_setup": 0,
+            "trigger_detail": f"Insufficient candle data ({len(candles) if isinstance(candles, list) else 0} bars)",
+            "invalidation_reason": None,
+        }
+    detection_idx = c.get("detection_candle_index", len(candles) - 1)
+    if detection_idx < 0 or detection_idx >= len(candles):
+        detection_idx = len(candles) - 1
+    bars_since = len(candles) - 1 - detection_idx
+
+    invalidation_reason = None
+    trigger_status = "TRIGGER_PENDING"
+    trigger_confirmed = False
+
+    def _get_price(idx):
+        if 0 <= idx < len(candles):
+            cdl = candles[idx]
+            if isinstance(cdl, dict):
+                return float(cdl.get("close", 0))
+            return float(cdl[4]) if isinstance(cdl, (list, tuple)) and len(cdl) >= 5 else 0
+        return 0
+
+    if thesis_type == "UPPER_WICK_EXTENSION" and direction == "SHORT":
+        latest_close = _get_price(len(candles) - 1)
+        detection_high = max(
+            _get_price(i) for i in range(max(0, detection_idx - 2), detection_idx + 1)
+        )
+        if bars_since >= 1 and latest_close < detection_high * 0.98:
+            trigger_status = "TRIGGER_CONFIRMED"
+            trigger_confirmed = True
+        if bars_since >= 3 and latest_close >= detection_high:
+            invalidation_reason = "Price reclaimed wick high within last 3 bars"
+            trigger_status = "TRIGGER_INVALIDATED"
+
+    elif thesis_type == "LOWER_WICK_EXTENSION" and direction == "LONG":
+        latest_close = _get_price(len(candles) - 1)
+        detection_low = min(
+            _get_price(i) for i in range(max(0, detection_idx - 2), detection_idx + 1)
+        )
+        if bars_since >= 1 and latest_close > detection_low * 1.02:
+            trigger_status = "TRIGGER_CONFIRMED"
+            trigger_confirmed = True
+        if bars_since >= 3 and latest_close <= detection_low:
+            invalidation_reason = "Price broke below wick low within last 3 bars"
+            trigger_status = "TRIGGER_INVALIDATED"
+
+    elif thesis_type == "SWEEP_HIGH" and direction == "SHORT":
+        latest_close = _get_price(len(candles) - 1)
+        sweep_high = c.get("sweep_level") or _get_price(detection_idx)
+        if bars_since >= 1 and latest_close < sweep_high:
+            trigger_status = "TRIGGER_CONFIRMED"
+            trigger_confirmed = True
+        if bars_since >= 3 and latest_close >= sweep_high:
+            invalidation_reason = "Price broke above sweep high within last 3 bars"
+            trigger_status = "TRIGGER_INVALIDATED"
+
+    elif thesis_type == "SWEEP_LOW" and direction == "LONG":
+        latest_close = _get_price(len(candles) - 1)
+        sweep_low = c.get("sweep_level") or _get_price(detection_idx)
+        if bars_since >= 1 and latest_close > sweep_low:
+            trigger_status = "TRIGGER_CONFIRMED"
+            trigger_confirmed = True
+        if bars_since >= 3 and latest_close <= sweep_low:
+            invalidation_reason = "Price broke below sweep low within last 3 bars"
+            trigger_status = "TRIGGER_INVALIDATED"
+
+    return {
+        "trigger_confirmed": trigger_confirmed,
+        "trigger_status": trigger_status,
+        "trigger_bars_since_setup": bars_since,
+        "trigger_detail": f"{thesis_type} {direction} trigger status: {trigger_status} (bars since setup: {bars_since})",
+        "invalidation_reason": invalidation_reason,
+    }
+
+
+def _promote_to_trigger_confirmed(classified: list[dict], candles_cache: dict | None = None) -> list[dict]:
+    """Run trigger confirmation on DIAGNOSTIC_EXECUTABLE candidates; promote those that pass to TRIGGER_CONFIRMED."""
+    for c in classified:
+        if c.get("bucket") == "DIAGNOSTIC_EXECUTABLE":
+            trigger_info = _confirm_trigger(c, candles_cache)
+            c["trigger_info"] = trigger_info
+            if trigger_info.get("trigger_status") == "TRIGGER_CONFIRMED":
+                c["bucket"] = "TRIGGER_CONFIRMED"
+            elif trigger_info.get("trigger_status") == "TRIGGER_INVALIDATED":
+                c["bucket"] = "REJECTED"
+                c["rejection_reason"] = trigger_info.get("invalidation_reason", "Trigger invalidation")
+    return classified
 
 
 def _deduplicate_candidates(classified: list[dict]) -> list[dict]:
@@ -1094,7 +1229,7 @@ def _deduplicate_candidates(classified: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
-def run_diagnostics() -> dict:
+def run_diagnostics(candles_cache: dict | None = None) -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -1249,22 +1384,41 @@ def run_diagnostics() -> dict:
     dedup_removed = dedup_before - len(classified)
 
     # Validate executable candidates
-    validated_executable_before = bucket_counts.get("EXECUTABLE_CANDIDATE", 0)
+    validated_executable_before = bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0)
     executable_downgraded = 0
     for c in classified:
-        if c.get("bucket") == "EXECUTABLE_CANDIDATE":
+        if c.get("bucket") == "DIAGNOSTIC_EXECUTABLE":
             new_bucket = _validate_executable_candidate(c)
-            if new_bucket != "EXECUTABLE_CANDIDATE":
+            if new_bucket != "DIAGNOSTIC_EXECUTABLE":
                 c["bucket"] = new_bucket
                 executable_downgraded += 1
                 bucket_counts[new_bucket] = bucket_counts.get(new_bucket, 0) + 1
-                bucket_counts["EXECUTABLE_CANDIDATE"] = max(0, bucket_counts.get("EXECUTABLE_CANDIDATE", 0) - 1)
+                bucket_counts["DIAGNOSTIC_EXECUTABLE"] = max(0, bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0) - 1)
         elif c.get("bucket") in ("WATCHLIST_READY",):
             # Also validate non-executable candidates for crypto filter
             if not is_crypto_usdt_perp(c.get("symbol", "")):
                 c["bucket"] = "REJECTED"
                 bucket_counts["REJECTED"] = bucket_counts.get("REJECTED", 0) + 1
                 bucket_counts["WATCHLIST_READY"] = max(0, bucket_counts.get("WATCHLIST_READY", 0) - 1)
+
+    # Trigger confirmation: promote DIAGNOSTIC_EXECUTABLE → TRIGGER_CONFIRMED if trigger fires
+    trigger_confirmed_promoted = 0
+    trigger_invalidated = 0
+    for c in classified:
+        if c.get("bucket") == "DIAGNOSTIC_EXECUTABLE":
+            trigger_info = _confirm_trigger(c, candles_cache)
+            c["trigger_info"] = trigger_info
+            if trigger_info.get("trigger_status") == "TRIGGER_CONFIRMED":
+                c["bucket"] = "TRIGGER_CONFIRMED"
+                trigger_confirmed_promoted += 1
+                bucket_counts["TRIGGER_CONFIRMED"] = bucket_counts.get("TRIGGER_CONFIRMED", 0) + 1
+                bucket_counts["DIAGNOSTIC_EXECUTABLE"] = max(0, bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0) - 1)
+            elif trigger_info.get("trigger_status") == "TRIGGER_INVALIDATED":
+                c["bucket"] = "REJECTED"
+                c["rejection_reason"] = trigger_info.get("invalidation_reason", "Trigger invalidation")
+                trigger_invalidated += 1
+                bucket_counts["REJECTED"] = bucket_counts.get("REJECTED", 0) + 1
+                bucket_counts["DIAGNOSTIC_EXECUTABLE"] = max(0, bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0) - 1)
 
     # Build watchlist: deduplicated, crypto-only, max 1 per symbol/TF/thesis_type, max 2 per symbol total
     watchlist = []
@@ -1293,7 +1447,7 @@ def run_diagnostics() -> dict:
     top_rejection = max(rejection_counts, key=rejection_counts.get) if rejection_counts else "NONE"
     best_watchlist = None
     for c in classified:
-        if c["bucket"] in ("WATCHLIST_READY", "NEAR_MISS_RR", "NEAR_MISS_PSYCHOLOGY", "EXECUTABLE_CANDIDATE"):
+        if c["bucket"] in ("WATCHLIST_READY", "NEAR_MISS_RR", "NEAR_MISS_PSYCHOLOGY", "DIAGNOSTIC_EXECUTABLE", "TRIGGER_CONFIRMED", "ARBITER_ELIGIBLE"):
             best_watchlist = c
             break
     if not best_watchlist:
@@ -1302,7 +1456,7 @@ def run_diagnostics() -> dict:
                 best_watchlist = c
                 break
 
-    formal_traps = bucket_counts.get("EXECUTABLE_CANDIDATE", 0) + bucket_counts.get("WATCHLIST_READY", 0) + bucket_counts.get("NEAR_MISS_RR", 0) + bucket_counts.get("NEAR_MISS_PSYCHOLOGY", 0) + bucket_counts.get("RAW_TRAP_DETECTED", 0)
+    formal_traps = bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0) + bucket_counts.get("TRIGGER_CONFIRMED", 0) + bucket_counts.get("ARBITER_ELIGIBLE", 0) + bucket_counts.get("WATCHLIST_READY", 0) + bucket_counts.get("NEAR_MISS_RR", 0) + bucket_counts.get("NEAR_MISS_PSYCHOLOGY", 0) + bucket_counts.get("RAW_TRAP_DETECTED", 0)
     total_raw_anomalies = sum(raw_anomaly_counts.values())
     observe_count = sum(1 for c in classified if c["raw_anomaly_score"] >= RAW_ANOMALY_OBSERVE_MIN and c["raw_anomaly_score"] < RAW_ANOMALY_NEAR_MISS_MIN and c["bucket"] == "REJECTED")
     dead_setup_count = lifecycle_counts.get("DEAD_SETUP", 0)
@@ -1327,7 +1481,9 @@ def run_diagnostics() -> dict:
         "excluded_non_crypto_samples": crypto_excluded_samples[:20],
         "deduplicated_candidates_removed": dedup_removed,
         "validated_executable_before": validated_executable_before,
-        "validated_executable_after": bucket_counts.get("EXECUTABLE_CANDIDATE", 0),
+        "validated_executable_after": bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0),
+        "trigger_confirmed_promoted": trigger_confirmed_promoted,
+        "trigger_invalidated": trigger_invalidated,
         "executable_downgraded_count": executable_downgraded,
         "crypto_contracts_scanned": total_contracts - crypto_excluded if crypto_excluded else total_contracts,
         "total_patterns_analyzed": len(patterns) - crypto_excluded_internal,
@@ -1342,7 +1498,10 @@ def run_diagnostics() -> dict:
         "raw_anomaly_counts": raw_anomaly_counts,
         "lifecycle_counts": lifecycle_counts,
         "top_rejection_reason": top_rejection,
-        "executable_candidate_count": bucket_counts.get("EXECUTABLE_CANDIDATE", 0),
+        "diagnostic_executable_count": bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0),
+        "trigger_confirmed_count": bucket_counts.get("TRIGGER_CONFIRMED", 0),
+        "arbiter_eligible_count": bucket_counts.get("ARBITER_ELIGIBLE", 0),
+        "executable_candidate_count": bucket_counts.get("DIAGNOSTIC_EXECUTABLE", 0),
         "watchlist_ready_count": bucket_counts.get("WATCHLIST_READY", 0),
         "near_miss_rr_count": bucket_counts.get("NEAR_MISS_RR", 0),
         "near_miss_psychology_count": bucket_counts.get("NEAR_MISS_PSYCHOLOGY", 0),
@@ -1428,7 +1587,9 @@ def _write_text_report(report: dict, watchlist: list[dict],
         f"    UNKNOWN/observe-only:  {report.get('unknown_theses', 0)}",
         "",
         "  BUCKET BREAKDOWN:",
-        f"    EXECUTABLE_CANDIDATE:    {report['executable_candidate_count']}",
+        f"    DIAGNOSTIC_EXECUTABLE:  {report.get('diagnostic_executable_count', 0)}",
+        f"    TRIGGER_CONFIRMED:      {report.get('trigger_confirmed_count', 0)}",
+        f"    ARBITER_ELIGIBLE:       {report.get('arbiter_eligible_count', 0)}",
         f"    WATCHLIST_READY:         {report['watchlist_ready_count']}",
         f"    NEAR_MISS_RR:            {report['near_miss_rr_count']}",
         f"    NEAR_MISS_PSYCHOLOGY:    {report['near_miss_psychology_count']}",
@@ -1505,21 +1666,29 @@ def _write_text_report(report: dict, watchlist: list[dict],
         si_warnings.append(f"{len(excluded_samples)} non-crypto patterns excluded")
     if dedup_removed > 0:
         si_warnings.append(f"{dedup_removed} duplicate candidates removed")
+    trigger_promoted = report.get("trigger_confirmed_promoted", 0)
+    trigger_invalidated = report.get("trigger_invalidated", 0)
     if exec_before > exec_after:
-        si_warnings.append(f"{exec_before - exec_after} executables downgraded after validation")
+        si_warnings.append(f"{exec_before - exec_after} diagnostic executables downgraded after validation")
+    if trigger_promoted > 0:
+        si_warnings.append(f"{trigger_promoted} promoted to TRIGGER_CONFIRMED")
+    if trigger_invalidated > 0:
+        si_warnings.append(f"{trigger_invalidated} invalidated by trigger rule")
     if si_warnings:
         signal_integrity_pass = False
     
     lines += [
         "",
         "  SIGNAL INTEGRITY:",
-        f"    Crypto-only filter:   {'PASS' if not excluded_samples else 'PASS (filtered)'}",
-        f"    Dedup removed:        {dedup_removed}",
-        f"    Executables before:   {exec_before}",
-        f"    Executables after:    {exec_after}",
-        f"    Downgraded:           {exec_before - exec_after}",
-        f"    Non-crypto excluded:  {len(excluded_samples)} from patterns",
-        f"    Integrity:            {'PASS' if signal_integrity_pass else 'WARN: ' + '; '.join(si_warnings)}",
+        f"    Crypto-only filter:     {'PASS' if not excluded_samples else 'PASS (filtered)'}",
+        f"    Dedup removed:          {dedup_removed}",
+        f"    Diagnos. executables before:   {exec_before}",
+        f"    Diagnos. executables after:    {exec_after}",
+        f"    Downgraded:             {exec_before - exec_after}",
+        f"    Trigger confirmed:      {trigger_promoted}",
+        f"    Trigger invalidated:    {trigger_invalidated}",
+        f"    Non-crypto excluded:    {len(excluded_samples)} from patterns",
+        f"    Integrity:              {'PASS' if signal_integrity_pass else 'WARN: ' + '; '.join(si_warnings)}",
         "",
         "  WARNING: This system is not approved for live trading.",
         "",

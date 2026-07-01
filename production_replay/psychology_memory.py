@@ -545,7 +545,7 @@ def run_psychology_memory() -> dict:
         "new_records_this_run": stored,
         "total_outcomes_evaluated": len(outcomes),
         "outcomes_evaluated_this_run": evaluated,
-        "pending_outcomes": len(memory) - len(outcomes),
+        "pending_outcomes": max(0, len(memory) - len(outcomes)),
         "statistics": stats,
         "historical_edge_summary": {
             "best_pattern": stats.get("best_pattern"),

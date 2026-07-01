@@ -134,11 +134,28 @@ def run_shadow_executor() -> dict:
     if symbol and not is_crypto_usdt_perp(symbol):
         reasons.append(f"{symbol} is not a crypto USDT perpetual (non-crypto synthetic)")
 
-    # Gate 6b: candidate must be from Dux/psychology_alpha, not near_miss labels
-    if near_miss:
-        near_miss_exec_count = near_miss.get("executable_candidate_count", 0)
-        if near_miss_exec_count > 0 and not psych.get("best_candidate"):
-            reasons.append(f"near_miss shows {near_miss_exec_count} executable labels but psychology_alpha has no best candidate; ignoring near-miss labels")
+    # Gate 6b: candidate must pass candidate arbiter
+    arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
+    arbiter_best = arbiter.get("best_candidate") if arbiter else None
+    if arbiter and not arbiter.get("has_shadow_eligible_candidates", False):
+        reasons.append("candidate arbiter has no shadow-eligible candidates")
+    # If arbiter best exists, use its candidate data instead
+    if arbiter_best:
+        candidate = {
+            "symbol": arbiter_best.get("symbol", ""),
+            "timeframe": arbiter_best.get("timeframe", ""),
+            "direction": arbiter_best.get("direction", ""),
+            "rr_2": arbiter_best.get("rr", 0),
+            "entry": arbiter_best.get("entry", 0),
+            "stop": arbiter_best.get("stop", 0),
+            "target_2": arbiter_best.get("target", 0),
+            "psychology_score": arbiter_best.get("psychology_score", 0),
+            "thesis_score": arbiter_best.get("thesis_score", 0),
+            "raw_anomaly_score": arbiter_best.get("raw_anomaly_score", 0),
+            "pattern_name": arbiter_best.get("thesis_type", "ARBITER_PASS"),
+            "pattern_id": f"arbiter_{arbiter_best.get('symbol', '')}_{arbiter_best.get('timeframe', '')}",
+            "verdict": "SHADOW_ELIGIBLE",
+        }
 
     # Gate 6c: symbol BingX-listed
     if symbol:
@@ -222,17 +239,18 @@ def run_shadow_executor() -> dict:
         "real_order": False,
         "timestamp": datetime.now().isoformat(),
         "inputs": {
+            "candidate_arbiter": "candidate_arbiter_report.json",
             "dux_pattern_report": "dux_pattern_report.json",
             "doctor_daily_packet": "doctor_daily_packet.json",
             "manual_risk_plan": "manual_risk_plan.json",
         },
+        "candidate_from_arbiter": arbiter_best is not None,
         "system_safe": doctor.get("system_safe", False),
         "live_disabled": doctor.get("live_disabled", False),
         "paper_disabled": doctor.get("paper_disabled", False),
         "crypto_filter_pass": bool(symbol) and is_crypto_usdt_perp(symbol) if symbol else False,
         "dux_decision": dux_decision,
         "candidate_exists": candidate is not None,
-        "candidate_from_psychology_alpha": psych.get("best_candidate") is not None,
         "symbol_bingx_listed": bool(symbol) and is_bingx_listed(symbol, load_universe()["contracts"]) if symbol else False,
         "direction": direction,
         "rr_final": rr_final,
@@ -274,7 +292,7 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
         f"  Crypto Filter:         {'PASS' if report.get('crypto_filter_pass') else 'FAIL'}",
         f"  Dux Decision:          {report['dux_decision']}",
         f"  Candidate Exists:      {'YES' if report['candidate_exists'] else 'NO'}",
-        f"  Candidate from Psych:  {'YES' if report.get('candidate_from_psychology_alpha') else 'NO'}",
+        f"  Candidate from Arbiter:{'YES' if report.get('candidate_from_arbiter') else 'NO'}",
         f"  Symbol BingX-Listed:   {'YES' if report['symbol_bingx_listed'] else 'NO'}",
         f"  Direction:             {report['direction'] or 'N/A'}",
         f"  RR Final:              {report['rr_final']}",

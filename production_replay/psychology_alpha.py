@@ -277,11 +277,22 @@ def _compute_psychology(p: dict, ticker_map: dict, relaxed: bool = False) -> dic
 def run_psychology_alpha() -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
+    near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
 
     patterns = dux.get("patterns", [])
     scan_symbols_count = dux.get("dux_scan_universe_size", universe.get("scan_universe_size", 0))
     total_contracts = dux.get("total_raw_contracts", universe.get("total_raw_contracts", 0))
     st_scanned = dux.get("symbol_timeframes_scanned", 0)
+
+    # Also process thesis candidates from near_miss diagnostics
+    near_miss_theses = near_miss.get("all_classified", []) if near_miss else []
+    thesis_candidates = [
+        t for t in near_miss_theses
+        if t.get("direction") in ("LONG", "SHORT")
+        and t.get("bucket") in ("DIAGNOSTIC_EXECUTABLE", "TRIGGER_CONFIRMED", "ARBITER_ELIGIBLE")
+        and t.get("trade_thesis_score", 0) >= 50
+        and is_crypto_usdt_perp(t.get("symbol", ""))
+    ]
 
     ticker_map = {}
     try:
@@ -317,6 +328,33 @@ def run_psychology_alpha() -> dict:
             relaxed = rr < RR_MIN
             result = _compute_psychology(p, ticker_map, relaxed=relaxed)
             scored.append({**p, **result})
+
+    # Score thesis candidates from near_miss diagnostics
+    thesis_scored_count = 0
+    for t in thesis_candidates:
+        thesis_rr = t.get("current_rr") or t.get("rr_2") or 0
+        # Create a synthetic pattern entry for psychology evaluation
+        synth = {
+            "symbol": t.get("symbol", ""),
+            "timeframe": t.get("timeframe", ""),
+            "pattern_name": t.get("thesis_type", "THESIS"),
+            "pattern_id": f"thesis_{t.get('symbol', '')}_{t.get('timeframe', '')}_{t.get('direction', '')}",
+            "direction": t.get("direction", "UNKNOWN"),
+            "entry": t.get("thesis_ideal_entry", t.get("entry", 0)),
+            "stop": t.get("thesis_stop", t.get("stop", 0)),
+            "target_2": t.get("thesis_target", t.get("target", t.get("target_2", 0))),
+            "rr_2": thesis_rr,
+            "rejected": False,
+            "psychology_thesis": t.get("psychology_thesis_str", t.get("psychology_thesis", "thesis-based candidate")),
+            "trade_thesis_score": t.get("trade_thesis_score", 0),
+            "bucket": t.get("bucket", ""),
+            "thesis_type": t.get("thesis_type", "N/A"),
+            "trigger_info": t.get("trigger_info", {}),
+        }
+        relaxed = thesis_rr < RR_MIN
+        result = _compute_psychology(synth, ticker_map, relaxed=relaxed)
+        scored.append({**synth, **result})
+        thesis_scored_count += 1
 
     scored.sort(key=lambda r: r.get("psychology_score", 0), reverse=True)
     watch = [s for s in scored if s.get("psychology_score", 0) >= WATCH_MIN and not s.get("rejected", True)]
@@ -357,6 +395,8 @@ def run_psychology_alpha() -> dict:
         "symbol_timeframes_scanned": st_scanned,
         "total_patterns_detected": len(patterns),
         "total_psychology_evaluated": len(scored),
+        "thesis_candidates_from_near_miss": len(thesis_candidates),
+        "thesis_candidates_scored": thesis_scored_count,
         "rr_gate_pass_candidates": rr_pass_count,
         "excluded_non_crypto": excluded_count,
         "excluded_non_crypto_samples": excluded_samples[:20],

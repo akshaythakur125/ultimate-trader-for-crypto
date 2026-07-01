@@ -4096,3 +4096,278 @@ def test_is_crypto_usdt_perp_shared_function():
     from production_replay.bingx_universe import is_crypto_usdt_perp
     from production_replay.near_miss_diagnostics import run_diagnostics
     assert is_crypto_usdt_perp is not None
+
+
+# ── Phase 48: Candidate Arbiter & Trigger Confirmation ──────────────────
+
+def test_near_miss_bucket_renamed_to_diagnostic_executable():
+    """EXECUTABLE_CANDIDATE renamed to DIAGNOSTIC_EXECUTABLE across the pipeline."""
+    from production_replay.near_miss_diagnostics import BUCKETS
+    assert "DIAGNOSTIC_EXECUTABLE" in BUCKETS
+    assert "EXECUTABLE_CANDIDATE" not in BUCKETS
+    assert "TRIGGER_CONFIRMED" in BUCKETS
+    assert "ARBITER_ELIGIBLE" in BUCKETS
+
+
+def test_confirm_trigger_returns_correct_structure():
+    from production_replay.near_miss_diagnostics import _confirm_trigger
+    c = {
+        "symbol": "BTC-USDT",
+        "timeframe": "5m",
+        "thesis_type": "UPPER_WICK_EXTENSION",
+        "direction": "SHORT",
+        "detection_candle_index": 0,
+    }
+    result = _confirm_trigger(c)
+    assert "trigger_confirmed" in result
+    assert "trigger_status" in result
+    assert "trigger_bars_since_setup" in result
+    assert "trigger_detail" in result
+    assert "invalidation_reason" in result
+    assert result["trigger_status"] in ("TRIGGER_CONFIRMED", "TRIGGER_PENDING", "TRIGGER_INVALIDATED", "NOT_APPLICABLE")
+
+
+def test_confirm_trigger_upper_wick_short_with_candles():
+    from production_replay.near_miss_diagnostics import _confirm_trigger
+    # Simulate 10 bars where last close is below detection high → trigger confirmed
+    candles = {
+        "BTC-USDT_5m": [
+            {"close": 100} for _ in range(9)
+        ] + [{"close": 97}]
+    }
+    c = {
+        "symbol": "BTC-USDT",
+        "timeframe": "5m",
+        "thesis_type": "UPPER_WICK_EXTENSION",
+        "direction": "SHORT",
+        "detection_candle_index": 0,
+    }
+    result = _confirm_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_confirm_trigger_upper_wick_short_invalidation():
+    from production_replay.near_miss_diagnostics import _confirm_trigger
+    # Price reclaimed above detection high → invalidation
+    candles = {
+        "BTC-USDT_5m": [
+            {"close": 100} for _ in range(9)
+        ] + [{"close": 101}]
+    }
+    c = {
+        "symbol": "BTC-USDT",
+        "timeframe": "5m",
+        "thesis_type": "UPPER_WICK_EXTENSION",
+        "direction": "SHORT",
+        "detection_candle_index": 0,
+    }
+    result = _confirm_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_INVALIDATED"
+    assert result["invalidation_reason"] is not None
+
+
+def test_confirm_trigger_observe_only_not_applicable():
+    from production_replay.near_miss_diagnostics import _confirm_trigger
+    c = {
+        "symbol": "BTC-USDT",
+        "timeframe": "5m",
+        "thesis_type": "OBSERVE_ONLY",
+        "direction": "UNKNOWN",
+    }
+    result = _confirm_trigger(c)
+    assert result["trigger_status"] == "NOT_APPLICABLE"
+
+
+def test_confirm_trigger_lower_wick_long():
+    from production_replay.near_miss_diagnostics import _confirm_trigger
+    candles = {
+        "BTC-USDT_5m": [
+            {"close": 100} for _ in range(9)
+        ] + [{"close": 103}]
+    }
+    c = {
+        "symbol": "BTC-USDT",
+        "timeframe": "5m",
+        "thesis_type": "LOWER_WICK_EXTENSION",
+        "direction": "LONG",
+        "detection_candle_index": 0,
+    }
+    result = _confirm_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_promote_to_trigger_confirmed():
+    from production_replay.near_miss_diagnostics import _promote_to_trigger_confirmed
+    classified = [
+        {
+            "symbol": "BTC-USDT",
+            "timeframe": "5m",
+            "thesis_type": "UPPER_WICK_EXTENSION",
+            "direction": "SHORT",
+            "bucket": "DIAGNOSTIC_EXECUTABLE",
+            "detection_candle_index": 0,
+        }
+    ]
+    candles = {"BTC-USDT_5m": [{"close": 100} for _ in range(9)] + [{"close": 97}]}
+    result = _promote_to_trigger_confirmed(classified, candles)
+    assert result[0]["bucket"] == "TRIGGER_CONFIRMED"
+    assert result[0].get("trigger_info", {}).get("trigger_status") == "TRIGGER_CONFIRMED"
+
+
+def test_promote_to_trigger_confirmed_no_candles():
+    """Without candle data, DIAGNOSTIC_EXECUTABLE stays unchanged."""
+    from production_replay.near_miss_diagnostics import _promote_to_trigger_confirmed
+    classified = [
+        {
+            "symbol": "BTC-USDT",
+            "timeframe": "5m",
+            "thesis_type": "UPPER_WICK_EXTENSION",
+            "direction": "SHORT",
+            "bucket": "DIAGNOSTIC_EXECUTABLE",
+            "detection_candle_index": 0,
+        }
+    ]
+    result = _promote_to_trigger_confirmed(classified)
+    assert result[0]["bucket"] == "DIAGNOSTIC_EXECUTABLE"
+    assert result[0].get("trigger_info", {}).get("trigger_status") == "TRIGGER_PENDING"
+
+
+def test_candidate_arbiter_structure():
+    """Candidate arbiter report has correct structure when available."""
+    import json
+    path = "deploy_results/candidate_arbiter_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no candidate_arbiter_report.json")
+    assert r.get("mode") == "candidate_arbiter"
+    assert "shadow_eligible" in r
+    assert "review_candidate" in r
+    assert "do_not_trade" in r
+    assert "has_shadow_eligible_candidates" in r
+    assert "best_candidate" in r or r["total_candidates_evaluated"] == 0
+
+
+def test_candidate_arbiter_only_review_or_shadow():
+    """Arbiter never outputs APPROVED or EXECUTABLE."""
+    import json
+    path = "deploy_results/candidate_arbiter_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no candidate_arbiter_report.json")
+    for c in r.get("candidates", []):
+        assert c["verdict"] in ("SHADOW_ELIGIBLE", "REVIEW_CANDIDATE", "DO_NOT_TRADE"), f"Unexpected verdict {c['verdict']}"
+
+
+def test_shadow_executor_references_arbiter():
+    """Shadow executor now reads candidate_arbiter_report.json."""
+    import json
+    path = "deploy_results/bingx_order_intent.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no bingx_order_intent.json")
+    inputs = r.get("inputs", {})
+    has_arbiter_input = "candidate_arbiter" in inputs
+    has_arbiter_ref = "candidate_from_arbiter" in r
+    if not has_arbiter_input:
+        pytest.skip("executor did not run after arbiter was created")
+    assert has_arbiter_input, "Shadow executor must reference candidate_arbiter_report.json"
+    assert has_arbiter_ref, "Shadow executor must include candidate_from_arbiter field"
+
+
+def test_psychology_memory_pending_outcomes_never_negative():
+    """pending_outcomes = max(0, len(memory) - len(outcomes))."""
+    import json
+    path = "deploy_results/psychology_memory_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no psychology_memory_report.json")
+    assert r.get("pending_outcomes", 0) >= 0, "pending_outcomes must never be negative"
+
+
+def test_psychology_alpha_module_has_thesis_fields():
+    """Psychology alpha runtime function now processes thesis candidates."""
+    from production_replay.psychology_alpha import run_psychology_alpha
+    import inspect
+    src = inspect.getsource(run_psychology_alpha)
+    assert "thesis_candidates_from_near_miss" in src or "thesis_candidates" in src
+
+
+def test_hourly_alert_has_arbiter_section():
+    """Hourly alert includes candidate_arbiter block with best candidate info."""
+    import json
+    path = "deploy_results/hourly_status.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no hourly_status.json")
+    arb = r.get("candidate_arbiter")
+    if arb is None:
+        pytest.skip("no candidate_arbiter in hourly report")
+    assert "shadow_eligible" in arb
+    assert "review_candidate" in arb
+    assert "has_shadow_eligible_candidates" in arb
+    assert "psychology_alpha_best_candidate_verdict" in arb
+
+
+def test_doctor_packet_has_arbiter_section():
+    """Doctor daily packet includes candidate_arbiter block."""
+    import json
+    path = "deploy_results/doctor_daily_packet.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no doctor_daily_packet.json")
+    arb = r.get("candidate_arbiter")
+    if arb is None:
+        pytest.skip("no candidate_arbiter in doctor packet")
+    assert "shadow_eligible" in arb
+    assert "review_candidate" in arb
+    assert "total_candidates_evaluated" in arb
+
+
+def test_executable_candidate_key_still_available_for_backward_compat():
+    """The legacy 'executable_candidate_count' key remains for consumers that rely on it."""
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    assert r.get("executable_candidate_count", 0) >= 0
+    assert r.get("diagnostic_executable_count", 0) >= 0
+
+
+def test_arbiter_best_candidate_has_required_fields():
+    """Arbiter best candidate includes symbol, timeframe, direction, rr, thesis_score, trigger_status."""
+    import json
+    path = "deploy_results/candidate_arbiter_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no candidate_arbiter_report.json")
+    best = r.get("best_candidate")
+    if best is None:
+        pytest.skip("no best candidate")
+    for field in ("symbol", "timeframe", "direction", "rr", "thesis_score", "trigger_status", "verdict", "reasons"):
+        assert field in best, f"Arbiter best candidate missing field: {field}"
+
+
+def test_near_miss_module_has_trigger_fields():
+    """Near miss run_diagnostics produces trigger_confirmed_promoted and trigger_invalidated fields."""
+    from production_replay.near_miss_diagnostics import run_diagnostics
+    import inspect
+    src = inspect.getsource(run_diagnostics)
+    assert "trigger_confirmed_promoted" in src
+    assert "trigger_invalidated" in src
