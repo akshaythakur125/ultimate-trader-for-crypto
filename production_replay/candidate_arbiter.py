@@ -159,6 +159,19 @@ def run_arbiter() -> dict:
     near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    trigger_watcher = _read_json(os.path.join(RESULTS_DIR, "trigger_watcher_report.json"))
+    trigger_events = _read_jsonl(os.path.join(STATE_DIR, "trigger_events.jsonl"))
+
+    # Build trigger status map from trigger watcher
+    trigger_status_map = {}
+    for c in trigger_watcher.get("candidates", []):
+        key = f"{c.get('symbol', '')}|{c.get('timeframe', '')}|{c.get('direction', '')}|{c.get('thesis_type', '')}"
+        trigger_status_map[key] = c.get("trigger_status", "WAITING")
+
+    # Also build from trigger events (later events override)
+    for ev in trigger_events:
+        key = f"{ev.get('symbol', '')}|{ev.get('timeframe', '')}|{ev.get('direction', '')}|{ev.get('thesis_type', '')}"
+        trigger_status_map[key] = ev.get("trigger_status", "WAITING")
 
     classified = near_miss.get("all_classified", [])
     psych_patterns = psych.get("patterns", []) if psych else []
@@ -180,6 +193,18 @@ def run_arbiter() -> dict:
     do_not_trade_count = 0
 
     for c in classified:
+        # Override trigger status from trigger watcher if available
+        tw_key = f"{c.get('symbol', '')}|{c.get('timeframe', '')}|{c.get('direction', '')}|{c.get('thesis_type', '')}"
+        tw_status = trigger_status_map.get(tw_key)
+        if tw_status:
+            c["trigger_info"] = c.get("trigger_info", {})
+            c["trigger_info"]["trigger_status"] = tw_status
+            if tw_status == "TRIGGER_CONFIRMED":
+                c["bucket"] = "TRIGGER_CONFIRMED"
+            elif tw_status == "INVALIDATED":
+                c["bucket"] = "REJECTED"
+                c["rejection_reason"] = "Invalidated by trigger watcher"
+
         result = _evaluate_candidate(c, psych_patterns_map, dux_best)
         candidates_evaluated.append(result)
         if result["verdict"] == "SHADOW_ELIGIBLE":
@@ -216,11 +241,15 @@ def run_arbiter() -> dict:
             "near_miss_report": "near_miss_report.json",
             "psychology_alpha_report": "psychology_alpha_report.json",
             "dux_pattern_report": "dux_pattern_report.json",
+            "trigger_watcher_report": "trigger_watcher_report.json",
+            "trigger_events": "trigger_events.jsonl",
         },
         "total_candidates_evaluated": len(candidates_evaluated),
         "shadow_eligible": shadow_eligible_count,
         "review_candidate": review_candidate_count,
         "do_not_trade": do_not_trade_count,
+        "trigger_watcher_candidates": len(trigger_watcher.get("candidates", [])) if trigger_watcher else 0,
+        "trigger_watcher_best_confirmed": trigger_watcher.get("best_confirmed_candidate") if trigger_watcher else None,
         "psychology_alpha_best_candidate_verdict": psych_best_verdict,
         "has_shadow_eligible_candidates": shadow_eligible_count > 0,
         "best_candidate": next((c for c in candidates_evaluated if c["verdict"] == "SHADOW_ELIGIBLE"), None),
@@ -248,6 +277,7 @@ def _write_text_report(report: dict):
         f"  REVIEW_CANDIDATE:            {report['review_candidate']}",
         f"  DO_NOT_TRADE:                {report['do_not_trade']}",
         f"  Psych alpha best verdict:    {report['psychology_alpha_best_candidate_verdict']}",
+        f"  Trigger watcher candidates: {report.get('trigger_watcher_candidates', 0)}",
         "",
     ]
 
@@ -268,6 +298,16 @@ def _write_text_report(report: dict):
             f"    Target:           {best.get('target', 'N/A')}",
             f"    Psychology:       {best.get('psychology_score', 'N/A')}",
             f"    Raw Anomaly:      {best.get('raw_anomaly_score', 'N/A')}",
+            "",
+        ]
+
+    tw_best = report.get("trigger_watcher_best_confirmed")
+    if tw_best:
+        lines += [
+            "  TRIGGER WATCHER BEST CONFIRMED:",
+            f"    {tw_best['symbol']} {tw_best['timeframe']} {tw_best['direction']} "
+            f"RR:1:{tw_best.get('rr', '?')} Score:{tw_best.get('thesis_score', '?')}",
+            f"    Reason: {tw_best.get('reason', '')}",
             "",
         ]
 

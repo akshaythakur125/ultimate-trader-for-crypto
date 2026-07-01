@@ -88,6 +88,8 @@ def run_hourly_alert() -> dict:
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     memory = _read_json(os.path.join(RESULTS_DIR, "psychology_memory_report.json"))
     near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
+    trigger_watcher = _read_json(os.path.join(RESULTS_DIR, "trigger_watcher_report.json"))
+    trigger_active = _read_json(os.path.join(STATE_DIR, "trigger_watchlist_active.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -146,6 +148,16 @@ def run_hourly_alert() -> dict:
     near_miss_psych_ct = near_miss.get("near_miss_psychology_count", 0) if near_miss else 0
     near_miss_total = near_miss_rr_ct + near_miss_psych_ct
     top_rejection = near_miss.get("top_rejection_reason", "N/A") if near_miss else "N/A"
+
+    # Trigger watcher stats
+    tw_waiting = trigger_watcher.get("waiting_count", 0) if trigger_watcher else 0
+    tw_confirmed = trigger_watcher.get("confirmed_count", 0) if trigger_watcher else 0
+    tw_invalidated = trigger_watcher.get("invalidated_count", 0) if trigger_watcher else 0
+    tw_expired = trigger_watcher.get("expired_count", 0) if trigger_watcher else 0
+    tw_best_confirmed = trigger_watcher.get("best_confirmed_candidate") if trigger_watcher else None
+    tw_best_waiting = trigger_watcher.get("best_waiting_candidate") if trigger_watcher else None
+    tw_active_size = trigger_active.get("total_active", 0) if trigger_active else 0
+    tw_candidates_watched = trigger_watcher.get("candidates_watched", 0) if trigger_watcher else 0
 
     # Candidate arbiter
     arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
@@ -211,6 +223,30 @@ def run_hourly_alert() -> dict:
         "psychology_score": psych_score,
         "memory_scan_records": memory.get("total_scan_records_stored", 0) if memory else 0,
         "memory_outcomes": memory.get("total_outcomes_evaluated", 0) if memory else 0,
+        "trigger_watcher": {
+            "candidates_watched": tw_candidates_watched,
+            "active_watchlist_size": tw_active_size,
+            "waiting": tw_waiting,
+            "confirmed": tw_confirmed,
+            "invalidated": tw_invalidated,
+            "expired": tw_expired,
+            "best_confirmed_candidate": {
+                "symbol": tw_best_confirmed["symbol"],
+                "timeframe": tw_best_confirmed["timeframe"],
+                "direction": tw_best_confirmed["direction"],
+                "rr": tw_best_confirmed.get("rr"),
+                "thesis_score": tw_best_confirmed.get("thesis_score"),
+                "trigger_status": tw_best_confirmed.get("trigger_status"),
+                "reason": tw_best_confirmed.get("reason", ""),
+            } if tw_best_confirmed else None,
+            "best_waiting_candidate": {
+                "symbol": tw_best_waiting["symbol"],
+                "timeframe": tw_best_waiting["timeframe"],
+                "direction": tw_best_waiting["direction"],
+                "rr": tw_best_waiting.get("rr"),
+                "thesis_score": tw_best_waiting.get("thesis_score"),
+            } if tw_best_waiting else None,
+        },
         "candidate_arbiter": {
             "shadow_eligible": arbiter_shadow_eligible,
             "review_candidate": arbiter_review_candidate,
@@ -352,6 +388,34 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Validated executables:    {si.get('validated_executable_after', exec_count)}",
             "",
         ]
+
+    # Trigger watcher section
+    tw = report.get("trigger_watcher", {})
+    if tw:
+        tw_best_conf = tw.get("best_confirmed_candidate")
+        tw_best_wait = tw.get("best_waiting_candidate")
+        lines += [
+            "  TRIGGER WATCHER:",
+            f"    Watched candidates:    {tw.get('candidates_watched', 0)}",
+            f"    Active watchlist:      {tw.get('active_watchlist_size', 0)}",
+            f"    Waiting:               {tw.get('waiting', 0)}",
+            f"    TRIGGER_CONFIRMED:     {tw.get('confirmed', 0)}",
+            f"    INVALIDATED:           {tw.get('invalidated', 0)}",
+            f"    EXPIRED:               {tw.get('expired', 0)}",
+        ]
+        if tw_best_conf:
+            lines += [
+                f"    Best confirmed: {tw_best_conf.get('symbol', '?')} {tw_best_conf.get('timeframe', '?')} "
+                f"{tw_best_conf.get('direction', '?')} RR:{tw_best_conf.get('rr', '?')} "
+                f"Score:{tw_best_conf.get('thesis_score', '?')}",
+                f"      Reason: {tw_best_conf.get('reason', '')}",
+            ]
+        elif tw_best_wait:
+            lines += [
+                f"    Best waiting:  {tw_best_wait.get('symbol', '?')} {tw_best_wait.get('timeframe', '?')} "
+                f"{tw_best_wait.get('direction', '?')} RR:{tw_best_wait.get('rr', '?')}",
+            ]
+        lines += [""]
 
     # Candidate arbiter section
     arb = report.get("candidate_arbiter", {})

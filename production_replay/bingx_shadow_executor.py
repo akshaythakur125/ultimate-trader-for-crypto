@@ -139,8 +139,18 @@ def run_shadow_executor() -> dict:
     arbiter_best = arbiter.get("best_candidate") if arbiter else None
     if arbiter and not arbiter.get("has_shadow_eligible_candidates", False):
         reasons.append("candidate arbiter has no shadow-eligible candidates")
+
+    # Gate 6c: trigger watcher must not have invalidated this candidate
+    trigger_watcher = _read_json(os.path.join(RESULTS_DIR, "trigger_watcher_report.json"))
+    if trigger_watcher and arbiter_best:
+        tw_key = f"{arbiter_best.get('symbol', '')}|{arbiter_best.get('timeframe', '')}|{arbiter_best.get('direction', '')}|{arbiter_best.get('thesis_type', '')}"
+        for tc in trigger_watcher.get("candidates", []):
+            tck = f"{tc.get('symbol', '')}|{tc.get('timeframe', '')}|{tc.get('direction', '')}|{tc.get('thesis_type', '')}"
+            if tck == tw_key and tc.get("trigger_status") in ("INVALIDATED", "EXPIRED"):
+                reasons.append(f"trigger watcher: {tc.get('trigger_status')} for this candidate")
+
     # If arbiter best exists, use its candidate data instead
-    if arbiter_best:
+    if arbiter_best and not any("trigger watcher" in r for r in reasons):
         candidate = {
             "symbol": arbiter_best.get("symbol", ""),
             "timeframe": arbiter_best.get("timeframe", ""),
@@ -240,6 +250,7 @@ def run_shadow_executor() -> dict:
         "timestamp": datetime.now().isoformat(),
         "inputs": {
             "candidate_arbiter": "candidate_arbiter_report.json",
+            "trigger_watcher": "trigger_watcher_report.json",
             "dux_pattern_report": "dux_pattern_report.json",
             "doctor_daily_packet": "doctor_daily_packet.json",
             "manual_risk_plan": "manual_risk_plan.json",

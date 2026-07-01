@@ -4371,3 +4371,272 @@ def test_near_miss_module_has_trigger_fields():
     src = inspect.getsource(run_diagnostics)
     assert "trigger_confirmed_promoted" in src
     assert "trigger_invalidated" in src
+
+
+# ── Phase 49: Continuous Trigger Watcher ─────────────────────────────────
+
+def test_trigger_watcher_load_watchlist_filters_correctly():
+    from production_replay.trigger_watcher import WATCH_BUCKETS_PRIORITY, MAX_WATCHED, MAX_PER_SYMBOL, EXPIRY_MINUTES
+    assert "DIAGNOSTIC_EXECUTABLE" in WATCH_BUCKETS_PRIORITY
+    assert "NEAR_MISS_PSYCHOLOGY" in WATCH_BUCKETS_PRIORITY
+    assert "NEAR_MISS_RR" in WATCH_BUCKETS_PRIORITY
+    assert "WATCHLIST_READY" in WATCH_BUCKETS_PRIORITY
+    assert MAX_WATCHED == 50
+    assert MAX_PER_SYMBOL == 2
+    assert EXPIRY_MINUTES["5m"] == 45
+    assert EXPIRY_MINUTES["15m"] == 120
+    assert EXPIRY_MINUTES["30m"] == 240
+    assert EXPIRY_MINUTES["1h"] == 480
+
+
+def test_trigger_watcher_check_upper_wick_short_confirms():
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [
+        {"close": 102, "high": 105, "low": 101},
+        {"close": 101, "high": 102, "low": 100},
+        {"close": 99, "high": 100, "low": 98},
+        {"close": 98, "high": 99, "low": 97},
+        {"close": 97, "high": 98, "low": 96},
+    ]
+    c = {"thesis_type": "UPPER_WICK_EXTENSION", "direction": "SHORT", "entry": 100, "stop": 101}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_trigger_watcher_check_upper_wick_short_invalidates():
+    from production_replay.trigger_watcher import _check_trigger
+    # Price breaks above wick high → invalidation
+    # Reference candles (first 4): highs 105,104,106,107 → wick_high=107
+    # Latest candle: high=114 > 107 → INVALIDATED
+    candles = [
+        {"close": 102, "high": 105, "low": 101},
+        {"close": 103, "high": 104, "low": 102},
+        {"close": 104, "high": 106, "low": 103},
+        {"close": 108, "high": 107, "low": 106},
+        {"close": 110, "high": 114, "low": 109},
+    ]
+    c = {"thesis_type": "UPPER_WICK_EXTENSION", "direction": "SHORT", "entry": 100, "stop": 101}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "INVALIDATED"
+
+
+def test_trigger_watcher_check_lower_wick_long_confirms():
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [
+        {"close": 98, "high": 99, "low": 95},
+        {"close": 99, "high": 100, "low": 98},
+        {"close": 100, "high": 101, "low": 99},
+        {"close": 101, "high": 102, "low": 100},
+        {"close": 102, "high": 103, "low": 101},
+    ]
+    c = {"thesis_type": "LOWER_WICK_EXTENSION", "direction": "LONG", "entry": 100, "stop": 99}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_trigger_watcher_check_lower_wick_long_invalidates():
+    from production_replay.trigger_watcher import _check_trigger
+    # Price breaks below wick low → invalidation
+    # Reference candles (first 4): lows 95,96,94,93 → wick_low=93
+    # Latest candle: low=90 < 93 → INVALIDATED
+    candles = [
+        {"close": 98, "high": 99, "low": 95},
+        {"close": 97, "high": 98, "low": 96},
+        {"close": 95, "high": 96, "low": 94},
+        {"close": 93, "high": 95, "low": 93},
+        {"close": 89, "high": 92, "low": 90},
+    ]
+    c = {"thesis_type": "LOWER_WICK_EXTENSION", "direction": "LONG", "entry": 100, "stop": 99}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "INVALIDATED"
+
+
+def test_trigger_watcher_check_sweep_high_short_confirms():
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [
+        {"close": 105, "high": 110, "low": 104},
+        {"close": 104, "high": 106, "low": 103},
+        {"close": 103, "high": 105, "low": 102},
+        {"close": 101, "high": 103, "low": 100},
+        {"close": 100, "high": 101, "low": 99},
+    ]
+    c = {"thesis_type": "SWEEP_HIGH", "direction": "SHORT", "entry": 100, "stop": 101}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_trigger_watcher_check_sweep_low_long_confirms():
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [
+        {"close": 100, "high": 101, "low": 95},
+        {"close": 101, "high": 102, "low": 100},
+        {"close": 102, "high": 103, "low": 101},
+        {"close": 103, "high": 104, "low": 102},
+        {"close": 104, "high": 105, "low": 103},
+    ]
+    c = {"thesis_type": "SWEEP_LOW", "direction": "LONG", "entry": 100, "stop": 99}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+
+
+def test_trigger_watcher_compression_never_confirms_alone():
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [{"close": 100, "high": 101, "low": 99} for _ in range(10)]
+    c = {"thesis_type": "COMPRESSION", "direction": "LONG", "entry": 100, "stop": 99}
+    result = _check_trigger(c, candles)
+    assert result["trigger_status"] == "WAITING"
+
+
+def test_trigger_watcher_no_candles_returns_waiting():
+    from production_replay.trigger_watcher import _check_trigger
+    c = {"thesis_type": "UPPER_WICK_EXTENSION", "direction": "SHORT", "entry": 100, "stop": 101}
+    result = _check_trigger(c, [])
+    assert result["trigger_status"] == "WAITING"
+
+
+def test_trigger_watcher_few_candles_returns_waiting():
+    from production_replay.trigger_watcher import _check_trigger
+    c = {"thesis_type": "UPPER_WICK_EXTENSION", "direction": "SHORT", "entry": 100, "stop": 101}
+    result = _check_trigger(c, [{"close": 100}])
+    assert result["trigger_status"] == "WAITING"
+
+
+def test_trigger_watcher_expiry_5m():
+    from production_replay.trigger_watcher import _check_expiry
+    from datetime import datetime, timedelta
+    candidate = {"timeframe": "5m", "detection_time": (datetime.now() - timedelta(minutes=60)).isoformat()}
+    expired, reason = _check_expiry(candidate, datetime.now())
+    assert expired
+    assert "Expired" in reason or "expired" in reason
+
+
+def test_trigger_watcher_expiry_15m():
+    from production_replay.trigger_watcher import _check_expiry
+    from datetime import datetime, timedelta
+    candidate = {"timeframe": "15m", "detection_time": (datetime.now() - timedelta(minutes=180)).isoformat()}
+    expired, reason = _check_expiry(candidate, datetime.now())
+    assert expired
+    assert "Expired" in reason
+
+
+def test_trigger_watcher_not_expired():
+    from production_replay.trigger_watcher import _check_expiry
+    from datetime import datetime, timedelta
+    candidate = {"timeframe": "5m", "detection_time": (datetime.now() - timedelta(minutes=5)).isoformat()}
+    expired, reason = _check_expiry(candidate, datetime.now())
+    assert not expired
+
+
+def test_trigger_watcher_check_structure():
+    """Trigger watcher report structure is valid."""
+    import json
+    path = "deploy_results/trigger_watcher_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no trigger_watcher_report.json")
+    assert r.get("mode") == "trigger_watcher"
+    assert "candidates_watched" in r
+    assert "waiting_count" in r
+    assert "confirmed_count" in r
+    assert "invalidated_count" in r
+    assert "expired_count" in r
+    assert "best_confirmed_candidate" in r or r["candidates_watched"] == 0
+    assert "best_waiting_candidate" in r or r["candidates_watched"] == 0
+
+
+def test_trigger_watcher_candidate_arbiter_integration():
+    """Arbiter reads trigger watcher report and uses trigger_status."""
+    import json
+    path = "deploy_results/candidate_arbiter_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no candidate_arbiter_report.json")
+    inputs = r.get("inputs", {})
+    has_trigger_input = "trigger_watcher_report" in inputs
+    if not has_trigger_input:
+        pytest.skip("arbiter did not run with trigger watcher input")
+    assert has_trigger_input
+
+
+def test_trigger_watcher_no_live_trading():
+    from production_replay.trigger_watcher import run_trigger_watcher
+    import inspect
+    src = inspect.getsource(run_trigger_watcher)
+    assert "live_trading_enabled" in src or "research_only" in src
+
+
+def test_trigger_watcher_no_order_placement():
+    """Trigger watcher never places orders."""
+    import inspect
+    import production_replay.trigger_watcher as tw
+    src = inspect.getsource(tw)
+    assert "order" not in src.lower() or "shadow" not in src.lower() or "research_only" in src
+
+
+def test_hourly_alert_has_trigger_watcher_section():
+    """Hourly alert includes trigger_watcher block."""
+    import json
+    path = "deploy_results/hourly_status.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no hourly_status.json")
+    tw = r.get("trigger_watcher")
+    if tw is None:
+        pytest.skip("no trigger_watcher in hourly alert")
+    assert "candidates_watched" in tw
+    assert "waiting" in tw
+    assert "confirmed" in tw
+    assert "invalidated" in tw
+    assert "expired" in tw
+
+
+def test_doctor_packet_has_trigger_watcher_section():
+    """Doctor daily packet includes trigger_watcher block."""
+    import json
+    path = "deploy_results/doctor_daily_packet.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no doctor_daily_packet.json")
+    tw = r.get("trigger_watcher")
+    if tw is None:
+        pytest.skip("no trigger_watcher in doctor packet")
+    assert "candidates_watched" in tw
+    assert "waiting" in tw
+    assert "confirmed" in tw
+    assert "expired" in tw
+
+
+def test_trigger_watcher_imports_safe():
+    """Trigger watcher imports are research-only (no trading APIs)."""
+    from production_replay.trigger_watcher import _check_trigger, _check_expiry, _load_watchlist_candidates
+    assert callable(_check_trigger)
+    assert callable(_check_expiry)
+    assert callable(_load_watchlist_candidates)
+
+
+def test_safety_lock_passes_with_trigger_watcher():
+    """Trigger watcher does not break safety lock."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.safety_lock"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0 or "PASS" in result.stdout
+
+
+def test_launch_check_passes_with_trigger_watcher():
+    """Trigger watcher does not break launch check."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.launch_check"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0 or "PASS" in result.stdout

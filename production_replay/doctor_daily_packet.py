@@ -389,6 +389,38 @@ def main():
     else:
         near_miss_lines = ["", "  NEAR-MISS DIAGNOSTICS: MISSING (no report)", ""]
 
+    # Trigger watcher section
+    trigger_lines = []
+    trigger_watcher = _read_json(os.path.join(RESULTS_DIR, "trigger_watcher_report.json"))
+    trigger_active = _read_json(os.path.join(STATE_DIR, "trigger_watchlist_active.json"))
+    if trigger_watcher:
+        tw_best_conf = trigger_watcher.get("best_confirmed_candidate")
+        tw_best_wait = trigger_watcher.get("best_waiting_candidate")
+        trigger_lines = [
+            "",
+            "  TRIGGER WATCHER:",
+            f"    Watched candidates:    {trigger_watcher.get('candidates_watched', 0)}",
+            f"    Active watchlist:      {trigger_active.get('total_active', 0) if trigger_active else 0}",
+            f"    Waiting:               {trigger_watcher.get('waiting_count', 0)}",
+            f"    TRIGGER_CONFIRMED:     {trigger_watcher.get('confirmed_count', 0)}",
+            f"    INVALIDATED:           {trigger_watcher.get('invalidated_count', 0)}",
+            f"    EXPIRED:               {trigger_watcher.get('expired_count', 0)}",
+        ]
+        if tw_best_conf:
+            trigger_lines += [
+                f"    Best confirmed: {tw_best_conf.get('symbol', '?')} {tw_best_conf.get('timeframe', '?')} "
+                f"{tw_best_conf.get('direction', '?')} RR:{tw_best_conf.get('rr', '?')} "
+                f"Score:{tw_best_conf.get('thesis_score', '?')}",
+                f"      Reason: {tw_best_conf.get('reason', '')}",
+            ]
+        elif tw_best_wait:
+            trigger_lines += [
+                f"    Best waiting:  {tw_best_wait.get('symbol', '?')} {tw_best_wait.get('timeframe', '?')} "
+                f"{tw_best_wait.get('direction', '?')} RR:{tw_best_wait.get('rr', '?')}",
+            ]
+    else:
+        trigger_lines = ["", "  TRIGGER WATCHER: MISSING (no report)", ""]
+
     # Candidate arbiter section
     arbiter_lines = []
     arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
@@ -534,6 +566,7 @@ def main():
     lines += psych_lines
     lines += memory_lines
     lines += near_miss_lines
+    lines += trigger_lines
     lines += arbiter_lines
     lines += shadow_lines
     lines += live_lines
@@ -627,6 +660,16 @@ def main():
             "pending_outcomes": memory.get("pending_outcomes", 0) if memory else None,
             "historical_edge_summary": memory.get("historical_edge_summary") if memory else None,
         } if memory else None,
+        "trigger_watcher": {
+            "candidates_watched": trigger_watcher.get("candidates_watched", 0) if trigger_watcher else 0,
+            "active_watchlist_size": trigger_active.get("total_active", 0) if trigger_active else 0,
+            "waiting": trigger_watcher.get("waiting_count", 0) if trigger_watcher else 0,
+            "confirmed": trigger_watcher.get("confirmed_count", 0) if trigger_watcher else 0,
+            "invalidated": trigger_watcher.get("invalidated_count", 0) if trigger_watcher else 0,
+            "expired": trigger_watcher.get("expired_count", 0) if trigger_watcher else 0,
+            "best_confirmed_candidate": trigger_watcher.get("best_confirmed_candidate") if trigger_watcher else None,
+            "best_waiting_candidate": trigger_watcher.get("best_waiting_candidate") if trigger_watcher else None,
+        } if trigger_watcher else None,
         "candidate_arbiter": {
             "total_candidates_evaluated": arbiter.get("total_candidates_evaluated", 0) if arbiter else 0,
             "shadow_eligible": arbiter.get("shadow_eligible", 0) if arbiter else 0,
