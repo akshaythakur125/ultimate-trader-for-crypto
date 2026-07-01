@@ -318,7 +318,9 @@ def _relative_momentum_score(candles: list[dict], symbol: str) -> tuple[int, str
 def _compute_raw_anomaly_score(symbol: str, timeframe: str) -> dict:
     candles = _load_cached_candles(symbol, timeframe)
     if len(candles) < 20:
-        return {"raw_anomaly_score": 0, "anomalies": [], "top_anomaly": ""}
+        return {"raw_anomaly_score": 0, "anomalies": [], "top_anomaly": "",
+                "volatility_expansion": 0, "volume_anomaly": 0, "extension": 0,
+                "wick_rejection": 0, "sweep": 0, "compression": 0, "relative_momentum": 0}
 
     scores = []
     anomalies = []
@@ -376,13 +378,33 @@ def _compute_raw_anomaly_score(symbol: str, timeframe: str) -> dict:
     }
 
 
-def _classify_bucket(pattern: dict, psych: dict | None, raw_anomaly: dict | None = None) -> str:
+def _classify_bucket(pattern: dict, psych: dict | None, raw_anomaly: dict | None = None,
+                     thesis: dict | None = None) -> str:
     rr = pattern.get("rr_2") or 0
     psych_score = psych.get("psychology_score", 0) if psych else 0
     rejected = pattern.get("rejected", True)
     has_trap = pattern.get("pattern_id", "") != "" and pattern.get("direction", "UNKNOWN") != "UNKNOWN"
     raw_score = raw_anomaly.get("raw_anomaly_score", 0) if raw_anomaly else 0
 
+    # If no formal Dux pattern but thesis exists, use thesis-based classification
+    thesis_bucket = thesis.get("bucket") if thesis else None
+    thesis_direction = thesis.get("direction", "UNKNOWN") if thesis else "UNKNOWN"
+    thesis_rr = thesis.get("current_rr", 0) if thesis else 0
+    thesis_score = thesis.get("trade_thesis_score", 0) if thesis else 0
+
+    if thesis_bucket in ("EXECUTABLE_CANDIDATE", "NEAR_MISS_RR", "NEAR_MISS_PSYCHOLOGY", "WATCHLIST_READY"):
+        if thesis_score >= 70 and thesis_rr >= RR_MIN:
+            return "EXECUTABLE_CANDIDATE"
+        if thesis_score >= 60 and 2.0 <= thesis_rr < RR_MIN:
+            return "NEAR_MISS_RR"
+        if thesis_score >= 50 and thesis_rr >= RR_MIN:
+            return "NEAR_MISS_PSYCHOLOGY"
+        if thesis_direction in ("LONG", "SHORT") and thesis_rr > 0:
+            return "WATCHLIST_READY"
+        if thesis_bucket == "OBSERVE_ONLY":
+            return "REJECTED"
+
+    # Fallback to existing logic
     if not rejected and rr >= RR_MIN and psych_score >= PSYCH_ELITE_MIN:
         return "EXECUTABLE_CANDIDATE"
     if not rejected and rr >= RR_MIN and psych_score >= PSYCH_WATCH_MIN:
@@ -415,6 +437,8 @@ def _actionability_score(candidate: dict) -> int:
     score += psych
     raw_anomaly = candidate.get("raw_anomaly_score", 0) or 0
     score += raw_anomaly
+    thesis_score = candidate.get("trade_thesis_score", 0) or 0
+    score += thesis_score
     rr = candidate.get("rr_value", 0) or 0
     if rr >= 1:
         score += int(rr * 5)
@@ -423,6 +447,14 @@ def _actionability_score(candidate: dict) -> int:
 
 def _is_valid_watchlist_entry(candidate: dict) -> bool:
     bucket = candidate.get("bucket", "REJECTED")
+    # Accept thesis-based entries with clear direction
+    thesis_score = candidate.get("trade_thesis_score", 0) or 0
+    thesis_direction = candidate.get("direction", "UNKNOWN")
+    thesis_type = candidate.get("thesis_type", "NONE")
+
+    if thesis_score >= 50 and thesis_direction in ("LONG", "SHORT") and thesis_type != "NONE":
+        return True
+
     if bucket == "REJECTED" and candidate.get("raw_anomaly_score", 0) < RAW_ANOMALY_OBSERVE_MIN:
         return False
     if candidate.get("psychology_score", 0) == 0 and candidate.get("raw_anomaly_score", 0) == 0:
@@ -555,7 +587,12 @@ def _compute_alternative_entries(pattern: dict) -> list[dict]:
     return plans
 
 
-def _determine_next_step(bucket: str, pattern: dict, lifecycle: str, raw_anomaly: dict | None = None) -> str:
+def _determine_next_step(bucket: str, pattern: dict, lifecycle: str, raw_anomaly: dict | None = None,
+                          thesis: dict | None = None) -> str:
+    # Thesis-based next step takes priority
+    if thesis and thesis.get("what_must_happen_next") and thesis.get("what_must_happen_next") != "no actionable setup":
+        return thesis["what_must_happen_next"]
+
     if bucket == "WATCHLIST_READY":
         if lifecycle == "CONFIRMED_BUT_RR_POOR":
             return "wait for pullback to improve RR"
@@ -605,6 +642,375 @@ def _required_entry_for_rr4(pattern: dict) -> float:
     return round(stop - risk * RR_MIN / 2, 2)
 
 
+# --- Anomaly-to-Thesis Engine (Phase 46) ---
+
+THESIS_SCORE_ANOMALY_STRENGTH = 25
+THESIS_SCORE_DIRECTION_CLARITY = 20
+THESIS_SCORE_INVALIDATION_CLARITY = 20
+THESIS_SCORE_TARGET_REALISM = 15
+THESIS_SCORE_RR_POTENTIAL = 15
+THESIS_SCORE_LIQUIDITY = 5
+
+THESIS_TYPES = {
+    "UPPER_WICK_EXTENSION": {
+        "bias": "SHORT",
+        "psychology": "late buyers rejected / FOMO exhaustion",
+        "description": "Upper wick after price extension suggests exhaustion",
+    },
+    "LOWER_WICK_DUMP": {
+        "bias": "LONG",
+        "psychology": "panic sellers trapped / short exhaustion",
+        "description": "Lower wick after dump suggests capitulation",
+    },
+    "SWEEP_HIGH": {
+        "bias": "SHORT",
+        "psychology": "breakout buyers trapped",
+        "description": "Price swept range high and closed back inside",
+    },
+    "SWEEP_LOW": {
+        "bias": "LONG",
+        "psychology": "breakdown shorts trapped",
+        "description": "Price swept range low and closed back inside",
+    },
+    "VOLATILITY_EXPANSION": {
+        "bias": "DYNAMIC",
+        "psychology": "crowd pressure release",
+        "description": "Volatility expansion after compression",
+    },
+    "PARABOLIC_EXTENSION": {
+        "bias": "SHORT_CONDITIONAL",
+        "psychology": "late buyers at extreme",
+        "description": "Parabolic extension requires rejection confirmation",
+    },
+    "COMPRESSION": {
+        "bias": "UNKNOWN",
+        "psychology": "pressure building, direction unknown until trigger",
+        "description": "Range compression, observing for breakout",
+    },
+}
+
+
+def _compute_thesis_rr(entry: float, stop: float, target: float) -> float:
+    if entry is None or stop is None or target is None:
+        return 0.0
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return 0.0
+    return round(abs(target - entry) / risk, 2)
+
+
+def build_trade_thesis(symbol: str, timeframe: str, candles: list[dict], anomaly: dict) -> dict:
+    """Convert raw anomaly into a directional trade hypothesis."""
+    thesis = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "direction": "UNKNOWN",
+        "thesis_type": "NONE",
+        "psychology_thesis": "",
+        "ideal_entry": None,
+        "stop": None,
+        "target_1": None,
+        "final_target": None,
+        "current_rr": 0.0,
+        "required_entry_for_rr4": None,
+        "confidence_score": 0,
+        "trade_thesis_score": 0,
+        "what_must_happen_next": "no actionable setup",
+        "invalidation": "",
+        "bucket": "OBSERVE_ONLY",
+    }
+
+    if not candles or len(candles) < 5 or not anomaly:
+        return thesis
+
+    last = candles[-1]
+    high = last["high"]
+    low = last["low"]
+    close = last["close"]
+    open_ = last["open"]
+    body = abs(close - open_)
+    total_range = high - low
+
+    top_anomaly = anomaly.get("top_anomaly", "")
+    anomalies = anomaly.get("anomalies", [])
+
+    # Collect signals from raw anomaly data
+    has_wick_rejection = anomaly.get("wick_rejection", 0) > 0
+    has_sweep = anomaly.get("sweep", 0) > 0
+    has_extension = anomaly.get("extension", 0) > 0
+    has_volatility = anomaly.get("volatility_expansion", 0) > 0
+    has_compression = anomaly.get("compression", 0) > 0
+    has_volume_anomaly = anomaly.get("volume_anomaly", 0) > 0
+
+    # Determine upper vs lower wick
+    upper_wick_pct = 0.0
+    lower_wick_pct = 0.0
+    if total_range > 0:
+        upper_wick_pct = (high - max(open_, close)) / total_range * 100
+        lower_wick_pct = (min(open_, close) - low) / total_range * 100
+
+    # Rule 1: Upper wick after extension → SHORT
+    if upper_wick_pct >= 50 and has_extension:
+        thesis["direction"] = "SHORT"
+        thesis["thesis_type"] = "UPPER_WICK_EXTENSION"
+        thesis["psychology_thesis"] = THESIS_TYPES["UPPER_WICK_EXTENSION"]["psychology"]
+        thesis["ideal_entry"] = round((high + low) / 2, 2)
+        thesis["stop"] = round(high * 1.005, 2)
+        # Target: prior consolidation base (approximate with recent swing low)
+        prior_lows = [c["low"] for c in candles[-10:-1]]
+        thesis["final_target"] = round(min(prior_lows) if prior_lows else low * 0.95, 2)
+        thesis["target_1"] = round((thesis["ideal_entry"] + thesis["final_target"]) / 2, 2)
+        thesis["invalidation"] = "price closes above wick high"
+        thesis["what_must_happen_next"] = "failed retest below wick midpoint or breakdown below rejection candle low"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            required_risk = risk_val * RR_MIN / 2
+            thesis["required_entry_for_rr4"] = round(
+                thesis["stop"] + required_risk if thesis["direction"] == "LONG" else thesis["stop"] - required_risk, 2
+            ) if thesis["stop"] else None
+
+    # Rule 2: Lower wick after dump → LONG
+    elif lower_wick_pct >= 50 and has_extension:
+        thesis["direction"] = "LONG"
+        thesis["thesis_type"] = "LOWER_WICK_DUMP"
+        thesis["psychology_thesis"] = THESIS_TYPES["LOWER_WICK_DUMP"]["psychology"]
+        thesis["ideal_entry"] = round((high + low) / 2, 2)
+        thesis["stop"] = round(low * 0.995, 2)
+        prior_highs = [c["high"] for c in candles[-10:-1]]
+        thesis["final_target"] = round(max(prior_highs) if prior_highs else high * 1.05, 2)
+        thesis["target_1"] = round((thesis["ideal_entry"] + thesis["final_target"]) / 2, 2)
+        thesis["invalidation"] = "price closes below wick low"
+        thesis["what_must_happen_next"] = "reclaim above wick candle midpoint or reclaim above breakdown level"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            required_risk = risk_val * RR_MIN / 2
+            thesis["required_entry_for_rr4"] = round(
+                thesis["stop"] + required_risk if thesis["direction"] == "LONG" else thesis["stop"] - required_risk, 2
+            ) if thesis["stop"] else None
+
+    # Rule 3: Sweep high → SHORT
+    elif has_sweep and upper_wick_pct >= 30:
+        thesis["direction"] = "SHORT"
+        thesis["thesis_type"] = "SWEEP_HIGH"
+        thesis["psychology_thesis"] = THESIS_TYPES["SWEEP_HIGH"]["psychology"]
+        thesis["ideal_entry"] = round(close, 2)
+        window = candles[-15:-1]
+        if window:
+            range_high = max(c["high"] for c in window)
+            thesis["stop"] = round(range_high * 1.005, 2)
+            range_low = min(c["low"] for c in window)
+            range_mid = (range_high + range_low) / 2
+            thesis["target_1"] = round(range_mid, 2)
+            thesis["final_target"] = round(range_low, 2)
+        else:
+            thesis["stop"] = round(high * 1.01, 2)
+            thesis["target_1"] = round(low, 2)
+            thesis["final_target"] = round(low * 0.98, 2)
+        thesis["invalidation"] = "price closes above sweep high"
+        thesis["what_must_happen_next"] = "close back below swept high or failed retest"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            thesis["required_entry_for_rr4"] = round(
+                thesis["ideal_entry"] - risk_val * RR_MIN if thesis["ideal_entry"] else 0, 2
+            ) if thesis["ideal_entry"] else None
+
+    # Rule 4: Sweep low → LONG
+    elif has_sweep and lower_wick_pct >= 30:
+        thesis["direction"] = "LONG"
+        thesis["thesis_type"] = "SWEEP_LOW"
+        thesis["psychology_thesis"] = THESIS_TYPES["SWEEP_LOW"]["psychology"]
+        thesis["ideal_entry"] = round(close, 2)
+        window = candles[-15:-1]
+        if window:
+            range_low = min(c["low"] for c in window)
+            thesis["stop"] = round(range_low * 0.995, 2)
+            range_high = max(c["high"] for c in window)
+            range_mid = (range_high + range_low) / 2
+            thesis["target_1"] = round(range_mid, 2)
+            thesis["final_target"] = round(range_high, 2)
+        else:
+            thesis["stop"] = round(low * 0.99, 2)
+            thesis["target_1"] = round(high, 2)
+            thesis["final_target"] = round(high * 1.02, 2)
+        thesis["invalidation"] = "price closes below sweep low"
+        thesis["what_must_happen_next"] = "close back above swept low or reclaim confirmation"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            thesis["required_entry_for_rr4"] = round(
+                thesis["ideal_entry"] + risk_val * RR_MIN if thesis["ideal_entry"] else 0, 2
+            ) if thesis["ideal_entry"] else None
+
+    # Rule 5: Volatility expansion after compression
+    elif has_volatility and has_compression:
+        thesis["thesis_type"] = "VOLATILITY_EXPANSION"
+        thesis["psychology_thesis"] = THESIS_TYPES["VOLATILITY_EXPANSION"]["psychology"]
+        # Determine breakout direction
+        prev_close = candles[-2]["close"] if len(candles) >= 2 else open_
+        if close > prev_close * 1.01:
+            thesis["direction"] = "LONG"
+        elif close < prev_close * 0.99:
+            thesis["direction"] = "SHORT"
+        else:
+            thesis["direction"] = "UNKNOWN"
+        if thesis["direction"] != "UNKNOWN":
+            thesis["ideal_entry"] = round(close, 2)
+            atr_val = sum(abs(c["high"] - c["low"]) for c in candles[-14:]) / 14 if len(candles) >= 14 else total_range
+            thesis["stop"] = round(thesis["ideal_entry"] - atr_val * 1.5 if thesis["direction"] == "LONG" else thesis["ideal_entry"] + atr_val * 1.5, 2)
+            thesis["final_target"] = round(thesis["ideal_entry"] + atr_val * 3 if thesis["direction"] == "LONG" else thesis["ideal_entry"] - atr_val * 3, 2)
+            thesis["target_1"] = round(thesis["ideal_entry"] + atr_val * 1.5 if thesis["direction"] == "LONG" else thesis["ideal_entry"] - atr_val * 1.5, 2)
+            thesis["invalidation"] = "breakout fails and price returns inside compression range"
+            if has_volume_anomaly:
+                thesis["what_must_happen_next"] = "continuation watchlist, hold with volume"
+            else:
+                thesis["what_must_happen_next"] = "wait for failed retest of breakout level"
+            risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+            if risk_val > 0 and thesis["final_target"]:
+                thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+                if thesis["direction"] == "LONG":
+                    thesis["required_entry_for_rr4"] = round(thesis["stop"] + risk_val * RR_MIN / 2 if thesis["stop"] else 0, 2)
+                else:
+                    thesis["required_entry_for_rr4"] = round(thesis["stop"] - risk_val * RR_MIN / 2 if thesis["stop"] else 0, 2)
+
+    # Rule 6: Parabolic extension → SHORT only with rejection
+    elif has_extension and upper_wick_pct >= 40:
+        thesis["direction"] = "SHORT"
+        thesis["thesis_type"] = "PARABOLIC_EXTENSION"
+        thesis["psychology_thesis"] = THESIS_TYPES["PARABOLIC_EXTENSION"]["psychology"]
+        thesis["ideal_entry"] = round(close, 2)
+        thesis["stop"] = round(high * 1.005, 2)
+        thesis["final_target"] = round(high - body * 2, 2)
+        thesis["target_1"] = round(high - body, 2)
+        thesis["invalidation"] = "price continues up without rejection"
+        thesis["what_must_happen_next"] = "needs wick rejection, failed continuation, or lower high confirmation"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            thesis["required_entry_for_rr4"] = round(
+                thesis["ideal_entry"] - risk_val * RR_MIN if thesis["ideal_entry"] else 0, 2
+            ) if thesis["ideal_entry"] else None
+
+    # Rule 7: Compression only
+    elif has_compression and not has_volatility:
+        thesis["direction"] = "UNKNOWN"
+        thesis["thesis_type"] = "COMPRESSION"
+        thesis["psychology_thesis"] = THESIS_TYPES["COMPRESSION"]["psychology"]
+        thesis["invalidation"] = "range breaks without follow-through"
+        thesis["what_must_happen_next"] = "wait for breakout failure or reclaim/breakdown trigger"
+        thesis["bucket"] = "OBSERVE_ONLY"
+
+    # Also handle wick-only without extension
+    elif has_wick_rejection and upper_wick_pct >= 55 and not has_extension:
+        thesis["direction"] = "SHORT"
+        thesis["thesis_type"] = "UPPER_WICK_EXTENSION"
+        thesis["psychology_thesis"] = "late buyers rejected at resistance"
+        thesis["ideal_entry"] = round(close, 2)
+        thesis["stop"] = round(high * 1.005, 2)
+        thesis["final_target"] = round(low - body * 0.5, 2)
+        thesis["target_1"] = round(low, 2)
+        thesis["invalidation"] = "price closes above wick high"
+        thesis["what_must_happen_next"] = "failed retest below wick midpoint"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            thesis["required_entry_for_rr4"] = round(
+                thesis["ideal_entry"] - risk_val * RR_MIN if thesis["ideal_entry"] else 0, 2
+            ) if thesis["ideal_entry"] else None
+
+    elif has_wick_rejection and lower_wick_pct >= 55 and not has_extension:
+        thesis["direction"] = "LONG"
+        thesis["thesis_type"] = "LOWER_WICK_DUMP"
+        thesis["psychology_thesis"] = "panic sellers trapped at support"
+        thesis["ideal_entry"] = round(close, 2)
+        thesis["stop"] = round(low * 0.995, 2)
+        thesis["final_target"] = round(high + body * 0.5, 2)
+        thesis["target_1"] = round(high, 2)
+        thesis["invalidation"] = "price closes below wick low"
+        thesis["what_must_happen_next"] = "reclaim above breakdown level"
+        risk_val = abs(thesis["ideal_entry"] - thesis["stop"]) if thesis["ideal_entry"] and thesis["stop"] else 0
+        if risk_val > 0 and thesis["final_target"]:
+            thesis["current_rr"] = _compute_thesis_rr(thesis["ideal_entry"], thesis["stop"], thesis["final_target"])
+            thesis["required_entry_for_rr4"] = round(
+                thesis["ideal_entry"] + risk_val * RR_MIN if thesis["ideal_entry"] else 0, 2
+            ) if thesis["ideal_entry"] else None
+
+    # Compute trade_thesis_score
+    thesis_score_val = 0
+
+    # 1. Anomaly strength (0-25)
+    raw_score = anomaly.get("raw_anomaly_score", 0)
+    thesis_score_val += min(THESIS_SCORE_ANOMALY_STRENGTH, int(raw_score * THESIS_SCORE_ANOMALY_STRENGTH / 100))
+
+    # 2. Direction clarity (0-20)
+    if thesis["direction"] in ("LONG", "SHORT"):
+        clarity_bonus = 0
+        if thesis["thesis_type"] in ("UPPER_WICK_EXTENSION", "LOWER_WICK_DUMP"):
+            clarity_bonus = 18
+        elif thesis["thesis_type"] in ("SWEEP_HIGH", "SWEEP_LOW"):
+            clarity_bonus = 16
+        elif thesis["thesis_type"] == "VOLATILITY_EXPANSION":
+            clarity_bonus = 12
+        elif thesis["thesis_type"] == "PARABOLIC_EXTENSION":
+            clarity_bonus = 14
+        thesis_score_val += min(THESIS_SCORE_DIRECTION_CLARITY, clarity_bonus)
+
+    # 3. Invalidation clarity (0-20)
+    if thesis.get("invalidation"):
+        invalidation_len = len(thesis["invalidation"])
+        invalidation_score = min(THESIS_SCORE_INVALIDATION_CLARITY, int(invalidation_len / 3))
+        thesis_score_val += invalidation_score
+
+    # 4. Target realism (0-15)
+    if thesis.get("final_target") and thesis.get("ideal_entry"):
+        target_distance = abs(thesis["final_target"] - thesis["ideal_entry"])
+        avg_range = total_range if total_range > 0 else 1
+        target_multiple = target_distance / avg_range
+        target_realism = min(THESIS_SCORE_TARGET_REALISM, int(target_multiple * 5))
+        thesis_score_val += target_realism
+
+    # 5. RR potential (0-15)
+    rr_val = thesis.get("current_rr", 0) or 0
+    if rr_val >= RR_MIN:
+        thesis_score_val += THESIS_SCORE_RR_POTENTIAL
+    elif rr_val >= 3.0:
+        thesis_score_val += 10
+    elif rr_val >= 2.0:
+        thesis_score_val += 7
+    elif rr_val > 0:
+        thesis_score_val += 3
+
+    # 6. Liquidity/symbol quality (0-5)
+    from production_replay.bingx_universe import KNOWN_MAJORS, KNOWN_MEMECOINS
+    if symbol in KNOWN_MAJORS:
+        thesis_score_val += THESIS_SCORE_LIQUIDITY
+    elif symbol in KNOWN_MEMECOINS:
+        thesis_score_val += 3
+    else:
+        thesis_score_val += 2
+
+    thesis["trade_thesis_score"] = min(100, thesis_score_val)
+    thesis["confidence_score"] = thesis["trade_thesis_score"]
+
+    # Determine bucket based on thesis quality
+    if thesis["direction"] in ("LONG", "SHORT") and thesis["current_rr"] >= RR_MIN and thesis["trade_thesis_score"] >= 70:
+        thesis["bucket"] = "EXECUTABLE_CANDIDATE"
+    elif thesis["direction"] in ("LONG", "SHORT") and 2.0 <= thesis["current_rr"] < RR_MIN and thesis["trade_thesis_score"] >= 60:
+        thesis["bucket"] = "NEAR_MISS_RR"
+    elif thesis["direction"] in ("LONG", "SHORT") and thesis["current_rr"] >= RR_MIN and 50 <= thesis["trade_thesis_score"] < 70:
+        thesis["bucket"] = "NEAR_MISS_PSYCHOLOGY"
+    elif thesis["direction"] in ("LONG", "SHORT") and thesis["current_rr"] > 0:
+        thesis["bucket"] = "WATCHLIST_READY"
+    elif thesis["thesis_type"] == "COMPRESSION":
+        thesis["bucket"] = "OBSERVE_ONLY"
+    else:
+        thesis["bucket"] = "OBSERVE_ONLY"
+
+    return thesis
+
+
 def run_diagnostics() -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
@@ -628,6 +1034,12 @@ def run_diagnostics() -> dict:
 
     classified = []
     raw_anomaly_cache = {}
+    thesis_cache = {}
+
+    crypto_excluded = 0
+    universe_data = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
+    if universe_data:
+        crypto_excluded = universe_data.get("excluded_non_crypto", 0)
 
     for p in patterns:
         sym = p.get("symbol", "")
@@ -640,7 +1052,13 @@ def run_diagnostics() -> dict:
             raw_anomaly_cache[cache_key] = _compute_raw_anomaly_score(sym, tf)
         raw_data = raw_anomaly_cache[cache_key]
 
-        bucket = _classify_bucket(p, psych_data, raw_data)
+        # Build trade thesis
+        if cache_key not in thesis_cache:
+            candles = _load_cached_candles(sym, tf)
+            thesis_cache[cache_key] = build_trade_thesis(sym, tf, candles, raw_data)
+        thesis = thesis_cache[cache_key]
+
+        bucket = _classify_bucket(p, psych_data, raw_data, thesis)
         lifecycle = _classify_lifecycle(p, bucket, psych_data, raw_data)
         rejection = _assign_rejection_reason(p, bucket, psych_data, raw_data)
 
@@ -658,27 +1076,56 @@ def run_diagnostics() -> dict:
         vol_score = scores.get("volume_momentum", 0)
         struct_score = scores.get("structure", 0)
         liq_score = scores.get("liquidity", 0)
-        thesis = psych_data.get("psychology_thesis", "") if psych_data else ""
+        psychology_thesis_str = psych_data.get("psychology_thesis", "") if psych_data else ""
         rr_raw = p.get("rr_2")
         rr_str = f"{rr_raw}" if rr_raw else "N/A"
         rr_val = float(rr_raw) if rr_raw else 0.0
 
         entry_plans = _compute_alternative_entries(p)
         required_entry = _required_entry_for_rr4(p)
-        next_step = _determine_next_step(bucket, p, lifecycle, raw_data)
+        next_step = _determine_next_step(bucket, p, lifecycle, raw_data, thesis)
+
+        # Use thesis direction if pattern direction is UNKNOWN
+        effective_direction = p.get("direction", "UNKNOWN")
+        if effective_direction == "UNKNOWN" and thesis:
+            effective_direction = thesis.get("direction", "UNKNOWN")
+
+        # Use thesis psychology if psychology_score is 0 but thesis has one
+        if psych_score == 0 and thesis:
+            effective_psychology_thesis = thesis.get("psychology_thesis", psychology_thesis_str)
+            if thesis.get("trade_thesis_score", 0) >= 70:
+                effective_psych_score = 70
+            elif thesis.get("trade_thesis_score", 0) >= 60:
+                effective_psych_score = 60
+            elif thesis.get("trade_thesis_score", 0) >= 50:
+                effective_psych_score = 50
+            elif thesis.get("direction", "UNKNOWN") in ("LONG", "SHORT"):
+                effective_psych_score = 30
+            else:
+                effective_psych_score = 0
+        else:
+            effective_psychology_thesis = psychology_thesis_str
+            effective_psych_score = psych_score
+
+        # Use thesis entry/stop/target if pattern has none
+        effective_entry = p.get("entry") or (thesis.get("ideal_entry") if thesis else None)
+        effective_stop = p.get("stop") or (thesis.get("stop") if thesis else None)
+        effective_target = p.get("target_2") or (thesis.get("final_target") if thesis else None)
+        effective_rr = rr_str if rr_raw else (str(thesis.get("current_rr", "N/A")) if thesis else "N/A")
+        effective_rr_val = rr_val if rr_raw else (thesis.get("current_rr", 0) if thesis else 0.0)
 
         classified.append({
             "symbol": sym, "timeframe": tf,
             "pattern_id": p.get("pattern_id", ""),
             "pattern_name": p.get("pattern_name", ""),
-            "direction": p.get("direction", "UNKNOWN"),
-            "entry": p.get("entry"), "stop": p.get("stop"),
-            "target": p.get("target_2"),
-            "current_rr": rr_str, "rr_value": rr_val,
-            "psychology_score": psych_score,
+            "direction": effective_direction,
+            "entry": effective_entry, "stop": effective_stop,
+            "target": effective_target,
+            "current_rr": effective_rr, "rr_value": effective_rr_val,
+            "psychology_score": effective_psych_score,
             "trap_score": trap_score, "volume_score": vol_score,
             "structure_score": struct_score, "liquidity_score": liq_score,
-            "psychology_thesis": thesis,
+            "psychology_thesis": effective_psychology_thesis,
             "bucket": bucket, "lifecycle": lifecycle,
             "rejection_reason": rejection, "next_step": next_step,
             "required_entry_for_rr4": required_entry,
@@ -693,6 +1140,14 @@ def run_diagnostics() -> dict:
             "sweep": raw_data["sweep"],
             "compression": raw_data["compression"],
             "relative_momentum": raw_data["relative_momentum"],
+            # Thesis fields
+            "thesis_type": thesis.get("thesis_type", "NONE") if thesis else "NONE",
+            "trade_thesis_score": thesis.get("trade_thesis_score", 0) if thesis else 0,
+            "thesis_ideal_entry": thesis.get("ideal_entry") if thesis else None,
+            "thesis_stop": thesis.get("stop") if thesis else None,
+            "thesis_target": thesis.get("final_target") if thesis else None,
+            "thesis_invalidation": thesis.get("invalidation", "") if thesis else "",
+            "thesis_bucket": thesis.get("bucket", "") if thesis else "",
         })
 
     # Sort by actionability score descending
@@ -730,6 +1185,12 @@ def run_diagnostics() -> dict:
     observe_count = sum(1 for c in classified if c["raw_anomaly_score"] >= RAW_ANOMALY_OBSERVE_MIN and c["raw_anomaly_score"] < RAW_ANOMALY_NEAR_MISS_MIN and c["bucket"] == "REJECTED")
     dead_setup_count = lifecycle_counts.get("DEAD_SETUP", 0)
 
+    # Count directional theses
+    long_theses = sum(1 for c in classified if c.get("direction") == "LONG" and c.get("thesis_type", "NONE") != "NONE")
+    short_theses = sum(1 for c in classified if c.get("direction") == "SHORT" and c.get("thesis_type", "NONE") != "NONE")
+    unknown_theses = sum(1 for c in classified if c.get("thesis_type", "NONE") != "NONE" and c.get("direction", "UNKNOWN") == "UNKNOWN")
+    directional_theses = long_theses + short_theses
+
     report = {
         "mode": "near_miss_diagnostics",
         "research_only": True,
@@ -739,9 +1200,15 @@ def run_diagnostics() -> dict:
         "total_raw_contracts": total_contracts,
         "scan_symbols": scan_symbols,
         "symbol_timeframes_scanned": st_scanned,
+        "excluded_non_crypto": crypto_excluded,
+        "crypto_contracts_scanned": total_contracts - crypto_excluded if crypto_excluded else total_contracts,
         "total_patterns_analyzed": len(patterns),
         "formal_dux_traps_detected": formal_traps,
         "raw_anomalies_detected": total_raw_anomalies,
+        "directional_theses_created": directional_theses,
+        "long_theses": long_theses,
+        "short_theses": short_theses,
+        "unknown_theses": unknown_theses,
         "bucket_counts": bucket_counts,
         "rejection_reason_counts": rejection_counts,
         "raw_anomaly_counts": raw_anomaly_counts,
@@ -794,6 +1261,12 @@ def _write_watchlist_jsonl(watchlist: list[dict]):
                     "next_step": c.get("next_step", ""),
                     "raw_anomaly_score": c.get("raw_anomaly_score", 0),
                     "top_anomaly": c.get("top_anomaly", ""),
+                    "thesis_type": c.get("thesis_type", ""),
+                    "trade_thesis_score": c.get("trade_thesis_score", 0),
+                    "thesis_ideal_entry": c.get("thesis_ideal_entry"),
+                    "thesis_stop": c.get("thesis_stop"),
+                    "thesis_target": c.get("thesis_target"),
+                    "thesis_invalidation": c.get("thesis_invalidation", ""),
                 }
                 f.write(json.dumps(entry) + "\n")
                 seen_keys.add(key)
@@ -808,12 +1281,18 @@ def _write_text_report(report: dict, watchlist: list[dict],
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
-        f"  BingX contracts:        {report['total_raw_contracts']}",
-        f"  Scan symbols:           {report['scan_symbols']}",
-        f"  Symbol-timeframes:      {report['symbol_timeframes_scanned']}",
+        f"  BingX contracts:         {report['total_raw_contracts']}",
+        f"  Excluded non-crypto:     {report.get('excluded_non_crypto', 0)}",
+        f"  Crypto contracts:        {report.get('crypto_contracts_scanned', report['total_raw_contracts'])}",
+        f"  Scan symbols:            {report['scan_symbols']}",
+        f"  Symbol-timeframes:       {report['symbol_timeframes_scanned']}",
         f"  Total patterns analyzed: {report['total_patterns_analyzed']}",
-        f"  Formal Dux traps:       {report['formal_dux_traps_detected']}",
-        f"  Raw anomalies:          {report['raw_anomalies_detected']}",
+        f"  Formal Dux traps:        {report['formal_dux_traps_detected']}",
+        f"  Raw anomalies:           {report['raw_anomalies_detected']}",
+        f"  Directional theses:      {report.get('directional_theses_created', 0)}",
+        f"    LONG theses:           {report.get('long_theses', 0)}",
+        f"    SHORT theses:          {report.get('short_theses', 0)}",
+        f"    UNKNOWN/observe-only:  {report.get('unknown_theses', 0)}",
         "",
         "  BUCKET BREAKDOWN:",
         f"    EXECUTABLE_CANDIDATE:    {report['executable_candidate_count']}",
@@ -843,13 +1322,20 @@ def _write_text_report(report: dict, watchlist: list[dict],
     if best_watchlist:
         lines += [
             "  BEST WATCHLIST CANDIDATE:",
-            f"    {best_watchlist.get('pattern_name', 'N/A')} on {best_watchlist['symbol']} {best_watchlist['timeframe']}",
+            f"    {best_watchlist.get('pattern_name', best_watchlist.get('thesis_type', 'N/A'))} on {best_watchlist['symbol']} {best_watchlist['timeframe']}",
             f"    Direction: {best_watchlist.get('direction', 'N/A')}  Bucket: {best_watchlist['bucket']}",
+            f"    Thesis Type: {best_watchlist.get('thesis_type', 'N/A')}",
             f"    Psychology Score: {best_watchlist.get('psychology_score', 'N/A')}",
             f"    Raw Anomaly Score: {best_watchlist.get('raw_anomaly_score', 0)}",
+            f"    Thesis Score: {best_watchlist.get('trade_thesis_score', 0)}",
             f"    Top Anomaly: {best_watchlist.get('top_anomaly', 'N/A')}",
             f"    Current RR: 1:{best_watchlist.get('current_rr', 'N/A')}",
-            f"    What must happen next: {best_watchlist.get('next_step', '')}",
+            f"    Ideal Entry: {best_watchlist.get('thesis_ideal_entry', 'N/A')}",
+            f"    Stop: {best_watchlist.get('thesis_stop', 'N/A')}",
+            f"    Target: {best_watchlist.get('thesis_target', 'N/A')}",
+            f"    Invalidation: {best_watchlist.get('thesis_invalidation', 'N/A')}",
+            f"    Require entry for RR 4: {best_watchlist.get('required_entry_for_rr4', 'N/A')}",
+            f"    What must happen next: {best_watchlist.get('next_step', best_watchlist.get('what_must_happen_next', ''))}",
             "",
         ]
 
@@ -857,18 +1343,21 @@ def _write_text_report(report: dict, watchlist: list[dict],
         lines += [
             "  TOP 30 REAL WATCHLIST:",
             "",
-            "  {:<3s} {:<16s} {:<6s} {:<24s} {:<4s} {:<18s} {:<5s} {:<6s} {:s}".format(
-                "Rk", "Symbol", "TF", "Pattern", "Dir", "Bucket", "Psych", "RR", "Anomaly"),
-            "  " + "-" * 110,
+            "  {:<3s} {:<14s} {:<5s} {:<14s} {:<4s} {:<14s} {:<5s} {:<5s} {:<5s} {:<12s} {:<30s}".format(
+                "Rk", "Symbol", "TF", "Thesis", "Dir", "Bucket", "Psych", "TScr", "RR", "Entry", "Next"),
+            "  " + "-" * 130,
         ]
         for c in watchlist:
             d = c.get("direction", "N/A")[:4] if c.get("direction") else "N/A"
             psych = str(c.get("psychology_score", "N/A")) if c.get("psychology_score") is not None else "N/A"
             rr = str(c.get("current_rr", "N/A")) if c.get("current_rr") else "N/A"
-            top_a = c.get("top_anomaly", "")[:12] if c.get("top_anomaly") else "N/A"
-            lines.append("  {:<3d} {:<16s} {:<6s} {:<24s} {:<4s} {:<18s} {:<5s} {:<6s} {:s}".format(
-                c["rank"], c["symbol"], c["timeframe"], c.get("pattern_name", "")[:24],
-                d, c["bucket"], psych, rr, top_a))
+            thesis_type = c.get("thesis_type", c.get("top_anomaly", ""))[:14] if c.get("thesis_type") != "NONE" else c.get("top_anomaly", "N/A")[:14]
+            tscore = str(c.get("trade_thesis_score", "N/A"))
+            entry_str = str(c.get("thesis_ideal_entry", c.get("entry", "")) or "")[:12]
+            next_step = c.get("thesis_invalidation", c.get("next_step", ""))[:30]
+            lines.append("  {:<3d} {:<14s} {:<5s} {:<14s} {:<4s} {:<14s} {:<5s} {:<5s} {:<5s} {:<12s} {:<30s}".format(
+                c["rank"], c["symbol"][:14], c["timeframe"][:5],
+                thesis_type, d, c["bucket"], psych, tscore, rr, entry_str, next_step))
         lines.append("")
     else:
         lines += [

@@ -90,8 +90,16 @@ def run_hourly_alert() -> dict:
     near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
 
     ts = datetime.now().isoformat()
+
+    # Crypto-only stats
+    crypto_excluded = universe.get("excluded_non_crypto", 0) if universe else 0
+    crypto_perps = (universe.get("active_usdt_perps", 0) - crypto_excluded) if universe else 0
+    directional_theses = near_miss.get("directional_theses_created", 0) if near_miss else 0
+    long_theses = near_miss.get("long_theses", 0) if near_miss else 0
+    short_theses = near_miss.get("short_theses", 0) if near_miss else 0
 
     # Extract fields
     dux_decision = dux.get("final_decision", "DO_NOT_TRADE") if dux else "DO_NOT_TRADE"
@@ -153,6 +161,11 @@ def run_hourly_alert() -> dict:
         "live_trading_enabled": False,
         "paper_trading_enabled": False,
         "bingx_contracts_discovered": total_contracts,
+        "crypto_only_perps": crypto_perps,
+        "excluded_non_crypto": crypto_excluded,
+        "directional_theses": directional_theses,
+        "long_theses": long_theses,
+        "short_theses": short_theses,
         "dux_scan_symbols": dux_scan_size,
         "symbol_timeframes_scanned": st_scanned,
         "symbol_timeframes_attempted": st_attempted,
@@ -239,6 +252,10 @@ def _write_text_report(report: dict, action: str, reason: str):
         "=" * 60,
         "",
         f"  BingX contracts discovered: {report['bingx_contracts_discovered']}",
+        f"  Excluded non-crypto:        {report.get('excluded_non_crypto', 0)}",
+        f"  Crypto-only perps:          {report.get('crypto_only_perps', 0)}",
+        f"  Directional theses:         {report.get('directional_theses', 0)}",
+        f"    LONG/SHORT:               {report.get('long_theses', 0)}/{report.get('short_theses', 0)}",
         f"  Dux scan symbols:           {report['dux_scan_symbols']}",
         f"  Symbol-timeframes scanned:  {report['symbol_timeframes_scanned']}",
         f"  Symbol-timeframes attempted: {report.get('symbol_timeframes_attempted', report['symbol_timeframes_scanned'])}",

@@ -27,6 +27,59 @@ KNOWN_MEMECOINS = {
 }
 KNOWN_MAJORS = {"BTC-USDT", "ETH-USDT", "SOL-USDT"}
 
+# Non-crypto / synthetic symbol filters
+KNOWN_NON_CRYPTO_PREFIXES = {
+    "NCSK", "NCCO", "NCSI", "NCFX",
+    "SOXL", "TSLA", "TSL", "NVDA", "NBIS",
+    "AMD", "DRAM", "AAPL", "META", "MSFT", "GOOGL", "AMZN", "MSTR",
+    "COIN", "MARA", "EUR", "GBP", "JPY", "XAU", "XAG", "XPT", "XPD",
+}
+KNOWN_NON_CRYPTO_SYMBOLS = {
+    "SOXL-USDT", "TSLA-USDT", "TSL-USDT", "NVDA-USDT", "NBIS-USDT",
+    "AMD-USDT", "DRAM-USDT", "AAPL-USDT", "META-USDT", "MSFT-USDT",
+    "GOOGL-USDT", "AMZN-USDT", "MSTR-USDT", "COIN-USDT", "MARA-USDT",
+    "EURUSDT", "GBPUSDT", "JPYUSDT", "XAUUSDT", "XAGUSDT",
+}
+
+KNOWN_STOCK_PATTERNS = [
+    "NCSK", "NCCO", "NCSI", "SOXL", "TSLA", "TSL", "NVDA", "NBIS",
+    "AMD", "DRAM", "AAPL", "META", "MSFT", "GOOGL", "AMZN", "MSTR",
+    "COIN", "MARA", "EUR", "GBP", "JPY", "XAU", "XAG",
+]
+
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    """Check if a symbol is a real crypto USDT perpetual (not stock/forex/commodity synthetic)."""
+    base = symbol.replace("-USDT", "").replace("USDT", "")
+    # Check exact non-crypto list
+    if symbol in KNOWN_NON_CRYPTO_SYMBOLS:
+        return False
+    # Check prefixes that are known non-crypto
+    for prefix in KNOWN_NON_CRYPTO_PREFIXES:
+        if base.startswith(prefix):
+            # Skip BTC prefix check — it's valid crypto
+            if prefix == "BTC":
+                continue
+            return False
+    # Check stock patterns
+    for pat in KNOWN_STOCK_PATTERNS:
+        if base.startswith(pat):
+            return False
+    return True
+
+
+def _filter_crypto_only(contracts: list[dict]) -> tuple[list[dict], int]:
+    """Filter contracts to crypto-only USDT perpetuals. Returns (filtered, excluded_count)."""
+    crypto = []
+    excluded = 0
+    for c in contracts:
+        sym = c.get("symbol", "")
+        if _is_crypto_symbol(sym):
+            crypto.append(c)
+        else:
+            excluded += 1
+    return crypto, excluded
+
 FALLBACK_UNIVERSE: list[dict[str, Any]] = [
     {"symbol": s, "base": s.split("-")[0], "quote": "USDT", "contract_type": "perpetual"}
     for s in sorted(KNOWN_MEMECOINS | KNOWN_MAJORS)
@@ -102,8 +155,10 @@ def load_universe() -> dict[str, Any]:
             "total_raw": 0, "active_usdt": len(FALLBACK_UNIVERSE)}
 
 
-def build_scan_universe(contracts: list[dict]) -> dict[str, Any]:
+def build_scan_universe(contracts: list[dict], crypto_only: bool = True) -> dict[str, Any]:
     """Build ranked scan universe of at least SCAN_UNIVERSE_TARGET symbols."""
+    if crypto_only:
+        contracts, _ = _filter_crypto_only(contracts)
     memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
     major_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MAJORS})
     priority = set(memecoin_syms + major_syms)
@@ -138,7 +193,7 @@ def build_scan_universe(contracts: list[dict]) -> dict[str, Any]:
     }
 
 
-def build_adaptive_universe(contracts: list[dict]) -> dict[str, Any]:
+def build_adaptive_universe(contracts: list[dict], crypto_only: bool = True) -> dict[str, Any]:
     """Build adaptive 3-tier scan universe from ranked contracts.
     
     Tier A:  Top 200 by volume      → 5m, 15m, 30m, 1h
@@ -148,6 +203,10 @@ def build_adaptive_universe(contracts: list[dict]) -> dict[str, Any]:
     Returns dict with tier breakdown, timeframes, and symbol list.
     Minimum target: 400 symbols. Falls back gracefully if fewer contracts exist.
     """
+    if crypto_only:
+        contracts, excluded_count = _filter_crypto_only(contracts)
+    else:
+        excluded_count = 0
     memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
     major_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MAJORS})
     priority = set(memecoin_syms + major_syms)
@@ -199,6 +258,7 @@ def build_adaptive_universe(contracts: list[dict]) -> dict[str, Any]:
         "memecoins": memecoin_syms,
         "majors": major_syms,
         "target": 400,
+        "excluded_non_crypto": excluded_count,
         "tier_a": {
             "symbols": [c["symbol"] for c in tier_a_raw],
             "size": len(tier_a_raw),
@@ -241,12 +301,14 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
     tier_b = adaptive.get("tier_b", {}) if adaptive else {}
     tier_c = adaptive.get("tier_c", {}) if adaptive else {}
 
+    excluded_count = adaptive.get("excluded_non_crypto", 0) if adaptive else 0
     json_report = {
         "mode": "bingx_universe",
         "timestamp": __import__("datetime").datetime.now().isoformat(),
         "source": universe_result["source"],
         "total_raw_contracts": universe_result.get("total_raw", 0),
         "active_usdt_perps": universe_result.get("active_usdt", 0),
+        "excluded_non_crypto": excluded_count,
         "scan_universe_size": scan["size"],
         "scan_universe_target": scan["target"],
         "memecoin_count": len(scan["memecoins"]),
@@ -265,19 +327,22 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
     with open(JSON_PATH, "w") as f:
         json.dump(json_report, f, indent=2)
 
+    excluded_count = adaptive.get("excluded_non_crypto", 0) if adaptive else 0
     lines = [
         "=" * 60,
         "  BINGX TRADABLE UNIVERSE",
         f"  {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
-        f"  Source:              {universe_result['source']}",
-        f"  Total raw contracts: {universe_result.get('total_raw', 0)}",
-        f"  Active USDT perps:   {universe_result.get('active_usdt', 0)}",
-        f"  Scan target:         {scan['target']}+",
-        f"  Scan universe:       {scan['size']}",
-        f"  Memecoin candidates: {len(scan['memecoins'])}",
-        f"  Major controls:      {len(scan['majors'])}",
+        f"  Source:                  {universe_result['source']}",
+        f"  Total raw contracts:     {universe_result.get('total_raw', 0)}",
+        f"  Active USDT perps:       {universe_result.get('active_usdt', 0)}",
+        f"  Excluded non-crypto:     {excluded_count}",
+        f"  Crypto USDT perps:       {universe_result.get('active_usdt', 0) - excluded_count}",
+        f"  Scan target:             {scan['target']}+",
+        f"  Scan universe:           {scan['size']}",
+        f"  Memecoin candidates:     {len(scan['memecoins'])}",
+        f"  Major controls:          {len(scan['majors'])}",
         "",
     ]
     if adaptive:

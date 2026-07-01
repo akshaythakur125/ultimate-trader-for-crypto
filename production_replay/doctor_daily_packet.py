@@ -334,7 +334,17 @@ def main():
         lc = near_miss.get("lifecycle_counts", {})
         best_wl = near_miss.get("best_watchlist_candidate")
         top_rej = near_miss.get("top_rejection_reason", "N/A")
+        crypto_excluded = near_miss.get("excluded_non_crypto", 0)
+        directional = near_miss.get("directional_theses_created", 0)
+        long_ct = near_miss.get("long_theses", 0)
+        short_ct = near_miss.get("short_theses", 0)
         near_miss_lines = [
+            "",
+            "  CRYPTO-ONLY + THESIS SECTION:",
+            f"    Excluded non-crypto symbols: {crypto_excluded}",
+            f"    Directional theses:         {directional}",
+            f"      LONG theses:              {long_ct}",
+            f"      SHORT theses:             {short_ct}",
             "",
             "  NEAR-MISS DIAGNOSTICS:",
             f"    Executable candidates:    {bkt.get('EXECUTABLE_CANDIDATE', 0)}",
@@ -351,9 +361,16 @@ def main():
             if count > 0:
                 near_miss_lines.append(f"      Lifecycle {stage}: {count}")
         if best_wl:
+            thesis_type = best_wl.get("thesis_type", best_wl.get("pattern_name", "N/A"))
+            direction = best_wl.get("direction", "N/A")
+            psy = best_wl.get("psychology_score", "N/A")
+            rr = best_wl.get("current_rr", "N/A")
+            nxt = best_wl.get("next_step", best_wl.get("thesis_invalidation", "N/A"))
+            thesis_score = best_wl.get("trade_thesis_score", "N/A")
             near_miss_lines += [
-                f"    Best watchlist: {best_wl.get('pattern_name', 'N/A')} on {best_wl.get('symbol', 'N/A')} {best_wl.get('timeframe', 'N/A')}",
-                f"    Next steps: {best_wl.get('next_step', 'N/A')}",
+                f"    Best watchlist: {thesis_type} on {best_wl.get('symbol', 'N/A')} {best_wl.get('timeframe', 'N/A')}",
+                f"    Direction: {direction}  RR: {rr}  Psych: {psy}  Thesis Score: {thesis_score}",
+                f"    What must happen next: {nxt}",
             ]
     else:
         near_miss_lines = ["", "  NEAR-MISS DIAGNOSTICS: MISSING (no report)", ""]
@@ -580,6 +597,11 @@ def main():
             "raw_trap_detected": near_miss.get("bucket_counts", {}).get("RAW_TRAP_DETECTED", 0) if near_miss else 0,
             "top_rejection_reason": near_miss.get("top_rejection_reason") if near_miss else None,
             "best_watchlist_candidate": near_miss.get("best_watchlist_candidate") if near_miss else None,
+            "excluded_non_crypto": near_miss.get("excluded_non_crypto", 0) if near_miss else 0,
+            "crypto_contracts_scanned": near_miss.get("crypto_contracts_scanned", 0) if near_miss else 0,
+            "directional_theses": near_miss.get("directional_theses_created", 0) if near_miss else 0,
+            "long_theses": near_miss.get("long_theses", 0) if near_miss else 0,
+            "short_theses": near_miss.get("short_theses", 0) if near_miss else 0,
         } if near_miss else None,
         "bingx_shadow_execution": {
             "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",

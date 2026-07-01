@@ -3638,3 +3638,320 @@ def test_psychology_memory_cap_at_200():
     ]}
     count = _record_scan_snapshot(psych_report)
     assert count <= 200, f"records per run exceeded 200: {count}"
+
+
+# --- Phase 46: Crypto-Only Universe Filter + Anomaly-to-Thesis Engine ---
+
+def test_crypto_filter_excludes_ncsk():
+    from production_replay.bingx_universe import _is_crypto_symbol, _filter_crypto_only
+    assert _is_crypto_symbol("NCSK-USDT") is False
+    assert _is_crypto_symbol("SOXL-USDT") is False
+    contracts = [{"symbol": "NCSK-USDT"}, {"symbol": "BTC-USDT"}, {"symbol": "ETH-USDT"}]
+    filtered, excluded = _filter_crypto_only(contracts)
+    assert excluded >= 1
+    assert all(c["symbol"] in ("BTC-USDT", "ETH-USDT") for c in filtered)
+
+
+def test_crypto_filter_retains_btc_eth_sol():
+    from production_replay.bingx_universe import _is_crypto_symbol
+    assert _is_crypto_symbol("BTC-USDT") is True
+    assert _is_crypto_symbol("ETH-USDT") is True
+    assert _is_crypto_symbol("SOL-USDT") is True
+
+
+def test_crypto_filter_retains_memecoins():
+    from production_replay.bingx_universe import _is_crypto_symbol
+    for sym in ("DOGE-USDT", "PEPE-USDT", "WIF-USDT", "BONK-USDT", "FLOKI-USDT"):
+        assert _is_crypto_symbol(sym) is True, f"{sym} should be crypto"
+
+
+def test_crypto_filter_excludes_stock_synthetics():
+    from production_replay.bingx_universe import _is_crypto_symbol
+    for sym in ("TSLA-USDT", "NVDA-USDT", "AMD-USDT", "AAPL-USDT", "META-USDT",
+                "MSFT-USDT", "GOOGL-USDT", "AMZN-USDT", "MSTR-USDT", "COIN-USDT", "MARA-USDT"):
+        assert _is_crypto_symbol(sym) is False, f"{sym} should be excluded as non-crypto"
+
+
+def test_crypto_filter_excludes_forex_commodity():
+    from production_replay.bingx_universe import _is_crypto_symbol
+    for sym in ("EURUSDT", "GBPUSDT", "JPYUSDT", "XAUUSDT", "XAGUSDT"):
+        assert _is_crypto_symbol(sym) is False, f"{sym} should be excluded as non-crypto"
+
+
+def test_build_trade_thesis_upper_wick_extension_short():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 102.0, "low": 99.5, "close": 101.5, "volume": 1000},
+        {"open": 101.5, "high": 104.0, "low": 101.0, "close": 103.5, "volume": 1500},
+        {"open": 103.5, "high": 106.0, "low": 103.0, "close": 105.0, "volume": 2000},
+        {"open": 105.0, "high": 108.0, "low": 104.5, "close": 107.0, "volume": 2500},
+        {"open": 107.0, "high": 110.0, "low": 106.0, "close": 106.5, "volume": 3000},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 65,
+        "wick_rejection": 18, "extension": 15, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("BTC-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] == "SHORT", f"expected SHORT, got {thesis['direction']}"
+    assert thesis["thesis_type"] == "UPPER_WICK_EXTENSION" or "WICK" in thesis["thesis_type"]
+    assert thesis["ideal_entry"] is not None
+    assert thesis["stop"] is not None
+    assert thesis["current_rr"] > 0
+
+
+def test_build_trade_thesis_lower_wick_dump_long():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 110.0, "high": 110.5, "low": 108.0, "close": 108.5, "volume": 3000},
+        {"open": 108.5, "high": 109.0, "low": 106.0, "close": 106.5, "volume": 2500},
+        {"open": 106.5, "high": 107.0, "low": 104.0, "close": 104.5, "volume": 2000},
+        {"open": 104.5, "high": 105.0, "low": 102.0, "close": 102.5, "volume": 1500},
+        {"open": 102.0, "high": 104.0, "low": 100.0, "close": 103.5, "volume": 3500},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 60,
+        "wick_rejection": 18, "extension": 12, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("ETH-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] == "LONG", f"expected LONG, got {thesis['direction']}"
+    assert thesis["ideal_entry"] is not None
+    assert thesis["stop"] is not None
+    assert thesis["current_rr"] > 0
+
+
+def test_build_trade_thesis_sweep_high_short():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [{"open": 100 + i * 0.5, "high": 101 + i * 0.5, "low": 99 + i * 0.5, "close": 100.5 + i * 0.5, "volume": 1000} for i in range(14)]
+    # Sweep candle: high above range high, close back below
+    candles.append({"open": 108.0, "high": 112.0, "low": 106.0, "close": 107.0, "volume": 5000})
+    anomaly = {
+        "raw_anomaly_score": 55,
+        "wick_rejection": 0, "extension": 0, "sweep": 18,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "sweep", "anomalies": ["sweep"],
+    }
+    thesis = build_trade_thesis("SOL-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] == "SHORT", f"expected SHORT, got {thesis['direction']}"
+    assert thesis["ideal_entry"] is not None
+    assert thesis["stop"] is not None
+
+
+def test_build_trade_thesis_sweep_low_long():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [{"open": 100 - i * 0.5, "high": 101 - i * 0.5, "low": 99 - i * 0.5, "close": 100.5 - i * 0.5, "volume": 1000} for i in range(14)]
+    # Sweep candle: low below range low, close back above
+    candles.append({"open": 92.0, "high": 96.0, "low": 88.0, "close": 95.0, "volume": 5000})
+    anomaly = {
+        "raw_anomaly_score": 55,
+        "wick_rejection": 0, "extension": 0, "sweep": 18,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "sweep", "anomalies": ["sweep"],
+    }
+    thesis = build_trade_thesis("PEPE-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] == "LONG", f"expected LONG, got {thesis['direction']}"
+    assert thesis["ideal_entry"] is not None
+    assert thesis["stop"] is not None
+
+
+def test_build_trade_thesis_compression_observe_only():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 500},
+        {"open": 100.0, "high": 100.6, "low": 99.6, "close": 100.1, "volume": 450},
+        {"open": 100.1, "high": 100.7, "low": 99.5, "close": 100.2, "volume": 480},
+        {"open": 100.2, "high": 100.8, "low": 99.8, "close": 100.3, "volume": 520},
+        {"open": 100.3, "high": 100.9, "low": 99.7, "close": 100.1, "volume": 490},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 18,
+        "wick_rejection": 0, "extension": 0, "sweep": 0,
+        "compression": 18, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "compression", "anomalies": ["compression"],
+    }
+    thesis = build_trade_thesis("DOGE-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] == "UNKNOWN", f"expected UNKNOWN, got {thesis['direction']}"
+    assert thesis["thesis_type"] == "COMPRESSION"
+    assert thesis.get("bucket") == "OBSERVE_ONLY"
+
+
+def test_build_trade_thesis_generates_entry_stop_target():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        {"open": 100.5, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 1200},
+        {"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1400},
+        {"open": 102.5, "high": 104.0, "low": 102.0, "close": 103.5, "volume": 1600},
+        {"open": 103.5, "high": 106.0, "low": 103.0, "close": 104.0, "volume": 3000},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 60,
+        "wick_rejection": 18, "extension": 15, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("WIF-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] != "UNKNOWN"
+    assert thesis["ideal_entry"] is not None, "entry must be generated"
+    assert thesis["stop"] is not None, "stop must be generated"
+    assert thesis["final_target"] is not None, "target must be generated"
+
+
+def test_build_trade_thesis_calculates_rr():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        {"open": 100.5, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 1200},
+        {"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1400},
+        {"open": 102.5, "high": 104.0, "low": 102.0, "close": 103.5, "volume": 1600},
+        {"open": 103.5, "high": 106.0, "low": 103.0, "close": 104.0, "volume": 3000},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 65,
+        "wick_rejection": 18, "extension": 20, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("BONK-USDT", "1h", candles, anomaly)
+    assert thesis["current_rr"] > 0, "RR must be > 0"
+
+
+def test_build_trade_thesis_psychology_score_positive_for_trap():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        {"open": 100.5, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 1200},
+        {"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1400},
+        {"open": 102.5, "high": 104.0, "low": 102.0, "close": 103.5, "volume": 1600},
+        {"open": 103.5, "high": 106.0, "low": 103.0, "close": 104.0, "volume": 3000},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 65,
+        "wick_rejection": 18, "extension": 20, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("FLOKI-USDT", "1h", candles, anomaly)
+    assert thesis["psychology_thesis"], "psychology thesis must exist for trapped pattern"
+    assert "rejected" in thesis["psychology_thesis"].lower() or "trapped" in thesis["psychology_thesis"].lower() or "exhaustion" in thesis["psychology_thesis"].lower()
+
+
+def test_build_trade_thesis_direction_not_unknown_for_clear_setup():
+    from production_replay.near_miss_diagnostics import build_trade_thesis
+    candles = [
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        {"open": 100.5, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 1200},
+        {"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1400},
+        {"open": 102.5, "high": 104.0, "low": 102.0, "close": 103.5, "volume": 1600},
+        {"open": 103.5, "high": 106.0, "low": 103.0, "close": 104.0, "volume": 3000},
+    ]
+    anomaly = {
+        "raw_anomaly_score": 65,
+        "wick_rejection": 18, "extension": 20, "sweep": 0,
+        "compression": 0, "volatility_expansion": 0, "volume_anomaly": 0,
+        "top_anomaly": "wick_rejection", "anomalies": ["wick_rejection", "extension"],
+    }
+    thesis = build_trade_thesis("TURBO-USDT", "1h", candles, anomaly)
+    assert thesis["direction"] != "UNKNOWN", "clear wick rejection must produce direction"
+
+
+def test_phase_46_no_live_trading_enabled():
+    from production_replay.launch_check import load_config
+    config = load_config()
+    assert config.get("live_trading") is False
+    assert config.get("paper_trading") is False
+
+
+def test_phase_46_no_order_placement():
+    import ast
+    for mod in ["near_miss_diagnostics", "bingx_universe"]:
+        path = f"production_replay/{mod}.py"
+        with open(path) as f:
+            tree = ast.parse(f.read())
+        forbidden = {"place_order", "cancel_order", "set_leverage", "withdraw", "transfer"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                assert node.name not in forbidden, f"forbidden function {node.name} in {mod}"
+
+
+def test_phase_46_no_withdrawal():
+    import ast
+    for mod in ["near_miss_diagnostics", "bingx_universe"]:
+        path = f"production_replay/{mod}.py"
+        with open(path) as f:
+            source = f.read()
+        assert "withdraw" not in source.lower().replace("withdrawal", "")
+        assert "transfer" not in source.lower()
+
+
+def test_phase_46_no_approved_output():
+    import io, contextlib
+    from production_replay.near_miss_diagnostics import main as nm_main
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nm_main()
+    out = buf.getvalue()
+    assert "APPROVED" not in out
+
+
+def test_phase_46_safety_lock_passes():
+    from production_replay.safety_lock import run_safety_lock
+    rc = run_safety_lock()
+    assert rc.get("pass")
+
+
+def test_phase_46_launch_check_passes():
+    from production_replay.launch_check import run_launch_check
+    results = run_launch_check()
+    reason = results.get("reason", "")
+    assert results.get("verdict") != "BLOCKED" or "git_tree_clean" in reason
+
+
+def test_bingx_universe_report_includes_excluded_non_crypto():
+    import json
+    path = "deploy_results/bingx_universe.json"
+    if not os.path.exists(path):
+        pytest.skip("universe report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "excluded_non_crypto" in report
+
+
+def test_near_miss_report_includes_crypto_and_thesis_counts():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("near miss report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "excluded_non_crypto" in report
+    assert "crypto_contracts_scanned" in report
+    assert "directional_theses_created" in report
+    assert "long_theses" in report
+    assert "short_theses" in report
+
+
+def test_hourly_alert_includes_crypto_and_thesis_fields():
+    import json
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    path = "deploy_results/hourly_status.json"
+    with open(path) as f:
+        report2 = json.load(f)
+    for r in (report, report2):
+        assert "crypto_only_perps" in r or "excluded_non_crypto" in r
+        assert "directional_theses" in r or "long_theses" in r
+
+
+def test_doctor_packet_includes_crypto_thesis_section():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = "deploy_results/doctor_daily_packet.json"
+    with open(path) as f:
+        report = json.load(f)
+    nm = report.get("near_miss_diagnostics", {})
+    assert "excluded_non_crypto" in nm or "directional_theses" in nm
