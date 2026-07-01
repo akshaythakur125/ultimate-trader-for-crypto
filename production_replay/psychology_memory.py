@@ -50,9 +50,18 @@ def _append_jsonl(path: str, entry: dict):
 
 
 def _record_scan_snapshot(psych: dict):
-    top = psych.get("top_ranked", [])[:150]
+    top = psych.get("top_ranked", [])[:200]
     best = psych.get("best_candidate")
     ts = datetime.now().isoformat()
+
+    # Also load near-miss watchlist candidates for memory
+    nm_path = os.path.join(RESULTS_DIR, "near_miss_report.json")
+    try:
+        with open(nm_path) as f:
+            nm_report = json.load(f)
+        nm_watchlist = nm_report.get("top_30_watchlist", [])[:50]
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        nm_watchlist = []
 
     records = []
     for c in top:
@@ -76,6 +85,38 @@ def _record_scan_snapshot(psych: dict):
             "price_at_scan": c.get("entry"),
             "outcome_evaluated": False,
         })
+    # Add near-miss watchlist records (bucket-filtered)
+    seen_syms = set()
+    for c in nm_watchlist:
+        key = (c.get("symbol", ""), c.get("timeframe", ""), c.get("pattern_name", ""))
+        if key in seen_syms:
+            continue
+        seen_syms.add(key)
+        records.append({
+            "snapshot_ts": ts,
+            "symbol": c.get("symbol", ""),
+            "timeframe": c.get("timeframe", ""),
+            "direction": c.get("direction", ""),
+            "pattern_name": c.get("pattern_name", ""),
+            "psychology_thesis": c.get("psychology_thesis", ""),
+            "entry": c.get("entry"),
+            "stop": c.get("stop"),
+            "target_2": c.get("target", c.get("target_2")),
+            "rr_2": float(c.get("current_rr", 0)) if c.get("current_rr", "N/A") != "N/A" else None,
+            "psychology_score": c.get("psychology_score", 0),
+            "scores": {},
+            "verdict": c.get("bucket", "NEAR_MISS"),
+            "reject_reason": c.get("rejection_reason", ""),
+            "liquidity_warning": "ok",
+            "execution_warning": "none",
+            "price_at_scan": c.get("entry"),
+            "outcome_evaluated": False,
+            "bucket": c.get("bucket", "NEAR_MISS"),
+            "next_step": c.get("next_step", ""),
+        })
+    # Cap total records
+    records = records[:200]
+
     if best and best not in records:
         records.append({
             "snapshot_ts": ts,

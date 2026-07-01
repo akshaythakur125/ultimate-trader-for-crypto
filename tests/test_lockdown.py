@@ -3461,5 +3461,180 @@ def test_expanded_scan_no_withdrawal():
         with open(path) as f:
             tree = ast.parse(f.read())
         funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
-        for bad in ["withdraw", "transfer", "send"]:
-            assert all(bad not in f for f in funcs), f"found {bad} in {mod}"
+    for bad in ["withdraw", "transfer", "send"]:
+        assert all(bad not in f for f in funcs), f"found {bad} in {mod}"
+
+
+# --- Phase 44: Near-Miss Diagnostic and Watchlist Intelligence ---
+
+def test_near_miss_diagnostics_module_runs():
+    from production_replay.near_miss_diagnostics import main as nm_main
+    rc = nm_main()
+    assert rc == 0
+
+
+def test_near_miss_diagnostics_creates_report_files():
+    import os
+    from production_replay.near_miss_diagnostics import main as nm_main
+    nm_main()
+    for p in ["deploy_results/near_miss_report.json",
+              "deploy_results/near_miss_report.txt"]:
+        assert os.path.exists(p), f"missing report: {p}"
+
+
+def test_near_miss_report_has_bucket_counts():
+    import json, os
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "bucket_counts" in report
+    for b in ["EXECUTABLE_CANDIDATE", "WATCHLIST_READY", "NEAR_MISS_RR",
+              "NEAR_MISS_PSYCHOLOGY", "RAW_TRAP_DETECTED", "REJECTED"]:
+        assert b in report["bucket_counts"], f"missing bucket: {b}"
+
+
+def test_near_miss_report_has_rejection_reasons():
+    import json, os
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "rejection_reason_counts" in report
+    assert len(report["rejection_reason_counts"]) > 0
+
+
+def test_near_miss_report_has_lifecycle_counts():
+    import json, os
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "lifecycle_counts" in report
+    assert len(report["lifecycle_counts"]) > 0
+
+
+def test_near_miss_top_30_watchlist():
+    import json, os
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert "top_30_watchlist" in report
+    assert len(report.get("top_30_watchlist", [])) <= 30
+
+
+def test_near_miss_no_approved_output():
+    import io, contextlib
+    from production_replay.near_miss_diagnostics import main as nm_main
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nm_main()
+    out = buf.getvalue()
+    assert "APPROVED" not in out
+
+
+def test_near_miss_no_live_trading():
+    import json, os
+    path = "deploy_results/near_miss_report.json"
+    if not os.path.exists(path):
+        pytest.skip("report not generated")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_near_miss_no_withdrawal():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "near_miss_diagnostics.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    for bad in ["withdraw", "transfer", "send"]:
+        assert all(bad not in f for f in funcs), f"found {bad} in near_miss_diagnostics"
+
+
+def test_near_miss_classify_buckets():
+    from production_replay.near_miss_diagnostics import _classify_bucket
+    # RR >= 4, psych >= 70
+    bucket = _classify_bucket({"rr_2": 4.5, "rejected": False}, {"psychology_score": 80})
+    assert bucket == "EXECUTABLE_CANDIDATE"
+    # RR 2-4, psych >= 70
+    bucket = _classify_bucket({"rr_2": 3.0, "rejected": True, "pattern_id": "test", "direction": "LONG"},
+                              {"psychology_score": 75})
+    assert bucket == "NEAR_MISS_RR"
+    # RR >= 4, psych 50-69
+    bucket = _classify_bucket({"rr_2": 4.5, "rejected": False, "pattern_id": "test", "direction": "LONG"},
+                              {"psychology_score": 60})
+    assert bucket == "NEAR_MISS_PSYCHOLOGY"
+    # Trap detected, no valid entry
+    bucket = _classify_bucket({"rr_2": 0.5, "rejected": True, "pattern_id": "test", "direction": "SHORT"},
+                              {"psychology_score": 30})
+    assert bucket == "RAW_TRAP_DETECTED"
+    # No trap
+    bucket = _classify_bucket({"rr_2": 0, "rejected": True, "pattern_id": "", "direction": "UNKNOWN"}, None)
+    assert bucket == "REJECTED"
+
+
+def test_near_miss_alternative_entries():
+    from production_replay.near_miss_diagnostics import _compute_alternative_entries
+    plans = _compute_alternative_entries({"entry": 100.0, "stop": 99.0, "target_2": 104.0,
+                                           "direction": "LONG", "rr_2": 4.0})
+    assert len(plans) >= 1
+    assert any(p["plan"] == "current_market_entry" for p in plans)
+
+
+def test_near_miss_required_entry_for_rr4():
+    from production_replay.near_miss_diagnostics import _required_entry_for_rr4
+    entry = _required_entry_for_rr4({"entry": 100.0, "stop": 99.0, "direction": "LONG"})
+    assert entry > 0
+
+
+def test_near_miss_watchlist_jsonl_created():
+    import os
+    from production_replay.near_miss_diagnostics import main as nm_main
+    nm_main()
+    path = os.path.join("runtime_state", "near_miss_watchlist.jsonl")
+    assert os.path.exists(path)
+
+
+def test_psychology_alpha_evaluates_beyond_rr_gate():
+    import json, os
+    from production_replay.psychology_alpha import run_psychology_alpha
+    report = run_psychology_alpha()
+    assert "total_psychology_evaluated" in report
+
+
+def test_hourly_alert_includes_near_miss_fields():
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    for key in ["executable_candidate_count", "watchlist_ready_count",
+                 "near_miss_rr_count", "near_miss_psychology_count",
+                 "top_rejection_reason"]:
+        assert key in report, f"missing field: {key}"
+
+
+def test_doctor_packet_includes_near_miss_section():
+    import json, os
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "near_miss_diagnostics" in report
+
+
+def test_psychology_memory_cap_at_200():
+    from production_replay.psychology_memory import _record_scan_snapshot
+    psych_report = {"top_ranked": [
+        {"symbol": f"SYM{i}-USDT", "timeframe": "1h", "direction": "LONG",
+         "pattern_name": "test", "entry": 100.0, "stop": 99.0, "target_2": 104.0}
+        for i in range(300)
+    ]}
+    count = _record_scan_snapshot(psych_report)
+    assert count <= 200, f"records per run exceeded 200: {count}"

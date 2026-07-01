@@ -45,36 +45,32 @@ def _determine_final_action(
     execution_mode: str,
     position_open: bool = False,
     emergency: bool = False,
+    executable_count: int = 0,
+    watchlist_count: int = 0,
+    near_miss_count: int = 0,
 ) -> tuple[str, str]:
-    # Rule 0: emergency
     if emergency:
         return "EMERGENCY_EXIT_REQUIRED", "Emergency situation detected"
-
-    # Rule 0b: position open -> monitoring
     if position_open:
         return "POSITION_OPEN_MONITORING", "Live position open; continuous monitoring active"
 
-    # Rule 1: no alpha candidate -> DO_NOTHING
-    if alpha_score is None or alpha_score < 70:
-        return "DO_NOTHING", "No alpha candidate >= 70; no action needed"
-
-    # Rule 2: alpha >= 85, RR >= 4, live read_only -> REVIEW_NOW or LIVE_BLOCKED
-    if alpha_score >= 85 and rr_gate_pass > 0:
+    # Rule 1: executable + shadow ready
+    if executable_count > 0 and shadow_decision == "SHADOW_READY" and live_armed and execution_mode == "live_micro":
+        return "SHADOW_READY", f"{executable_count} executable candidate(s); shadow ready"
+    if executable_count > 0 and shadow_decision == "SHADOW_READY":
         if not live_armed or execution_mode != "live_micro":
-            if shadow_decision == "SHADOW_READY":
-                return "LIVE_BLOCKED", f"Alpha elite candidate (score {alpha_score}) but live execution blocked"
-            return "REVIEW_NOW", f"Alpha elite candidate (score {alpha_score}); manual review recommended"
-        return "SHADOW_READY", "Alpha elite candidate; shadow ready"
+            return "LIVE_BLOCKED", f"{executable_count} executable candidate(s) but live execution blocked (read_only mode)"
 
-    # Rule 3: alpha >= 70, RR >= 4 -> REVIEW_NOW
-    if alpha_score >= 70 and rr_gate_pass > 0:
-        return "REVIEW_NOW", f"Alpha candidate (score {alpha_score}); manual review recommended"
+    # Rule 2: watchlist or near-miss exists -> REVIEW_NOW
+    if watchlist_count > 0 or near_miss_count > 0:
+        reasons = []
+        if watchlist_count > 0:
+            reasons.append(f"{watchlist_count} watchlist-ready")
+        if near_miss_count > 0:
+            reasons.append(f"{near_miss_count} near-miss")
+        return "REVIEW_NOW", f"Diagnostic candidates found: {', '.join(reasons)}; manual review recommended"
 
-    # Rule 4: live blocked (check before shadow ready)
-    if shadow_decision == "SHADOW_READY" and (not live_armed or execution_mode != "live_micro"):
-        return "LIVE_BLOCKED", "Shadow ready but live execution blocked (read_only mode)"
-
-    # Rule 5: shadow ready and live armed
+    # Rule 3: shadow ready fallback
     if shadow_decision == "SHADOW_READY":
         return "SHADOW_READY", "Shadow order intent ready for execution"
 
@@ -91,6 +87,7 @@ def run_hourly_alert() -> dict:
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     memory = _read_json(os.path.join(RESULTS_DIR, "psychology_memory_report.json"))
+    near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
 
@@ -133,10 +130,20 @@ def run_hourly_alert() -> dict:
     position_open = position_monitor.get("position_found", False) if position_monitor else False
     emergency = position_monitor.get("emergency_status") == "CRITICAL" if position_monitor else False
 
+    executable_count = near_miss.get("executable_candidate_count", 0) if near_miss else 0
+    watchlist_count = near_miss.get("watchlist_ready_count", 0) if near_miss else 0
+    near_miss_rr_ct = near_miss.get("near_miss_rr_count", 0) if near_miss else 0
+    near_miss_psych_ct = near_miss.get("near_miss_psychology_count", 0) if near_miss else 0
+    near_miss_total = near_miss_rr_ct + near_miss_psych_ct
+    top_rejection = near_miss.get("top_rejection_reason", "N/A") if near_miss else "N/A"
+
     final_action, action_reason = _determine_final_action(
         dux_decision, rr_pass, alpha_score, alpha_decision,
         shadow_decision, live_decision, live_armed, execution_mode,
         position_open=position_open, emergency=emergency,
+        executable_count=executable_count,
+        watchlist_count=watchlist_count,
+        near_miss_count=near_miss_total,
     )
 
     report = {
@@ -155,6 +162,11 @@ def run_hourly_alert() -> dict:
         "tier_a_size": tier_a,
         "tier_b_size": tier_b,
         "tier_c_size": tier_c,
+        "executable_candidate_count": executable_count,
+        "watchlist_ready_count": watchlist_count,
+        "near_miss_rr_count": near_miss_rr_ct,
+        "near_miss_psychology_count": near_miss_psych_ct,
+        "top_rejection_reason": top_rejection,
         "rr_gate_pass_candidates": rr_pass,
         "alpha_score": alpha_score,
         "alpha_elite_candidates": alpha_elite,
@@ -253,6 +265,22 @@ def _write_text_report(report: dict, action: str, reason: str):
         lines += [f"  Psychology Score:   {psych_score}/100", ""]
     else:
         lines += ["  Psychology Score: NONE", ""]
+
+    exec_count = report.get("executable_candidate_count", 0)
+    wl_count = report.get("watchlist_ready_count", 0)
+    nm_rr = report.get("near_miss_rr_count", 0)
+    nm_psych = report.get("near_miss_psychology_count", 0)
+    top_rej = report.get("top_rejection_reason", "N/A")
+    if exec_count > 0 or wl_count > 0 or nm_rr > 0 or nm_psych > 0:
+        lines += [
+            "  NEAR-MISS DIAGNOSTICS:",
+            f"    Executable candidates:    {exec_count}",
+            f"    Watchlist-ready:          {wl_count}",
+            f"    Near-miss RR:             {nm_rr}",
+            f"    Near-miss psychology:     {nm_psych}",
+            f"    Top rejection reason:     {top_rej}",
+            "",
+        ]
 
     mem_records = report.get("memory_scan_records", 0)
     mem_outcomes = report.get("memory_outcomes", 0)

@@ -60,6 +60,7 @@ def main():
     _run_module("production_replay.alpha_intelligence")
     _run_module("production_replay.psychology_alpha")
     _run_module("production_replay.psychology_memory")
+    _run_module("production_replay.near_miss_diagnostics")
     _run_module("production_replay.bingx_shadow_executor")
     _run_module("production_replay.bingx_live_micro_executor")
     _run_module("production_replay.bingx_position_monitor", "--once")
@@ -72,6 +73,7 @@ def main():
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     memory = _read_json(os.path.join(RESULTS_DIR, "psychology_memory_report.json"))
+    near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
@@ -324,6 +326,38 @@ def main():
     else:
         memory_lines = ["", "  PSYCHOLOGY MEMORY: MISSING (no report)", ""]
 
+    # Near-miss diagnostics section
+    near_miss_lines = []
+    if near_miss:
+        bkt = near_miss.get("bucket_counts", {})
+        rej = near_miss.get("rejection_reason_counts", {})
+        lc = near_miss.get("lifecycle_counts", {})
+        best_wl = near_miss.get("best_watchlist_candidate")
+        top_rej = near_miss.get("top_rejection_reason", "N/A")
+        near_miss_lines = [
+            "",
+            "  NEAR-MISS DIAGNOSTICS:",
+            f"    Executable candidates:    {bkt.get('EXECUTABLE_CANDIDATE', 0)}",
+            f"    Watchlist-ready:          {bkt.get('WATCHLIST_READY', 0)}",
+            f"    Near-miss RR:             {bkt.get('NEAR_MISS_RR', 0)}",
+            f"    Near-miss psychology:     {bkt.get('NEAR_MISS_PSYCHOLOGY', 0)}",
+            f"    Raw trap detected:        {bkt.get('RAW_TRAP_DETECTED', 0)}",
+            f"    Top rejection reason:     {top_rej}",
+        ]
+        for reason, count in sorted(rej.items(), key=lambda x: -x[1]):
+            if count > 0:
+                near_miss_lines.append(f"      {reason}: {count}")
+        for stage, count in sorted(lc.items(), key=lambda x: -x[1]):
+            if count > 0:
+                near_miss_lines.append(f"      Lifecycle {stage}: {count}")
+        if best_wl:
+            near_miss_lines += [
+                f"    Best watchlist: {best_wl.get('pattern_name', 'N/A')} on {best_wl.get('symbol', 'N/A')} {best_wl.get('timeframe', 'N/A')}",
+                f"    Next steps: {best_wl.get('next_step', 'N/A')}",
+            ]
+    else:
+        near_miss_lines = ["", "  NEAR-MISS DIAGNOSTICS: MISSING (no report)", ""]
+
     # BingX shadow execution section
     shadow_lines = []
     if shadow:
@@ -445,6 +479,7 @@ def main():
     lines += alpha_lines
     lines += psych_lines
     lines += memory_lines
+    lines += near_miss_lines
     lines += shadow_lines
     lines += live_lines
     lines += pos_lines
@@ -537,6 +572,15 @@ def main():
             "pending_outcomes": memory.get("pending_outcomes", 0) if memory else None,
             "historical_edge_summary": memory.get("historical_edge_summary") if memory else None,
         } if memory else None,
+        "near_miss_diagnostics": {
+            "executable_candidates": near_miss.get("bucket_counts", {}).get("EXECUTABLE_CANDIDATE", 0) if near_miss else 0,
+            "watchlist_ready": near_miss.get("bucket_counts", {}).get("WATCHLIST_READY", 0) if near_miss else 0,
+            "near_miss_rr": near_miss.get("bucket_counts", {}).get("NEAR_MISS_RR", 0) if near_miss else 0,
+            "near_miss_psychology": near_miss.get("bucket_counts", {}).get("NEAR_MISS_PSYCHOLOGY", 0) if near_miss else 0,
+            "raw_trap_detected": near_miss.get("bucket_counts", {}).get("RAW_TRAP_DETECTED", 0) if near_miss else 0,
+            "top_rejection_reason": near_miss.get("top_rejection_reason") if near_miss else None,
+            "best_watchlist_candidate": near_miss.get("best_watchlist_candidate") if near_miss else None,
+        } if near_miss else None,
         "bingx_shadow_execution": {
             "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",
             "shadow_decision": shadow.get("decision", "N/A") if shadow else None,

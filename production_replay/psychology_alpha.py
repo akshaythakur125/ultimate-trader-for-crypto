@@ -24,6 +24,7 @@ PSYCHOLOGY_MAX = 100
 WATCH_MIN = 70
 ELITE_MIN = 85
 RR_MIN = 4.0
+NEAR_MISS_PSYCH_MIN = 50
 
 PSYCHOLOGY_WEIGHTS = {
     "trap_quality": 25,
@@ -141,17 +142,21 @@ def _score_liquidity(sym: str, ticker_map: dict) -> int:
     return min(base, PSYCHOLOGY_WEIGHTS["liquidity"])
 
 
-def _score_rr_quality(p: dict) -> int:
+def _score_rr_quality(p: dict, relaxed: bool = False) -> int:
     rr = p.get("rr_2") or 0
-    if rr < RR_MIN:
+    if not relaxed and rr < RR_MIN:
         return -1
-    base = 8
+    if rr < 2.0:
+        return -1
+    base = 4
     if rr >= 5.0:
         base += 5
     elif rr >= 4.5:
         base += 3
-    else:
+    elif rr >= RR_MIN:
         base += 2
+    else:
+        base += 0
     return min(base, PSYCHOLOGY_WEIGHTS["rr_quality"])
 
 
@@ -212,14 +217,10 @@ def _get_psychology_thesis(pid: str, direction: str) -> str:
     return "crowd psychology pattern"
 
 
-def _compute_psychology(p: dict, ticker_map: dict) -> dict:
+def _compute_psychology(p: dict, ticker_map: dict, relaxed: bool = False) -> dict:
     sym = p.get("symbol", "")
     rr = p.get("rr_2") or 0
 
-    if rr < RR_MIN:
-        return {"psychology_score": 0, "rejected": True,
-                "reject_reason": f"RR {rr} < {RR_MIN}",
-                "scores": {}}
     if p.get("direction", "UNKNOWN") == "UNKNOWN":
         return {"psychology_score": 0, "rejected": True,
                 "reject_reason": "direction UNKNOWN", "scores": {}}
@@ -231,12 +232,12 @@ def _compute_psychology(p: dict, ticker_map: dict) -> dict:
     structure = _score_structure(p)
     volume = _score_volume_momentum(p, ticker_map)
     liq = _score_liquidity(sym, ticker_map)
-    rr_score = _score_rr_quality(p)
+    rr_score = _score_rr_quality(p, relaxed=relaxed)
     regime = _score_regime(p)
 
     if rr_score < 0:
         return {"psychology_score": 0, "rejected": True,
-                "reject_reason": f"RR {rr} < {RR_MIN}",
+                "reject_reason": f"RR {rr} < minimum for scoring",
                 "scores": {}}
 
     partial = trap + structure + volume + liq + rr_score + regime
@@ -255,8 +256,10 @@ def _compute_psychology(p: dict, ticker_map: dict) -> dict:
 
     return {
         "psychology_score": total,
-        "rejected": total < WATCH_MIN,
-        "reject_reason": "" if total >= WATCH_MIN else f"score {total} < {WATCH_MIN}",
+        "rejected": total < WATCH_MIN or rr < RR_MIN,
+        "reject_reason": "" if total >= WATCH_MIN and rr >= RR_MIN else
+                         f"RR {rr} < {RR_MIN}" if rr < RR_MIN else
+                         f"score {total} < {WATCH_MIN}",
         "scores": {
             "trap_quality": trap,
             "structure": structure,
@@ -299,9 +302,12 @@ def run_psychology_alpha() -> dict:
     scored = []
     rr_pass_count = 0
     for p in patterns:
-        if not p.get("rejected", True):
+        rr = p.get("rr_2") or 0
+        if rr >= RR_MIN and not p.get("rejected", True):
             rr_pass_count += 1
-            result = _compute_psychology(p, ticker_map)
+        if p.get("pattern_id", "") and p.get("direction", "UNKNOWN") != "UNKNOWN":
+            relaxed = rr < RR_MIN
+            result = _compute_psychology(p, ticker_map, relaxed=relaxed)
             scored.append({**p, **result})
 
     scored.sort(key=lambda r: r.get("psychology_score", 0), reverse=True)
@@ -309,6 +315,21 @@ def run_psychology_alpha() -> dict:
     elite = [s for s in scored if s.get("psychology_score", 0) >= ELITE_MIN and not s.get("rejected", True)]
 
     best = elite[0] if elite else (watch[0] if watch else None)
+
+    # Near-miss categories
+    near_miss_rr = [s for s in scored if not s.get("rejected", True) and
+                    (2.0 <= (s.get("rr_2") or 0) < RR_MIN) and
+                    s.get("psychology_score", 0) >= WATCH_MIN]
+    near_miss_psych = [s for s in scored if (s.get("rr_2") or 0) >= RR_MIN and
+                       50 <= s.get("psychology_score", 0) < WATCH_MIN]
+    watchlist_ready = [s for s in scored if
+                       (s.get("rr_2") or 0) >= RR_MIN and
+                       s.get("psychology_score", 0) >= NEAR_MISS_PSYCH_MIN and
+                       s.get("psychology_score", 0) < WATCH_MIN]
+    raw_trap = [s for s in scored if
+                s.get("psychology_score", 0) > 0 and
+                s.get("rr_2") is not None and
+                (s.get("rr_2") or 0) < 2.0]
 
     if best:
         final_decision = best["verdict"]
@@ -327,9 +348,14 @@ def run_psychology_alpha() -> dict:
         "dux_scan_symbols": scan_symbols_count,
         "symbol_timeframes_scanned": st_scanned,
         "total_patterns_detected": len(patterns),
+        "total_psychology_evaluated": len(scored),
         "rr_gate_pass_candidates": rr_pass_count,
         "psychology_watch_candidates": len(watch),
         "psychology_elite_candidates": len(elite),
+        "near_miss_rr_candidates": len(near_miss_rr),
+        "near_miss_psychology_candidates": len(near_miss_psych),
+        "watchlist_ready_candidates": len(watchlist_ready),
+        "raw_trap_candidates": len(raw_trap),
         "psychology_modules_available": list(PSYCHOLOGY_MODULES.keys()),
         "watch_min": WATCH_MIN,
         "elite_min": ELITE_MIN,
@@ -347,6 +373,27 @@ def run_psychology_alpha() -> dict:
             "scores": best["scores"],
             "verdict": best["verdict"],
         } if best else None,
+        "best_near_miss_rr": {
+            "symbol": near_miss_rr[0]["symbol"],
+            "timeframe": near_miss_rr[0]["timeframe"],
+            "pattern_name": near_miss_rr[0]["pattern_name"],
+            "rr_2": near_miss_rr[0].get("rr_2"),
+            "psychology_score": near_miss_rr[0]["psychology_score"],
+        } if near_miss_rr else None,
+        "best_near_miss_psychology": {
+            "symbol": near_miss_psych[0]["symbol"],
+            "timeframe": near_miss_psych[0]["timeframe"],
+            "pattern_name": near_miss_psych[0]["pattern_name"],
+            "rr_2": near_miss_psych[0].get("rr_2"),
+            "psychology_score": near_miss_psych[0]["psychology_score"],
+        } if near_miss_psych else None,
+        "best_watchlist": {
+            "symbol": watchlist_ready[0]["symbol"],
+            "timeframe": watchlist_ready[0]["timeframe"],
+            "pattern_name": watchlist_ready[0]["pattern_name"],
+            "rr_2": watchlist_ready[0].get("rr_2"),
+            "psychology_score": watchlist_ready[0]["psychology_score"],
+        } if watchlist_ready else near_miss_rr[0] if near_miss_rr else None,
         "final_decision": final_decision,
         "reason": reason,
         "top_ranked": [
@@ -366,6 +413,7 @@ def run_psychology_alpha() -> dict:
             }
             for i, s in enumerate(scored[:10])
         ],
+        "patterns": scored,
     }
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -387,9 +435,13 @@ def _write_text_report(report: dict, best: dict | None):
         f"  Dux scan symbols:           {report['dux_scan_symbols']}",
         f"  Symbol-timeframes scanned:  {report['symbol_timeframes_scanned']}",
         f"  Total patterns detected:    {report['total_patterns_detected']}",
+        f"  Total psychology evaluated: {report.get('total_psychology_evaluated', 0)}",
         f"  RR >= 4 candidates:         {report['rr_gate_pass_candidates']}",
         f"  Psychology WATCH >= 70:     {report['psychology_watch_candidates']}",
         f"  Psychology ELITE >= 85:     {report['psychology_elite_candidates']}",
+        f"  Near-miss RR (2-4, good psych): {report.get('near_miss_rr_candidates', 0)}",
+        f"  Near-miss psychology (good RR, psych 50-69): {report.get('near_miss_psychology_candidates', 0)}",
+        f"  Watchlist ready:            {report.get('watchlist_ready_candidates', 0)}",
         "",
     ]
 
