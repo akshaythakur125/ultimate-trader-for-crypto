@@ -70,11 +70,20 @@ def run_shadow_executor() -> dict:
     os.makedirs(STATE_DIR, exist_ok=True)
 
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
 
     reasons = []
     decision = "DO_NOT_EXECUTE"
+
+    # Extract alpha score
+    alpha_candidate = alpha.get("best_candidate") if alpha else None
+    alpha_score = alpha_candidate["alpha_score"] if alpha_candidate else None
+
+    # Gate 0: alpha_score >= 70
+    if alpha_score is None or alpha_score < 70:
+        reasons.append(f"alpha score {alpha_score} < 70")
 
     # Gate 1: system safe
     if not doctor.get("system_safe", False):

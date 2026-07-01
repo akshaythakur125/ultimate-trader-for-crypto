@@ -59,6 +59,7 @@ def main():
     _run_module("production_replay.manual_risk_console")
     _run_module("production_replay.strategy_tournament")
     _run_module("production_replay.dux_pattern_engine")
+    _run_module("production_replay.alpha_intelligence")
     _run_module("production_replay.bingx_shadow_executor")
     _run_module("production_replay.bingx_live_micro_executor")
     _run_module("production_replay.hourly_alert")
@@ -67,6 +68,7 @@ def main():
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
     tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
@@ -208,6 +210,34 @@ def main():
             f"    Dux decision:               {dux.get('final_decision', 'N/A')}",
         ]
 
+    # Alpha intelligence section
+    alpha_lines = []
+    if alpha:
+        best_alpha = alpha.get("best_candidate")
+        alpha_score = best_alpha["alpha_score"] if best_alpha else 0
+        elite = "YES" if best_alpha and alpha_score >= 85 else "NO"
+        if best_alpha:
+            alpha_lines = [
+                "",
+                "  ALPHA INTELLIGENCE:",
+                f"    Best: {best_alpha['pattern_name']} on {best_alpha['symbol']} {best_alpha['timeframe']}",
+                f"    Alpha Score: {best_alpha['alpha_score']}/100  RR: 1:{best_alpha['rr_2']}",
+                f"    Elite Status: {elite}",
+                f"    Final Decision: {alpha.get('final_decision', 'N/A')}",
+            ]
+        else:
+            alpha_lines = ["", "  ALPHA INTELLIGENCE: No candidate passes alpha >= 70", ""]
+        alpha_lines += [
+            "",
+            "  ALPHA SCAN:",
+            f"    Total patterns:     {alpha.get('total_patterns_detected', 0)}",
+            f"    RR >= 4 candidates: {alpha.get('rr_gate_pass_candidates', 0)}",
+            f"    Alpha WATCH >= 70:  {alpha.get('alpha_watch_candidates', 0)}",
+            f"    Alpha ELITE >= 85:  {alpha.get('alpha_elite_candidates', 0)}",
+        ]
+    else:
+        alpha_lines = ["", "  ALPHA INTELLIGENCE: MISSING (no report)", ""]
+
     # BingX shadow execution section
     shadow_lines = []
     if shadow:
@@ -302,6 +332,7 @@ def main():
         ]
     lines += tournament_lines
     lines += dux_lines
+    lines += alpha_lines
     lines += shadow_lines
     lines += live_lines
     lines += hourly_lines
@@ -358,6 +389,15 @@ def main():
             "stats_pass": dux.get("stats_pass", 0) if dux else 0,
             "final_decision": dux.get("final_decision", "N/A") if dux else None,
         } if dux else None,
+        "alpha_intelligence": {
+            "best_candidate": alpha.get("best_candidate") if alpha else None,
+            "alpha_score": alpha.get("best_candidate", {}).get("alpha_score") if alpha and alpha.get("best_candidate") else None,
+            "rr_2": alpha.get("best_candidate", {}).get("rr_2") if alpha and alpha.get("best_candidate") else None,
+            "elite": "YES" if alpha and alpha.get("best_candidate") and alpha["best_candidate"]["alpha_score"] >= 85 else "NO",
+            "elite_candidates": alpha.get("alpha_elite_candidates", 0) if alpha else 0,
+            "watch_candidates": alpha.get("alpha_watch_candidates", 0) if alpha else 0,
+            "final_decision": alpha.get("final_decision", "N/A") if alpha else None,
+        } if alpha else None,
         "bingx_shadow_execution": {
             "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",
             "shadow_decision": shadow.get("decision", "N/A") if shadow else None,

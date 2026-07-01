@@ -2695,29 +2695,33 @@ def test_hourly_alert_no_forbidden_imports():
 
 def test_hourly_alert_do_nothing_for_unmet_gates():
     from production_replay.hourly_alert import _determine_final_action
-    action, reason = _determine_final_action("DO_NOT_TRADE", 0, "DO_NOT_EXECUTE",
-                                              "DO_NOT_EXECUTE", False, "read_only")
+    action, reason = _determine_final_action("DO_NOT_TRADE", 0, 0, "DO_NOT_TRADE",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only")
     assert action == "DO_NOTHING"
 
 
 def test_hourly_alert_review_now_for_rr_pass():
     from production_replay.hourly_alert import _determine_final_action
-    action, reason = _determine_final_action("WATCH", 1, "DO_NOT_EXECUTE",
-                                              "DO_NOT_EXECUTE", False, "read_only")
+    action, reason = _determine_final_action("WATCH", 1, 75, "WATCH",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only")
     assert action == "REVIEW_NOW"
 
 
 def test_hourly_alert_shadow_ready():
     from production_replay.hourly_alert import _determine_final_action
-    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, "SHADOW_READY",
-                                              "DO_NOT_EXECUTE", True, "live_micro")
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, 90, "MANUAL_REVIEW_ONLY",
+                                             "SHADOW_READY", "DO_NOT_EXECUTE",
+                                             True, "live_micro")
     assert action == "SHADOW_READY"
 
 
 def test_hourly_alert_live_blocked():
     from production_replay.hourly_alert import _determine_final_action
-    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, "SHADOW_READY",
-                                              "DO_NOT_EXECUTE", False, "read_only")
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, 90, "MANUAL_REVIEW_ONLY",
+                                             "SHADOW_READY", "DO_NOT_EXECUTE",
+                                             False, "read_only")
     assert action == "LIVE_BLOCKED"
 
 
@@ -2731,3 +2735,239 @@ def test_doctor_packet_includes_hourly_status():
     assert "hourly_final_status" in report
     assert report["hourly_final_status"] is not None
     assert "final_action" in report["hourly_final_status"]
+
+
+# --- Phase 40: Alpha Intelligence ---
+
+def test_alpha_intelligence_runs():
+    from production_replay.alpha_intelligence import run_alpha_intelligence
+    report = run_alpha_intelligence()
+    assert report["mode"] == "alpha_intelligence"
+    assert report["research_only"] is True
+    assert report["live_trading_enabled"] is False
+    assert report["paper_trading_enabled"] is False
+    assert "patterns_detected" not in report  # uses total_patterns_detected
+
+
+def test_alpha_intelligence_no_approved():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "alpha_intelligence_report.json")
+    with open(path) as f:
+        text = f.read()
+    assert "APPROVED" not in text
+
+
+def test_alpha_intelligence_bingx_only():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "alpha_intelligence_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    for c in report.get("top_ranked", []):
+        assert c["symbol"].endswith("-USDT"), f"non-BingX symbol: {c['symbol']}"
+
+
+def test_alpha_intelligence_rejects_rr_below_4():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "BTC-USDT", "direction": "LONG",
+        "rr_2": 3.5, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 10, "wick_pct": 60,
+        "vol_expansion": True, "entry": 100, "stop": 99,
+        "target_2": 104,
+        "stats": {"trades": 50, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 5},
+    }, {})
+    assert result["rejected"] is True
+    assert "RR < 4.0" in result.get("reject_reason", result.get("reason", ""))
+
+
+def test_alpha_intelligence_rejects_unknown_direction():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "BTC-USDT", "direction": "UNKNOWN",
+        "rr_2": 5.0, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 10, "wick_pct": 60,
+        "vol_expansion": True, "entry": 100, "stop": 99,
+        "target_2": 104,
+        "stats": {"trades": 50, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 5},
+    }, {})
+    assert result["rejected"] is True
+
+
+def test_alpha_intelligence_rejects_non_bingx():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "BTC-USD", "direction": "LONG",
+        "rr_2": 5.0, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 10, "wick_pct": 60,
+        "vol_expansion": True, "entry": 100, "stop": 99,
+        "target_2": 104,
+        "stats": {"trades": 50, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 5},
+    }, {})
+    assert result["rejected"] is True
+
+
+def test_alpha_intelligence_elite_candidate():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "PEPE-USDT", "direction": "LONG",
+        "rr_2": 5.0, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 15, "wick_pct": 70,
+        "vol_expansion": True, "entry": 100, "stop": 98,
+        "target_2": 110,
+        "stats": {"trades": 60, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 3},
+    }, {"PEPE-USDT": {"quote_volume": 5000000, "price_change_pct": 12}})
+    assert result["rejected"] is False, f"rejected: {result.get('reject_reason', '?')}"
+    assert result["alpha_score"] >= 85, f"alpha {result['alpha_score']} < 85"
+    assert result["verdict"] == "MANUAL_REVIEW_ONLY"
+
+
+def test_alpha_intelligence_watch_candidate():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "SHIB-USDT", "direction": "LONG",
+        "rr_2": 4.2, "pattern_id": "panic_flush_reclaim",
+        "pump_pct": 8, "wick_pct": 55,
+        "vol_expansion": True, "entry": 100, "stop": 98.5,
+        "target_2": 107,
+        "stats": {"trades": 10, "ev_r": 0.2, "profit_factor": 1.2, "max_drawdown_r": 8},
+    }, {"SHIB-USDT": {"quote_volume": 1000000, "price_change_pct": 6}})
+    assert result["rejected"] is False
+    assert result["alpha_score"] >= 70, f"alpha {result['alpha_score']} < 70"
+    assert result["verdict"] == "WATCH"
+
+
+def test_alpha_intelligence_rejects_low_score():
+    from production_replay.alpha_intelligence import _compute_alpha
+    result = _compute_alpha({
+        "symbol": "XYZ-USDT", "direction": "LONG",
+        "rr_2": 4.0, "pattern_id": "weak_bounce_short",
+        "pump_pct": 1, "wick_pct": 10,
+        "vol_expansion": False, "entry": 100, "stop": 99.5,
+        "target_2": 103,
+        "stats": {"trades": 2, "ev_r": 0.05, "profit_factor": 1.0, "max_drawdown_r": 15},
+    }, {"XYZ-USDT": {"quote_volume": 50000, "price_change_pct": 1}})
+    assert result["rejected"] is True
+    assert result["alpha_score"] < 70
+
+
+def test_alpha_intelligence_scores_are_in_range():
+    from production_replay.alpha_intelligence import (
+        _score_pattern, _score_rr, _score_volume, _score_trap,
+        _score_liquidity, _score_relative_strength, _score_regime, _score_historical,
+        SCORE_PATTERN_MAX, SCORE_RR_MAX, SCORE_VOLUME_MAX, SCORE_TRAP_MAX,
+        SCORE_LIQUIDITY_MAX, SCORE_RS_MAX, SCORE_REGIME_MAX, SCORE_HISTORICAL_MAX,
+    )
+    p = {"pattern_id": "parabolic_pump_fade", "vol_expansion": True,
+         "wick_pct": 60, "pump_pct": 10, "symbol": "PEPE-USDT",
+         "rr_2": 5.0}
+    assert 0 <= _score_pattern(p) <= SCORE_PATTERN_MAX
+    assert 0 <= _score_rr(p) <= SCORE_RR_MAX
+    assert 0 <= _score_volume(p, {"PEPE-USDT": {"quote_volume": 1000000}}) <= SCORE_VOLUME_MAX
+    assert 0 <= _score_trap(p, {}) <= SCORE_TRAP_MAX
+    assert 0 <= _score_liquidity("PEPE-USDT", {"PEPE-USDT": {"quote_volume": 1000000}}) <= SCORE_LIQUIDITY_MAX
+    assert 0 <= _score_relative_strength("PEPE-USDT", {"PEPE-USDT": {"price_change_pct": 6}}) <= SCORE_RS_MAX
+    assert 0 <= _score_regime(p) <= SCORE_REGIME_MAX
+    assert 0 <= _score_historical({"stats": {"trades": 60, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 3}}) <= SCORE_HISTORICAL_MAX
+
+
+def test_alpha_intelligence_report_structure():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "alpha_intelligence_report.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "mode" in report
+    assert "total_patterns_detected" in report
+    assert "rr_gate_pass_candidates" in report
+    assert "alpha_watch_candidates" in report
+    assert "alpha_elite_candidates" in report
+    assert "final_decision" in report
+    assert report["live_trading_enabled"] is False
+    assert report["paper_trading_enabled"] is False
+    assert "top_ranked" in report
+
+
+def test_alpha_intelligence_text_report_exists():
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "alpha_intelligence_report.txt")
+    assert os.path.exists(path)
+    with open(path) as f:
+        text = f.read()
+    assert "ALPHA INTELLIGENCE REPORT" in text
+    assert "FINAL ALPHA DECISION" in text
+    assert "not approved for live trading" in text
+
+
+def test_doctor_packet_includes_alpha_intelligence():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "alpha_intelligence" in report
+    assert report["alpha_intelligence"] is not None
+    assert "best_candidate" in report["alpha_intelligence"]
+
+
+def test_hourly_alert_includes_alpha_score():
+    import json
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "hourly_status.json")
+    with open(path) as f:
+        report2 = json.load(f)
+    for r in (report, report2):
+        assert "alpha_score" in r
+        assert "alpha_decision" in r
+        assert "alpha_elite_candidates" in r
+        assert "alpha_watch_candidates" in r
+
+
+def test_hourly_alert_do_nothing_when_alpha_below_70():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("WATCH", 1, 65, "WATCH",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only")
+    assert action == "DO_NOTHING"
+
+
+def test_hourly_alert_review_now_alpha_70():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("WATCH", 1, 75, "WATCH",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only")
+    assert action == "REVIEW_NOW"
+
+
+def test_hourly_alert_live_blocked_alpha_elite():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, 90, "MANUAL_REVIEW_ONLY",
+                                             "SHADOW_READY", "DO_NOT_EXECUTE",
+                                             False, "read_only")
+    assert action == "LIVE_BLOCKED"
+
+
+def test_hourly_alert_review_now_alpha_elite_no_shadow():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("MANUAL_REVIEW_ONLY", 1, 88, "MANUAL_REVIEW_ONLY",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only")
+    assert action == "REVIEW_NOW"
+
+
+def test_shadow_executor_rejects_alpha_below_70():
+    import json
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    report = run_shadow_executor()
+    assert report["decision"] == "DO_NOT_EXECUTE"
+    reasons = report.get("reasons", [])
+    has_low_alpha = any("alpha score" in r or "alpha" in r for r in reasons)
+    # alpha score is 0 since no real alpha candidate -> gate rejects
+    assert has_low_alpha or any("alpha" in r for r in reasons)
+
+
+def test_live_executor_still_refuses_in_read_only():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "bingx_live_execution.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert report.get("execution_mode") != "live_micro" or not report.get("live_armed", True)
+    assert report.get("decision") != "EXECUTE"
+    assert "real_order" not in report.get("decision", "")
