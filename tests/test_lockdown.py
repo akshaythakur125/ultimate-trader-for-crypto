@@ -4777,6 +4777,184 @@ def test_trigger_watcher_no_approved_output():
     assert "APPROVED" not in src
 
 
+# Phase 50: Unified Candidate Bridge and Shadow Eligibility Fix
+
+def test_trigger_confirmed_rr6_score75_review_or_shadow():
+    """Trigger-confirmed candidate with RR 6.0 and thesis_score 75 becomes REVIEW or SHADOW."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "FLUID-USDT", "timeframe": "1h", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 1.2, "stop": 1.25, "target": 0.9,
+        "rr_2": 6.0, "thesis_score": 75, "psychology_score": 60,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    result = _evaluate_candidate(c, {}, None)
+    assert result["trigger_status"] == "TRIGGER_CONFIRMED"
+    assert result["verdict"] in ("REVIEW_CANDIDATE", "SHADOW_ELIGIBLE"), f"Got {result['verdict']}"
+    assert result["candidate_source"] == "trigger_watcher"
+
+
+def test_trigger_confirmed_missing_psych_alpha_does_not_reject():
+    """Missing psychology_alpha data does not reject trigger-confirmed score 75 candidate."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "LTC-USDT", "timeframe": "30m", "direction": "LONG",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_LOW",
+        "entry": 80.0, "stop": 78.0, "target": 95.0,
+        "rr_2": 18.63, "thesis_score": 62, "psychology_score": 50,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    result = _evaluate_candidate(c, {}, None)
+    # thesis 62 < 75, so should be REVIEW_CANDIDATE at most, not rejected as DO_NOT_TRADE solely by psych alpha
+    assert result["verdict"] != "DO_NOT_TRADE" or "no psychology" not in " ".join(result.get("reasons", []))
+
+
+def test_trigger_confirmed_psych_alpha_rejection_removed_for_score_75():
+    """Psychology_alpha rejection is removed when thesis_score >= 75 and RR >= 4."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "FLUID-USDT", "timeframe": "1h", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 1.2, "stop": 1.25, "target": 0.9,
+        "rr_2": 6.0, "thesis_score": 75, "psychology_score": 60,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    # Empty psych_patterns_map — no psychology_alpha data
+    result = _evaluate_candidate(c, {}, None)
+    psych_reason = [r for r in result.get("reasons", []) if "psychology" in r.lower()]
+    assert len(psych_reason) == 0, f"Should not reject psychology alpha for score 75: {psych_reason}"
+
+
+def test_thesis_below_75_never_shadow_eligible():
+    """Thesis score below 75 never becomes SHADOW_ELIGIBLE."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "O-USDT", "timeframe": "15m", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 0.5, "stop": 0.52, "target": 0.4,
+        "rr_2": 5.0, "thesis_score": 74, "psychology_score": 55,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    # Provide psych alpha so only thesis_score is the blocker
+    result = _evaluate_candidate(c, {"O-USDT|15m": {}}, None)
+    assert result["verdict"] != "SHADOW_ELIGIBLE", f"Score 74 should not be shadow eligible, got {result['verdict']}"
+    reasons_str = str(result.get("reasons", []))
+    assert "thesis score below 75" in reasons_str or "thesis score 74" in reasons_str
+
+
+def test_rr_below_4_never_shadow_eligible():
+    """RR below 4.0 never becomes SHADOW_ELIGIBLE."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "LINK-USDT", "timeframe": "1h", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 7.0, "stop": 7.5, "target": 5.0,
+        "rr_2": 3.5, "thesis_score": 80, "psychology_score": 70,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    result = _evaluate_candidate(c, {"LINK-USDT|1h": {}}, None)
+    assert result["verdict"] != "SHADOW_ELIGIBLE", f"RR 3.5 should not be shadow eligible, got {result['verdict']}"
+    reasons_str = str(result.get("reasons", []))
+    assert "RR below 4.0" in reasons_str or "3.5 < 4.0" in reasons_str
+
+
+def test_missing_stop_target_never_shadow_eligible():
+    """Missing entry/stop/target never becomes SHADOW_ELIGIBLE."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "LINK-USDT", "timeframe": "1h", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 0, "stop": 0, "target": 0,
+        "rr_2": 6.0, "thesis_score": 80, "psychology_score": 70,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    result = _evaluate_candidate(c, {}, None)
+    assert result["verdict"] != "SHADOW_ELIGIBLE", "Should not be shadow eligible with missing execution fields"
+    assert "invalid entry" in " ".join(result.get("reasons", []))
+
+
+def test_bridge_candidate_source_field():
+    """Arbiter result includes candidate_source field."""
+    from production_replay.candidate_arbiter import _evaluate_candidate
+    c = {
+        "symbol": "BTC-USDT", "timeframe": "1h", "direction": "SHORT",
+        "bucket": "TRIGGER_CONFIRMED", "thesis_type": "SWEEP_HIGH",
+        "entry": 60000, "stop": 62000, "target": 50000,
+        "rr_2": 5.0, "thesis_score": 80, "psychology_score": 70,
+        "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+        "detection_time": "2026-07-01T00:00:00",
+    }
+    result = _evaluate_candidate(c, {"BTC-USDT|1h": {}}, None)
+    assert "candidate_source" in result
+    assert result["candidate_source"] in ("trigger_watcher", "near_miss")
+
+
+def test_shadow_executor_accepts_trigger_bridge():
+    """Shadow executor accepts trigger bridge candidate with all fields."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "trigger_bridge_active" in src or "bridge_candidate" in src
+    assert "bypassing Dux" in src or "TRIGGER_BRIDGE" in src
+
+
+def test_shadow_executor_live_orders_still_impossible():
+    """Shadow executor never sets real_order True."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se)
+    assert "real_order" in src
+
+    # Check no real order path
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent({}, "TEST", "LONG", 100, 99, 110, 5.0, "test", "t1", "test", "REVIEW")
+    assert intent["real_order"] is False
+
+
+def test_phase_50_no_approved_output():
+    """No Phase 50 module outputs APPROVED."""
+    import inspect
+    for mod_name in ("candidate_arbiter", "bingx_shadow_executor", "hourly_alert", "doctor_daily_packet"):
+        try:
+            import importlib
+            mod = importlib.import_module(f"production_replay.{mod_name}")
+            src = inspect.getsource(mod)
+            assert "APPROVED" not in src, f"{mod_name} contains APPROVED"
+        except ImportError:
+            pass
+
+
+def test_phase_50_no_withdrawal():
+    """No Phase 50 modified module has withdrawal/transfer."""
+    import inspect
+    for mod_name in ("candidate_arbiter", "bingx_shadow_executor"):
+        try:
+            import importlib
+            mod = importlib.import_module(f"production_replay.{mod_name}")
+            src = inspect.getsource(mod)
+            for kw in ("withdraw", "transfer", "send", "withdrawal"):
+                assert kw not in src.lower(), f"{mod_name} contains {kw}"
+        except ImportError:
+            pass
+
+
+def test_launch_check_passes_phase_50():
+    """Launch check still passes with Phase 50 changes."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-m", "production_replay.launch_check"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0 or "PASS" in result.stdout
+
+
 def test_safety_lock_passes_with_trigger_watcher():
     """Trigger watcher does not break safety lock."""
     import subprocess

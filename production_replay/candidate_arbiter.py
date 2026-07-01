@@ -111,7 +111,7 @@ def _evaluate_candidate(
     if rr < 4.0:
         reasons.append(f"RR {rr} < 4.0")
 
-    # Gate 6: thesis score >= 70
+    # Gate 6: thesis score >= 75 for SHADOW_ELIGIBLE, >= 70 for REVIEW_CANDIDATE
     if thesis_score < 70:
         reasons.append(f"thesis score {thesis_score} < 70")
 
@@ -120,14 +120,25 @@ def _evaluate_candidate(
         reasons.append(f"trigger status {trigger_status} not actionable")
 
     # Gate 8: psychology_alpha has data for this symbol/TF
-    psych_key = f"{symbol}|{tf}"
-    psych_match = any(k.startswith(psych_key) for k in psych_patterns_map)
-    if not psych_match:
-        reasons.append(f"no psychology_alpha data for {symbol}/{tf}")
+    # Trigger-confirmed candidates with thesis_score >= 75 and RR >= 4 skip this gate
+    if trigger_status == "TRIGGER_CONFIRMED" and thesis_score >= 75 and rr >= 4.0:
+        pass
+    else:
+        psych_key = f"{symbol}|{tf}"
+        psych_match = any(k.startswith(psych_key) for k in psych_patterns_map)
+        if not psych_match:
+            reasons.append(f"no psychology_alpha data for {symbol}/{tf}")
+
+    # Determine candidate_source
+    if trigger_status == "TRIGGER_CONFIRMED":
+        candidate_source = "trigger_watcher"
+    else:
+        candidate_source = "near_miss"
 
     if not reasons:
         # If all gates pass and trigger is confirmed, eligible for shadow
-        if trigger_status == "TRIGGER_CONFIRMED" and rr >= 4.0 and thesis_score >= 70:
+        # SHADOW_ELIGIBLE requires thesis_score >= 75 (Phase 50)
+        if trigger_status == "TRIGGER_CONFIRMED" and rr >= 4.0 and thesis_score >= 75:
             verdict = "SHADOW_ELIGIBLE"
             reasons.append("all gates passed; shadow executor may proceed")
         else:
@@ -136,8 +147,8 @@ def _evaluate_candidate(
                 reasons.append("trigger not yet confirmed; candidate needs price action validation")
             if rr < 4.0:
                 reasons.append("RR below 4.0 threshold")
-            if thesis_score < 70:
-                reasons.append("thesis score below 70")
+            if thesis_score < 75:
+                reasons.append("thesis score below 75")
     else:
         # Some gates failed, but still might be reviewable if close
         if rr >= 3.0 and thesis_score >= 60:
@@ -150,6 +161,7 @@ def _evaluate_candidate(
         "timeframe": tf,
         "direction": direction,
         "bucket": bucket,
+        "candidate_source": candidate_source,
         "verdict": verdict,
         "reasons": reasons,
         "rr": rr,
@@ -226,6 +238,43 @@ def run_arbiter() -> dict:
         else:
             do_not_trade_count += 1
 
+    # Phase 50: also evaluate trigger_watcher confirmed candidates directly
+    tw_confirmed = []
+    for c in trigger_watcher.get("candidates", []):
+        if c.get("trigger_status") != "TRIGGER_CONFIRMED":
+            continue
+        # Build a candidate dict compatible with _evaluate_candidate
+        tw_c = {
+            "symbol": c.get("symbol", ""),
+            "timeframe": c.get("timeframe", ""),
+            "direction": c.get("direction", "UNKNOWN"),
+            "bucket": "TRIGGER_CONFIRMED",
+            "thesis_type": c.get("thesis_type", "N/A"),
+            "entry": c.get("entry") or 0,
+            "stop": c.get("stop") or 0,
+            "target": c.get("target") or 0,
+            "rr_2": c.get("rr") or 0,
+            "thesis_score": c.get("thesis_score") or 0,
+            "psychology_score": c.get("psychology_score") or 0,
+            "current_rr": c.get("rr") or 0,
+            "trigger_info": {"trigger_status": "TRIGGER_CONFIRMED"},
+            "detection_time": c.get("detection_time", c.get("checked_at", datetime.now().isoformat())),
+            "raw_anomaly_score": c.get("raw_anomaly_score", 0),
+        }
+        tw_result = _evaluate_candidate(tw_c, psych_patterns_map, dux_best)
+        # Override candidate_source for trigger-watcher candidates
+        tw_result["candidate_source"] = "trigger_watcher"
+        tw_confirmed.append(tw_result)
+        candidates_evaluated.append(tw_result)
+        if tw_result["verdict"] == "SHADOW_ELIGIBLE":
+            shadow_eligible_count += 1
+            _append_jsonl(REVIEW_PATH, tw_result)
+        elif tw_result["verdict"] == "REVIEW_CANDIDATE":
+            review_candidate_count += 1
+            _append_jsonl(REVIEW_PATH, tw_result)
+        else:
+            do_not_trade_count += 1
+
     # Also check psychology_alpha best_candidate directly
     psych_best = psych.get("best_candidate") if psych else None
     psych_best_verdict = None
@@ -241,6 +290,14 @@ def run_arbiter() -> dict:
             psych_best_verdict = "SHADOW_ELIGIBLE"
         else:
             psych_best_verdict = "REVIEW_CANDIDATE"
+
+    # Best candidate: prefer SHADOW_ELIGIBLE with highest RR, then REVIEW_CANDIDATE
+    best = None
+    for v in ("SHADOW_ELIGIBLE", "REVIEW_CANDIDATE"):
+        candidates_in = [c for c in candidates_evaluated if c["verdict"] == v]
+        if candidates_in:
+            best = max(candidates_in, key=lambda x: (x.get("rr", 0), x.get("thesis_score", 0)))
+            break
 
     report = {
         "mode": "candidate_arbiter",
@@ -260,10 +317,17 @@ def run_arbiter() -> dict:
         "review_candidate": review_candidate_count,
         "do_not_trade": do_not_trade_count,
         "trigger_watcher_candidates": len(trigger_watcher.get("candidates", [])) if trigger_watcher else 0,
+        "trigger_watcher_confirmed_evaluated": len(tw_confirmed),
         "trigger_watcher_best_confirmed": trigger_watcher.get("best_confirmed_candidate") if trigger_watcher else None,
+        "unified_bridge_candidates": {
+            "trigger_confirmed_count": len(tw_confirmed),
+            "shadow_eligible_from_trigger": sum(1 for c in tw_confirmed if c["verdict"] == "SHADOW_ELIGIBLE"),
+            "review_candidate_from_trigger": sum(1 for c in tw_confirmed if c["verdict"] == "REVIEW_CANDIDATE"),
+            "candidates": tw_confirmed,
+        },
         "psychology_alpha_best_candidate_verdict": psych_best_verdict,
         "has_shadow_eligible_candidates": shadow_eligible_count > 0,
-        "best_candidate": next((c for c in candidates_evaluated if c["verdict"] == "SHADOW_ELIGIBLE"), None),
+        "best_candidate": best,
         "candidates": candidates_evaluated,
     }
 
@@ -333,9 +397,44 @@ def _write_text_report(report: dict):
             lines += [
                 f"    {rc['symbol']} {rc['timeframe']} {rc['direction']} "
                 f"RR:1:{rc['rr']} Score:{rc['thesis_score']} Trigger:{rc['trigger_status']}",
+                f"      Source: {rc.get('candidate_source', 'near_miss')}",
                 f"      Reasons: {'; '.join(rc['reasons'])}",
                 "",
             ]
+
+    # Unified Candidate Bridge section (Phase 50)
+    ub = report.get("unified_bridge_candidates", {})
+    if ub and ub.get("trigger_confirmed_count", 0) > 0:
+        uc_list = ub.get("candidates", [])
+        lines += [
+            "  UNIFIED CANDIDATE BRIDGE:",
+            f"    Trigger confirmed candidates: {ub['trigger_confirmed_count']}",
+            f"    Shadow eligible from trigger:  {ub['shadow_eligible_from_trigger']}",
+            f"    Review candidate from trigger: {ub['review_candidate_from_trigger']}",
+            "",
+        ]
+        # Show top 3 bridge candidates
+        for bc in sorted(uc_list, key=lambda x: (-(x["verdict"] == "SHADOW_ELIGIBLE"), -x.get("rr", 0)))[:3]:
+            status = "SHADOW_ELIGIBLE" if bc["verdict"] == "SHADOW_ELIGIBLE" else bc.get("verdict", "DO_NOT_TRADE")
+            rr_val = bc.get('rr', '?')
+            rr_str = f"{rr_val}" if not isinstance(rr_val, str) else str(rr_val)
+            ts_val = bc.get('thesis_score', '?')
+            ts_str = f"{ts_val}" if not isinstance(ts_val, str) else str(ts_val)
+            lines += [
+                f"    {str(bc['symbol']):12s} {str(bc['timeframe']):4s} {str(bc['direction']):5s} "
+                f"RR:1:{rr_str:<6s} Score:{ts_str:<6s} "
+                f"{status}",
+                f"      Entry:{float(bc.get('entry', 0)):.4f} Stop:{float(bc.get('stop', 0)):.4f} "
+                f"Target:{float(bc.get('target', 0)):.4f}",
+            ]
+            if bc.get("reasons") and bc["verdict"] != "SHADOW_ELIGIBLE":
+                lines.append(f"      Blocked by: {'; '.join(bc['reasons'][:2])}")
+            lines.append("")
+    else:
+        lines += [
+            "  UNIFIED CANDIDATE BRIDGE: NO CANDIDATES",
+            "",
+        ]
 
     # Signal integrity section
     lines += [

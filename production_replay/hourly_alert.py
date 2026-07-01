@@ -442,6 +442,33 @@ def _write_text_report(report: dict, action: str, reason: str):
             "",
         ]
 
+    # Unified Candidate Bridge section (Phase 50) — read from arbiter report directly
+    arbiter_report = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
+    ub = arbiter_report.get("unified_bridge_candidates", {}) if arbiter_report else {}
+    if ub and ub.get("trigger_confirmed_count", 0) > 0:
+        ub_list = ub.get("candidates", [])
+        best_bridge = None
+        for bc in ub_list:
+            if bc.get("verdict") == "SHADOW_ELIGIBLE":
+                best_bridge = bc
+                break
+        if not best_bridge and ub_list:
+            best_bridge = max(ub_list, key=lambda x: (x.get("rr", 0), x.get("thesis_score", 0)))
+        lines += [
+            "  UNIFIED CANDIDATE BRIDGE:",
+            f"    Trigger confirmed candidates: {ub['trigger_confirmed_count']}",
+            f"    Shadow eligible from trigger:  {ub['shadow_eligible_from_trigger']}",
+            f"    Review candidate from trigger: {ub['review_candidate_from_trigger']}",
+        ]
+        if best_bridge:
+            lines += [
+                f"    Best bridge candidate: {best_bridge['symbol']} {best_bridge['timeframe']} "
+                f"{best_bridge['direction']} RR:1:{best_bridge.get('rr', '?')} "
+                f"Score:{best_bridge.get('thesis_score', '?')}",
+                f"      Status: {best_bridge.get('verdict', 'DO_NOT_TRADE')}",
+            ]
+        lines += [""]
+
     mem_records = report.get("memory_scan_records", 0)
     mem_outcomes = report.get("memory_outcomes", 0)
     mem_pending = report.get("memory_pending", 0)

@@ -439,8 +439,33 @@ def main():
             arbiter_lines += [
                 f"    Best: {arb_best['symbol']} {arb_best['timeframe']} {arb_best['direction']} "
                 f"RR:1:{arb_best['rr']} Score:{arb_best['thesis_score']} "
-                f"Trigger:{arb_best['trigger_status']}",
+                f"Trigger:{arb_best['trigger_status']} Source:{arb_best.get('candidate_source', '?')}",
             ]
+        # Unified Candidate Bridge section (Phase 50)
+        ub = arbiter.get("unified_bridge_candidates", {})
+        if ub and ub.get("trigger_confirmed_count", 0) > 0:
+            ub_list = ub.get("candidates", [])
+            best_bridge = None
+            for bc in ub_list:
+                if bc.get("verdict") == "SHADOW_ELIGIBLE":
+                    best_bridge = bc
+                    break
+            if not best_bridge and ub_list:
+                best_bridge = max(ub_list, key=lambda x: (x.get("rr", 0), x.get("thesis_score", 0)))
+            arbiter_lines += [
+                "",
+                "  UNIFIED CANDIDATE BRIDGE:",
+                f"    Trigger confirmed candidates: {ub['trigger_confirmed_count']}",
+                f"    Shadow eligible from trigger:  {ub['shadow_eligible_from_trigger']}",
+                f"    Review candidate from trigger: {ub['review_candidate_from_trigger']}",
+            ]
+            if best_bridge:
+                arbiter_lines += [
+                    f"    Best bridge: {best_bridge['symbol']} {best_bridge['timeframe']} "
+                    f"{best_bridge['direction']} RR:1:{best_bridge.get('rr', '?')} "
+                    f"Score:{best_bridge.get('thesis_score', '?')}",
+                    f"      Status: {best_bridge.get('verdict', 'DO_NOT_TRADE')}",
+                ]
     else:
         arbiter_lines = ["", "  CANDIDATE ARBITER: MISSING (no report)", ""]
 
