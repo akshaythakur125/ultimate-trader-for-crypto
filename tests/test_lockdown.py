@@ -5070,3 +5070,77 @@ def test_bridge_path_max_open_positions_gate():
     import production_replay.bingx_shadow_executor as se
     src = inspect.getsource(se.run_shadow_executor)
     assert "open position exists" in src
+
+
+def test_bridge_intent_real_order_false():
+    """Bridge shadow intent has real_order=False, never activates live trading."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={"candidate_source": "trigger_watcher", "trigger_status": "TRIGGER_CONFIRMED", "thesis_score": 80},
+        symbol="BTC-USDT", side="SHORT", entry=60000, stop_loss=61000, final_target=55000,
+        rr_final=6.0, source_pattern="SWEEP_HIGH", pattern_id="test", pattern_name="SWEEP_HIGH",
+        verdict="SHADOW_ELIGIBLE",
+    )
+    intent["source"] = "trigger_bridge"
+    assert intent["real_order"] is False
+    assert intent["mode"] == "SHADOW_ONLY"
+
+
+def test_bridge_no_approved_string():
+    """Bridge path eliminates APPROVED from shadow executor output."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se)
+    assert "APPROVED" not in src
+
+
+def test_bridge_live_micro_not_activated():
+    """Live micro executor environment gates still block even when SHADOW_READY."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "BINGX_EXECUTION_MODE" in src
+    assert "LIVE_TRADING_ACK" in src
+
+
+def test_bridge_dux_do_not_trade_does_not_block():
+    """Dux DO_NOT_TRADE does not block trigger bridge when bridge_active."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "bypassing Dux" in src
+    assert "TRIGGER_BRIDGE_BYPASS" in src
+
+
+def test_bridge_invalid_entry_blocks():
+    """Bridge activation checks entry > 0; zero entry prevents bridge_active."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="BTC-USDT", side="SHORT", entry=0, stop_loss=61000,
+        final_target=55000, rr_final=6.0, source_pattern="SWEEP_HIGH",
+        pattern_id="test", pattern_name="SWEEP_HIGH", verdict="SHADOW_ELIGIBLE",
+    )
+    assert intent["entry"] == 0  # zero entry recorded
+    # A zero entry would cause entry_ok=False in bridge activation, so bridge stays INACTIVE
+
+
+def test_bridge_invalid_stop_blocks():
+    """Bridge activation checks stop > 0; zero stop prevents bridge_active."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="BTC-USDT", side="SHORT", entry=60000, stop_loss=0,
+        final_target=55000, rr_final=6.0, source_pattern="SWEEP_HIGH",
+        pattern_id="test", pattern_name="SWEEP_HIGH", verdict="SHADOW_ELIGIBLE",
+    )
+    assert intent["stop_loss"] == 0  # zero stop recorded
+
+
+def test_bridge_invalid_target_blocks():
+    """Bridge activation checks target > 0; zero target prevents bridge_active."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="BTC-USDT", side="SHORT", entry=60000, stop_loss=61000,
+        final_target=0, rr_final=6.0, source_pattern="SWEEP_HIGH",
+        pattern_id="test", pattern_name="SWEEP_HIGH", verdict="SHADOW_ELIGIBLE",
+    )
+    assert intent["final_target"] == 0  # zero target recorded

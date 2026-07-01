@@ -488,6 +488,10 @@ def main():
                 f"    Symbol: {si.get('symbol', '?')} {si.get('side', '?')} "
                 f"Entry:{si.get('entry', '?')} Stop:{si.get('stop_loss', '?')} "
                 f"Target:{si.get('final_target', '?')} RR:1:{si.get('rr_final', '?')}",
+                f"    Source: {si.get('source', 'N/A')}",
+                f"    Candidate Source: {si.get('candidate_source', 'N/A')}",
+                f"    Trigger Status: {si.get('trigger_status', 'N/A')}",
+                f"    Thesis Score: {si.get('thesis_score', 'N/A')}",
             ]
         shr_reasons = shadow.get("reasons", [])
         if shr_reasons and shr_reasons != ["all gates passed"]:

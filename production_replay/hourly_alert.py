@@ -191,7 +191,7 @@ def run_hourly_alert() -> dict:
         position_open=position_open, emergency=emergency,
         executable_count=executable_count,
         watchlist_count=watchlist_count,
-        near_miss_count=near_miss_count,
+        near_miss_count=near_miss_total,
         bridge_shadow_ready=bridge_shadow_ready,
     )
 
@@ -498,15 +498,11 @@ def _write_text_report(report: dict, action: str, reason: str):
             "",
         ]
 
-    # Phase 51: show bridge candidate as best if available
+    # Phase 51: TRIGGER BRIDGE active indicator
     bridge_candidate_shown = False
-    if bridge_shadow_ready and shadow and shadow.get("shadow_order_intent"):
-        si = shadow["shadow_order_intent"]
+    if report.get("bridge_shadow_ready"):
         lines += [
-            "  BEST CANDIDATE (TRIGGER BRIDGE):",
-            f"    {si.get('pattern_name', 'TRIGGER_BRIDGE')} on {si['symbol']} {shadow.get('candidate_source', 'trigger_watcher')}",
-            f"    Direction: {si['side']}  RR: 1:{si['rr_final']}",
-            f"    Source: {si.get('source', 'trigger_bridge')}",
+            "  TRIGGER BRIDGE ACTIVE — SHADOW_READY",
             "",
         ]
         bridge_candidate_shown = True
