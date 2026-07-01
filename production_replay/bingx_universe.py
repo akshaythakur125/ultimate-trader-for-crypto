@@ -19,7 +19,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 JSON_PATH = os.path.join(RESULTS_DIR, "bingx_universe.json")
 TXT_PATH = os.path.join(RESULTS_DIR, "bingx_universe.txt")
 
-SCAN_UNIVERSE_TARGET = 100
+SCAN_UNIVERSE_TARGET = 200
 KNOWN_MEMECOINS = {
     "DOGE-USDT", "SHIB-USDT", "PEPE-USDT", "BONK-USDT", "WIF-USDT",
     "FLOKI-USDT", "MEME-USDT", "TURBO-USDT", "PEOPLE-USDT", "1000PEPE-USDT",

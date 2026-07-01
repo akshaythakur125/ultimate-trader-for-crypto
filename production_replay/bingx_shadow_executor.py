@@ -71,6 +71,7 @@ def run_shadow_executor() -> dict:
 
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
+    psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
 
@@ -81,9 +82,17 @@ def run_shadow_executor() -> dict:
     alpha_candidate = alpha.get("best_candidate") if alpha else None
     alpha_score = alpha_candidate["alpha_score"] if alpha_candidate else None
 
+    # Extract psychology score
+    psych_candidate = psych.get("best_candidate") if psych else None
+    psychology_score = psych_candidate["psychology_score"] if psych_candidate else None
+
     # Gate 0: alpha_score >= 70
     if alpha_score is None or alpha_score < 70:
         reasons.append(f"alpha score {alpha_score} < 70")
+
+    # Gate 0b: psychology_score >= 70
+    if psychology_score is None or psychology_score < 70:
+        reasons.append(f"psychology score {psychology_score} < 70")
 
     # Gate 1: system safe
     if not doctor.get("system_safe", False):

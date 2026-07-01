@@ -2971,3 +2971,226 @@ def test_live_executor_still_refuses_in_read_only():
     assert report.get("execution_mode") != "live_micro" or not report.get("live_armed", True)
     assert report.get("decision") != "EXECUTE"
     assert "real_order" not in report.get("decision", "")
+
+
+# --- Phase 40B: Trade State Machine ---
+
+def test_tsm_initial_state():
+    from production_replay.trade_state_machine import TradeStateMachine
+    tsm = TradeStateMachine()
+    assert tsm.state == "IDLE"
+    assert tsm.can_open_new_trade()
+
+
+def test_tsm_valid_transition():
+    from production_replay.trade_state_machine import TradeStateMachine
+    tsm = TradeStateMachine("SIGNAL_FOUND")
+    assert tsm.can_transition("SHADOW_READY")
+    assert tsm.transition("SHADOW_READY", "test")
+    assert tsm.state == "SHADOW_READY"
+
+
+def test_tsm_invalid_transition():
+    from production_replay.trade_state_machine import TradeStateMachine
+    tsm = TradeStateMachine("SIGNAL_FOUND")
+    assert not tsm.can_transition("ENTRY_FILLED")
+    assert not tsm.transition("ENTRY_FILLED", "test")
+
+
+def test_tsm_no_second_trade_while_active():
+    from production_replay.trade_state_machine import TradeStateMachine
+    for s in ("ENTRY_SENT", "ENTRY_FILLED", "MONITORING", "PROTECTION_PENDING"):
+        tsm = TradeStateMachine(s)
+        assert not tsm.can_open_new_trade(), f"should block when {s}"
+
+
+def test_tsm_error_locked_blocks():
+    from production_replay.trade_state_machine import TradeStateMachine
+    tsm = TradeStateMachine("ERROR_LOCKED")
+    assert tsm.is_locked()
+    assert not tsm.can_open_new_trade()
+    assert tsm.can_transition("IDLE")
+    assert tsm.transition("IDLE", "recovered")
+
+
+# --- Phase 40B: Risk Ledger ---
+
+def test_risk_ledger_initial_state():
+    from production_replay.risk_ledger import RiskLedger
+    rl = RiskLedger()
+    status = rl.get_status_dict()
+    assert status["max_live_trades"] == 1
+    assert status["max_losses_per_day"] == 2
+    assert status["max_daily_loss_usdt"] == 2.0
+    assert status["max_weekly_loss_usdt"] == 5.0
+
+
+def test_risk_ledger_today_pnl():
+    from production_replay.risk_ledger import RiskLedger
+    rl = RiskLedger()
+    pnl = rl.today_pnl
+    assert isinstance(pnl, (int, float))
+
+
+def test_risk_ledger_cooldown():
+    from production_replay.risk_ledger import RiskLedger
+    from production_replay.risk_ledger import COOLDOWN_MINUTES
+    assert COOLDOWN_MINUTES >= 30, "cooldown too short"
+
+
+# --- Phase 40B: Psychology Alpha ---
+
+def test_psychology_alpha_runs():
+    from production_replay.psychology_alpha import run_psychology_alpha
+    report = run_psychology_alpha()
+    assert report["mode"] == "psychology_alpha"
+    assert report["research_only"] is True
+    assert report["live_trading_enabled"] is False
+    assert report["paper_trading_enabled"] is False
+    assert "psychology_modules_available" in report
+    assert len(report["psychology_modules_available"]) >= 6
+
+
+def test_psychology_alpha_no_approved():
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "psychology_alpha_report.json")
+    with open(path) as f:
+        text = f.read()
+    assert "APPROVED" not in text
+
+
+def test_psychology_alpha_rejects_rr_below_4():
+    from production_replay.psychology_alpha import _compute_psychology
+    result = _compute_psychology({
+        "symbol": "BTC-USDT", "direction": "LONG",
+        "rr_2": 3.5, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 10, "wick_pct": 60,
+        "vol_expansion": True, "entry": 100, "stop": 99,
+        "target_2": 104,
+        "stats": {"trades": 50, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 5},
+    }, {})
+    assert result["rejected"] is True
+
+
+def test_psychology_alpha_watch_candidate():
+    from production_replay.psychology_alpha import _compute_psychology
+    result = _compute_psychology({
+        "symbol": "PEPE-USDT", "direction": "LONG",
+        "rr_2": 4.2, "pattern_id": "panic_flush_reclaim",
+        "pump_pct": 8, "wick_pct": 55,
+        "vol_expansion": True, "entry": 100, "stop": 98.5,
+        "target_2": 107,
+        "stats": {"trades": 10, "ev_r": 0.2, "profit_factor": 1.2, "max_drawdown_r": 8},
+    }, {"PEPE-USDT": {"quote_volume": 1000000, "price_change_pct": 6}})
+    assert not result["rejected"]
+    assert result["psychology_score"] >= 70
+    assert result["verdict"] == "WATCH"
+
+
+def test_psychology_alpha_elite_candidate():
+    from production_replay.psychology_alpha import _compute_psychology
+    result = _compute_psychology({
+        "symbol": "PEPE-USDT", "direction": "LONG",
+        "rr_2": 5.0, "pattern_id": "parabolic_pump_fade",
+        "pump_pct": 15, "wick_pct": 70,
+        "vol_expansion": True, "entry": 100, "stop": 98,
+        "target_2": 110,
+        "stats": {"trades": 60, "ev_r": 0.5, "profit_factor": 2.0, "max_drawdown_r": 3},
+    }, {"PEPE-USDT": {"quote_volume": 5000000, "price_change_pct": 12}})
+    assert not result["rejected"]
+    assert result["psychology_score"] >= 85
+    assert result["verdict"] == "MANUAL_REVIEW_ONLY"
+    assert result["psychology_thesis"]
+
+
+def test_psychology_alpha_no_trap_rejected():
+    from production_replay.psychology_alpha import _compute_psychology
+    result = _compute_psychology({
+        "symbol": "BTC-USDT", "direction": "UNKNOWN",
+        "rr_2": 4.0, "pattern_id": "weak_bounce_short",
+        "pump_pct": 1, "wick_pct": 10,
+        "vol_expansion": False, "entry": 100, "stop": 99.5,
+        "target_2": 103,
+        "stats": {"trades": 2, "ev_r": 0.05, "profit_factor": 1.0, "max_drawdown_r": 15},
+    }, {"BTC-USDT": {"quote_volume": 50000, "price_change_pct": 1}})
+    assert result["rejected"] is True
+
+
+# --- Phase 40B: Position Monitor ---
+
+def test_position_monitor_runs():
+    from production_replay.bingx_position_monitor import run_monitor_check
+    report = run_monitor_check()
+    assert report["mode"] == "position_monitor"
+    assert "position_found" in report
+    assert "trade_state" in report
+    assert "emergency_status" in report
+    assert "warnings" in report
+
+
+def test_position_monitor_text_report_exists():
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "position_monitor_status.txt")
+    assert os.path.exists(path)
+    with open(path) as f:
+        text = f.read()
+    assert "POSITION MONITOR" in text
+
+
+def test_hourly_alert_emergency_exit():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("DO_NOT_TRADE", 0, 0, "DO_NOT_TRADE",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only",
+                                             position_open=False, emergency=True)
+    assert action == "EMERGENCY_EXIT_REQUIRED"
+
+
+def test_hourly_alert_position_open_monitoring():
+    from production_replay.hourly_alert import _determine_final_action
+    action, reason = _determine_final_action("DO_NOT_TRADE", 0, 0, "DO_NOT_TRADE",
+                                             "DO_NOT_EXECUTE", "DO_NOT_EXECUTE",
+                                             False, "read_only",
+                                             position_open=True, emergency=False)
+    assert action == "POSITION_OPEN_MONITORING"
+
+
+def test_doctor_packet_includes_psychology_section():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "market_psychology_alpha" in report
+    assert report["market_psychology_alpha"] is not None
+
+
+def test_doctor_packet_includes_position_monitor():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "live_position_monitor" in report
+
+
+def test_psychology_no_martingale_in_source():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "psychology_alpha.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    for bad in ["withdraw", "transfer", "send", "martingale"]:
+        assert all(bad not in f for f in funcs), f"found {bad} in psychology_alpha"
+
+
+def test_position_monitor_no_withdrawal():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "bingx_position_monitor.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    for bad in ["withdraw", "transfer", "send"]:
+        assert all(bad not in f for f in funcs), f"found {bad} in position_monitor"

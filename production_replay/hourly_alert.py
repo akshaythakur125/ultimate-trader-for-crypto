@@ -43,7 +43,17 @@ def _determine_final_action(
     live_decision: str,
     live_armed: bool,
     execution_mode: str,
+    position_open: bool = False,
+    emergency: bool = False,
 ) -> tuple[str, str]:
+    # Rule 0: emergency
+    if emergency:
+        return "EMERGENCY_EXIT_REQUIRED", "Emergency situation detected"
+
+    # Rule 0b: position open -> monitoring
+    if position_open:
+        return "POSITION_OPEN_MONITORING", "Live position open; continuous monitoring active"
+
     # Rule 1: no alpha candidate -> DO_NOTHING
     if alpha_score is None or alpha_score < 70:
         return "DO_NOTHING", "No alpha candidate >= 70; no action needed"
@@ -79,6 +89,7 @@ def run_hourly_alert() -> dict:
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
+    psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
 
@@ -88,6 +99,10 @@ def run_hourly_alert() -> dict:
     dux_decision = dux.get("final_decision", "DO_NOT_TRADE") if dux else "DO_NOT_TRADE"
     alpha_score = alpha.get("best_candidate", {}).get("alpha_score") if alpha and alpha.get("best_candidate") else None
     alpha_decision = alpha.get("final_decision", "DO_NOT_TRADE") if alpha else "DO_NOT_TRADE"
+    psych_score = None
+    if psych:
+        pc = psych.get("best_candidate")
+        psych_score = pc["psychology_score"] if pc else None
     alpha_elite = alpha.get("alpha_elite_candidates", 0) if alpha else 0
     alpha_watch = alpha.get("alpha_watch_candidates", 0) if alpha else 0
     alpha_best = alpha.get("best_candidate") if alpha else None
@@ -106,9 +121,14 @@ def run_hourly_alert() -> dict:
     creds = load_credentials()
     api_ok = bool(creds.get("api_key") and creds.get("api_secret"))
 
+    position_monitor = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
+    position_open = position_monitor.get("position_found", False) if position_monitor else False
+    emergency = position_monitor.get("emergency_status") == "CRITICAL" if position_monitor else False
+
     final_action, action_reason = _determine_final_action(
         dux_decision, rr_pass, alpha_score, alpha_decision,
         shadow_decision, live_decision, live_armed, execution_mode,
+        position_open=position_open, emergency=emergency,
     )
 
     report = {
@@ -124,6 +144,7 @@ def run_hourly_alert() -> dict:
         "alpha_score": alpha_score,
         "alpha_elite_candidates": alpha_elite,
         "alpha_watch_candidates": alpha_watch,
+        "psychology_score": psych_score,
         "best_candidate": {
             "symbol": best["symbol"],
             "timeframe": best["timeframe"],
@@ -148,6 +169,8 @@ def run_hourly_alert() -> dict:
         "open_positions": open_positions,
         "api_credentials_found": api_ok,
         "kill_switch": "ON" if kill_active else "OFF",
+        "position_open": position_open,
+        "emergency": emergency,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -200,6 +223,11 @@ def _write_text_report(report: dict, action: str, reason: str):
         ]
     else:
         lines += ["  Alpha Score: NONE", ""]
+    psych_score = report.get("psychology_score")
+    if psych_score is not None:
+        lines += [f"  Psychology Score:   {psych_score}/100", ""]
+    else:
+        lines += ["  Psychology Score: NONE", ""]
 
     if best:
         lines += [
@@ -228,6 +256,8 @@ def _write_text_report(report: dict, action: str, reason: str):
         f"  Execution Mode:     {report['execution_mode']}",
         f"  Live Armed:         {'YES' if report['live_armed'] else 'NO'}",
         f"  Open Positions:     {report['open_positions']}",
+        f"  Position Monitor:   {'OPEN' if report.get('position_open') else 'CLOSED'}",
+        f"  Emergency:          {'YES' if report.get('emergency') else 'NO'}",
         f"  API Credentials:    {'FOUND' if report['api_credentials_found'] else 'NOT FOUND'}",
         f"  Kill Switch:        {report['kill_switch']}",
         "",

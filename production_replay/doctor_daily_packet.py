@@ -40,12 +40,10 @@ def _read_ledger_latest() -> dict | None:
     return json.loads(lines[-1])
 
 
-def _run_module(name: str) -> bool:
+def _run_module(name: str, *extra_args: str) -> bool:
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", name],
-            capture_output=True, text=True, timeout=60,
-        )
+        cmd = [sys.executable, "-m", name, *extra_args]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         return result.returncode == 0
     except Exception:
         return False
@@ -60,8 +58,10 @@ def main():
     _run_module("production_replay.strategy_tournament")
     _run_module("production_replay.dux_pattern_engine")
     _run_module("production_replay.alpha_intelligence")
+    _run_module("production_replay.psychology_alpha")
     _run_module("production_replay.bingx_shadow_executor")
     _run_module("production_replay.bingx_live_micro_executor")
+    _run_module("production_replay.bingx_position_monitor", "--once")
     _run_module("production_replay.hourly_alert")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
@@ -69,8 +69,10 @@ def main():
     tournament = _read_json(os.path.join(RESULTS_DIR, "strategy_tournament_report.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
+    psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
     entry = _read_ledger_latest()
 
@@ -238,6 +240,34 @@ def main():
     else:
         alpha_lines = ["", "  ALPHA INTELLIGENCE: MISSING (no report)", ""]
 
+    # Deep psychology alpha section
+    psych_lines = []
+    if psych:
+        best_psych = psych.get("best_candidate")
+        psych_score = best_psych["psychology_score"] if best_psych else 0
+        if best_psych:
+            psych_lines = [
+                "",
+                "  MARKET PSYCHOLOGY ALPHA:",
+                f"    Best: {best_psych['pattern_name']} on {best_psych['symbol']} {best_psych['timeframe']}",
+                f"    Thesis: {best_psych.get('psychology_thesis', 'N/A')}",
+                f"    Psychology Score: {psych_score}/100  RR: 1:{best_psych['rr_2']}",
+                f"    Elite: {'YES' if psych_score >= 85 else 'NO'}",
+                f"    Final Decision: {psych.get('final_decision', 'N/A')}",
+            ]
+        else:
+            psych_lines = ["", "  MARKET PSYCHOLOGY ALPHA: No candidate passes >= 70", ""]
+        psych_lines += [
+            "",
+            "  PSYCHOLOGY SCAN:",
+            f"    Total patterns:     {psych.get('total_patterns_detected', 0)}",
+            f"    RR >= 4 candidates: {psych.get('rr_gate_pass_candidates', 0)}",
+            f"    WATCH >= 70:        {psych.get('psychology_watch_candidates', 0)}",
+            f"    ELITE >= 85:        {psych.get('psychology_elite_candidates', 0)}",
+        ]
+    else:
+        psych_lines = ["", "  MARKET PSYCHOLOGY ALPHA: MISSING (no report)", ""]
+
     # BingX shadow execution section
     shadow_lines = []
     if shadow:
@@ -278,6 +308,29 @@ def main():
         ]
     else:
         live_lines = ["", "  BINGX LIVE MICRO EXECUTION: MISSING (no report)", ""]
+
+    # Live position monitor section
+    pos_lines = []
+    if pos_mon:
+        pf = pos_mon.get("position_found", False)
+        pos_lines = [
+            "",
+            "  LIVE POSITION MONITOR:",
+            f"    Open Position:     {'YES' if pf else 'NO'}",
+            f"    Symbol:            {pos_mon.get('symbol') or 'N/A'}",
+            f"    Entry Price:       {pos_mon.get('entry_price') or 'N/A'}",
+            f"    Unrealized PnL:    {pos_mon.get('unrealized_pnl_usdt') or 'N/A'} USDT",
+            f"    R Multiple:        {pos_mon.get('r_multiple') or 'N/A'}",
+            f"    Stop Verified:     {'YES' if pos_mon.get('stop_verified') else 'NO'}",
+            f"    Trade State:       {pos_mon.get('trade_state', 'N/A')}",
+            f"    Emergency Status:  {pos_mon.get('emergency_status', 'OK')}",
+            f"    Kill Switch:       {pos_mon.get('kill_switch', 'OFF')}",
+        ]
+        pos_warnings = pos_mon.get("warnings", [])
+        if pos_warnings:
+            pos_lines.append(f"    Warnings: {'; '.join(pos_warnings[:3])}")
+    else:
+        pos_lines = ["", "  LIVE POSITION MONITOR: MISSING (no report)", ""]
 
     # Hourly final status section
     hourly_lines = []
@@ -333,8 +386,10 @@ def main():
     lines += tournament_lines
     lines += dux_lines
     lines += alpha_lines
+    lines += psych_lines
     lines += shadow_lines
     lines += live_lines
+    lines += pos_lines
     lines += hourly_lines
 
     lines += [
@@ -398,6 +453,19 @@ def main():
             "watch_candidates": alpha.get("alpha_watch_candidates", 0) if alpha else 0,
             "final_decision": alpha.get("final_decision", "N/A") if alpha else None,
         } if alpha else None,
+        "market_psychology_alpha": {
+            "best_candidate": {
+                "symbol": psych.get("best_candidate", {}).get("symbol"),
+                "pattern_name": psych.get("best_candidate", {}).get("pattern_name"),
+                "psychology_score": psych.get("best_candidate", {}).get("psychology_score"),
+                "psychology_thesis": psych.get("best_candidate", {}).get("psychology_thesis"),
+                "rr_2": psych.get("best_candidate", {}).get("rr_2"),
+                "verdict": psych.get("best_candidate", {}).get("verdict"),
+            } if psych and psych.get("best_candidate") else None,
+            "watch_candidates": psych.get("psychology_watch_candidates", 0) if psych else 0,
+            "elite_candidates": psych.get("psychology_elite_candidates", 0) if psych else 0,
+            "final_decision": psych.get("final_decision", "N/A") if psych else None,
+        } if psych else None,
         "bingx_shadow_execution": {
             "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",
             "shadow_decision": shadow.get("decision", "N/A") if shadow else None,
@@ -412,6 +480,17 @@ def main():
             "latest_decision": live.get("decision") if live else None,
             "latest_reason": "; ".join(live.get("reasons", [])) if live else None,
         } if live else None,
+        "live_position_monitor": {
+            "position_found": pos_mon.get("position_found", False) if pos_mon else None,
+            "symbol": pos_mon.get("symbol") if pos_mon else None,
+            "entry_price": pos_mon.get("entry_price") if pos_mon else None,
+            "unrealized_pnl_usdt": pos_mon.get("unrealized_pnl_usdt") if pos_mon else None,
+            "r_multiple": pos_mon.get("r_multiple") if pos_mon else None,
+            "stop_verified": pos_mon.get("stop_verified") if pos_mon else None,
+            "trade_state": pos_mon.get("trade_state") if pos_mon else None,
+            "emergency_status": pos_mon.get("emergency_status") if pos_mon else None,
+            "warnings": pos_mon.get("warnings", []) if pos_mon else None,
+        } if pos_mon else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

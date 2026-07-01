@@ -123,6 +123,7 @@ def run_live_micro_executor() -> dict:
 
     # -- Read inputs --
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
+    psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     creds = load_credentials()
@@ -204,6 +205,14 @@ def run_live_micro_executor() -> dict:
         if target <= 0:
             reasons.append("invalid target")
             strategy_ok = False
+    psych_score = None
+    if psych:
+        pc = psych.get("best_candidate")
+        psych_score = pc["psychology_score"] if pc else None
+    if psych_score is None or psych_score < 70:
+        reasons.append(f"psychology score {psych_score} < 70")
+        strategy_ok = False
+
     if not strategy_ok:
         reasons.append("strategy gates failed")
 
@@ -383,6 +392,7 @@ def run_live_micro_executor() -> dict:
             "kill_switch": not kill_active,
         },
         "dux_decision": dux_decision,
+        "psychology_score": psych_score,
         "shadow_decision": shadow.get("decision", "N/A") if shadow else "N/A",
         "symbol": symbol if candidate else None,
         "direction": direction if candidate else None,
