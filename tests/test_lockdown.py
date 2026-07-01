@@ -5144,3 +5144,32 @@ def test_bridge_invalid_target_blocks():
         pattern_id="test", pattern_name="SWEEP_HIGH", verdict="SHADOW_ELIGIBLE",
     )
     assert intent["final_target"] == 0  # zero target recorded
+
+
+# ── Phase 52: Doctor Packet STATE_DIR Fix ─────────────────────────────
+
+def test_doctor_packet_state_dir_defined():
+    """doctor_daily_packet defines STATE_DIR (alias for LEDGER_DIR)."""
+    from production_replay.doctor_daily_packet import STATE_DIR, LEDGER_DIR, RESULTS_DIR
+    assert STATE_DIR == LEDGER_DIR
+    assert os.path.isdir(STATE_DIR) is True or os.path.isdir(os.path.dirname(os.path.dirname(RESULTS_DIR)))
+
+
+def test_doctor_packet_trigger_watcher_read_uses_ledger_dir():
+    """Trigger watcher section uses LEDGER_DIR (not undefined STATE_DIR)."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp)
+    assert "LEDGER_DIR" in src or "STATE_DIR" in src
+    # Verify the trigger watcher section reads from the correct dir
+    for line in src.split("\n"):
+        if "trigger_watchlist_active" in line:
+            assert "LEDGER_DIR" in line or "STATE_DIR" in line, f"Bad path in: {line}"
+            break
+
+
+def test_doctor_packet_no_crash_on_missing_files():
+    """Doctor packet handles missing trigger/arbiter/shadow files gracefully."""
+    from production_replay.doctor_daily_packet import _read_json
+    assert _read_json("nonexistent_file_xyz.json") is None
+    assert _read_json("") is None

@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 LEDGER_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
+STATE_DIR = LEDGER_DIR  # alias for runtime_state
 LEDGER_FILE = os.environ.get("EVIDENCE_LEDGER_PATH") or os.path.join(LEDGER_DIR, "evidence_ledger.jsonl")
 TXT_PATH = os.path.join(RESULTS_DIR, "doctor_daily_packet.txt")
 JSON_PATH = os.path.join(RESULTS_DIR, "doctor_daily_packet.json")
@@ -392,7 +393,7 @@ def main():
     # Trigger watcher section
     trigger_lines = []
     trigger_watcher = _read_json(os.path.join(RESULTS_DIR, "trigger_watcher_report.json"))
-    trigger_active = _read_json(os.path.join(STATE_DIR, "trigger_watchlist_active.json"))
+    trigger_active = _read_json(os.path.join(LEDGER_DIR, "trigger_watchlist_active.json"))
     if trigger_watcher:
         tw_best_conf = trigger_watcher.get("best_confirmed_candidate")
         tw_best_wait = trigger_watcher.get("best_waiting_candidate")
