@@ -38,7 +38,16 @@ WATCH_BUCKETS_PRIORITY = [
     "NEAR_MISS_PSYCHOLOGY",
     "NEAR_MISS_RR",
     "WATCHLIST_READY",
+    "RAW_TRAP_DETECTED",
     "ARBITER_ELIGIBLE",
+]
+
+# Priority search keys in near_miss_report.json for candidate lists
+CANDIDATE_LIST_KEYS = [
+    "top_30_watchlist", "top_watchlist", "watchlist", "candidates",
+    "diagnostic_candidates", "thesis_candidates", "validated_candidates",
+    "ranked_candidates", "near_miss_candidates", "raw_candidates",
+    "all_classified",
 ]
 
 
@@ -70,19 +79,130 @@ def _write_json(path: str, data):
         json.dump(data, f, indent=2)
 
 
-def _load_watchlist_candidates() -> list[dict]:
+def _normalize_candidate(c: dict) -> dict:
+    """Normalize field names so trigger watcher can handle various schemas."""
+    norm = dict(c)
+    field_map = {
+        "tf": "timeframe",
+        "pattern": "thesis_type",
+        "psych": "psychology_score",
+        "tscr": "thesis_score",
+        "rr": "current_rr",
+        "dir": "direction",
+        "p_score": "psychology_score",
+        "t_score": "thesis_score",
+        "thesis": "thesis_type",
+        "entry_price": "entry",
+        "stop_loss": "stop",
+        "target_price": "target",
+    }
+    for old, new in field_map.items():
+        if old in norm and old != new:
+            if new not in norm or not norm.get(new):
+                norm[new] = norm[old]
+    # Ensure string fields
+    for sf in ("symbol", "timeframe", "direction", "thesis_type", "bucket"):
+        if sf not in norm:
+            norm[sf] = ""
+    # Ensure numeric fields
+    for nf in ("psychology_score", "thesis_score", "current_rr", "entry", "stop", "target", "rr_2"):
+        if nf not in norm:
+            norm[nf] = 0
+    # Normalize thesis_type from pattern_name if missing
+    if not norm.get("thesis_type") and norm.get("pattern_name"):
+        norm["thesis_type"] = norm["pattern_name"]
+    return norm
+
+
+def _extract_candidates_from_report(report: dict) -> list[dict]:
+    """Extract candidate dicts from near_miss_report.json using multiple strategies."""
+    raw_candidates = []
+
+    # Strategy A: check known list keys
+    for key in CANDIDATE_LIST_KEYS:
+        val = report.get(key)
+        if isinstance(val, list) and val:
+            if isinstance(val[0], dict):
+                raw_candidates.extend(val)
+
+    # Strategy B: inspect all top-level list values for candidate-like dicts
+    if not raw_candidates:
+        for k, v in report.items():
+            if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                sample_keys = set(v[0].keys())
+                if sample_keys & {"symbol", "timeframe", "direction"}:
+                    raw_candidates.extend(v)
+
+    return raw_candidates
+
+
+def _is_fresh_near_miss(report: dict) -> bool:
+    """Check if near_miss_report.json has fresh content."""
+    if not report:
+        return False
+    count_keys = ["diagnostic_executable_count", "watchlist_ready_count",
+                  "near_miss_rr_count", "near_miss_psychology_count",
+                  "directional_theses_created"]
+    for k in count_keys:
+        if report.get(k, 0) > 0:
+            return True
+    if report.get("all_classified") or report.get("top_30_watchlist"):
+        return True
+    return False
+
+
+def _load_stale_jsonl_fallback() -> list[dict]:
+    """Load from JSONL as fallback only, filtering stale/rejected entries."""
+    entries = _read_jsonl(os.path.join(STATE_DIR, "near_miss_watchlist.jsonl"))
+    now_ts = datetime.now().isoformat()
+    latest_nm = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
+    nm_ts = latest_nm.get("timestamp", now_ts) if latest_nm else now_ts
+
+    fresh = []
+    for e in entries:
+        e = _normalize_candidate(e)
+        if e.get("bucket") == "REJECTED":
+            continue
+        if e.get("psychology_score", 0) == 0:
+            continue
+        rr_val = e.get("current_rr") or e.get("rr_2") or 0
+        if rr_val in (0, "N/A", "0"):
+            continue
+        if e.get("next_step") in ("", "no actionable setup", None):
+            continue
+        entry_ts = e.get("timestamp", e.get("detection_time", ""))
+        if entry_ts and entry_ts < nm_ts:
+            continue
+        fresh.append(e)
+    return fresh
+
+
+def _load_watchlist_candidates() -> tuple[list[dict], str]:
     """Load and select top watchlist candidates from near_miss_report.json.
 
-    Returns list of candidates to monitor, prioritized and deduplicated.
+    Returns (list of candidates, source_description).
     """
     near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
-    classified = near_miss.get("all_classified", [])
     arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
     arbiter_best = arbiter.get("best_candidate") if arbiter else None
 
+    source = "none"
+    raw_candidates = []
+
+    # Priority A: fresh near_miss_report.json
+    if _is_fresh_near_miss(near_miss):
+        raw_candidates = _extract_candidates_from_report(near_miss)
+        source = f"near_miss_report.json ({len(raw_candidates)} raw)"
+        # Normalize all candidates
+        raw_candidates = [_normalize_candidate(c) for c in raw_candidates]
+    else:
+        # Priority B: stale JSONL fallback
+        raw_candidates = _load_stale_jsonl_fallback()
+        source = f"near_miss_watchlist.jsonl (fallback, {len(raw_candidates)} after stale filter)"
+
     # Filter eligible candidates
     eligible = []
-    for c in classified:
+    for c in raw_candidates:
         sym = c.get("symbol", "")
         tf = c.get("timeframe", "")
         bucket = c.get("bucket", "REJECTED")
@@ -91,9 +211,9 @@ def _load_watchlist_candidates() -> list[dict]:
         entry = c.get("entry") or c.get("thesis_ideal_entry") or 0
         stop = c.get("stop") or c.get("thesis_stop") or 0
         target = c.get("target") or c.get("thesis_target") or c.get("target_2") or 0
-        psych_score = c.get("psychology_score", 0)
-        thesis_score = c.get("trade_thesis_score", 0)
-        rr = c.get("current_rr") or c.get("rr_2") or 0
+        psych_score = float(c.get("psychology_score", 0))
+        thesis_score = float(c.get("thesis_score", 0) or c.get("trade_thesis_score", 0))
+        rr = float(c.get("current_rr") or c.get("rr_2") or 0)
 
         # Must be crypto USDT perp
         if not is_crypto_usdt_perp(sym):
@@ -107,14 +227,14 @@ def _load_watchlist_candidates() -> list[dict]:
         # Must have valid entry/stop/target
         if not entry or float(entry) <= 0 or not stop or float(stop) <= 0 or not target or float(target) <= 0:
             continue
-        # Must have minimum scores
-        if psych_score < 50 or thesis_score < 50:
+        # Must have minimum scores (relaxed from Phase 49)
+        if psych_score < 30 or thesis_score < 45:
             continue
         # Must be in eligible bucket
         if bucket not in WATCH_BUCKETS_PRIORITY:
             continue
-        # Must not be invalidated
-        if c.get("rejection_reason") or c.get("trigger_info", {}).get("trigger_status") == "INVALIDATED":
+        # Must not be invalidated by trigger watcher
+        if c.get("trigger_info", {}).get("trigger_status") == "INVALIDATED":
             continue
         # Must have a valid timeframe
         if tf not in EXPIRY_MINUTES:
@@ -139,8 +259,8 @@ def _load_watchlist_candidates() -> list[dict]:
             "stop": float(stop),
             "target": float(target),
             "priority": priority,
-            "detection_time": c.get("detection_time", datetime.now().isoformat()),
-            "raw_anomaly_score": c.get("raw_anomaly_score", 0),
+            "detection_time": c.get("detection_time", c.get("timestamp", datetime.now().isoformat())),
+            "raw_anomaly_score": float(c.get("raw_anomaly_score", 0)),
             "pattern_name": c.get("pattern_name", c.get("thesis_type", "N/A")),
         })
 
@@ -188,7 +308,7 @@ def _load_watchlist_candidates() -> list[dict]:
                 "pattern_name": ab_type,
             })
 
-    return selected
+    return selected, source
 
 
 def _get_recent_candles(symbol: str, tf: str, limit: int = 20) -> list:
@@ -356,7 +476,7 @@ def run_trigger_watcher() -> dict:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
-    candidates = _load_watchlist_candidates()
+    candidates, source = _load_watchlist_candidates()
     active_watchlist = []
     events = []
 
@@ -461,6 +581,7 @@ def run_trigger_watcher() -> dict:
         "live_trading_enabled": False,
         "paper_trading_enabled": False,
         "timestamp": now.isoformat(),
+        "candidate_source": source,
         "candidates_watched": len(candidates),
         "active_watchlist_size": len(active_watchlist),
         "waiting_count": waiting_count,
@@ -488,6 +609,7 @@ def _write_text_report(report: dict):
         f"  {report['timestamp']}",
         "=" * 60,
         "",
+        f"  Source:                 {report.get('candidate_source', 'unknown')}",
         f"  Candidates watched:     {report['candidates_watched']}",
         f"  Active watchlist size:  {report['active_watchlist_size']}",
         f"  Waiting:                {report['waiting_count']}",
@@ -524,10 +646,14 @@ def _write_text_report(report: dict):
     # Recent events
     lines += ["  RECENT TRIGGER EVENTS:", ""]
     for e in report.get("candidates", [])[:10]:
+        rr_val = e.get('rr', '?')
+        rr_str = f"{rr_val}" if not isinstance(rr_val, str) else rr_val
+        price_val = e.get('latest_price', '?')
+        price_str = f"{price_val}" if not isinstance(price_val, str) else (price_val or '?')
         lines += [
-            f"    {e['symbol']:12s} {e['timeframe']:4s} {e['direction']:5s} "
-            f"{e.get('trigger_status', '?'):18s} RR:{e.get('rr', '?'):<6s} "
-            f"Price:{e.get('latest_price', '?'):<10s}",
+            f"    {str(e['symbol']):12s} {str(e['timeframe']):4s} {str(e['direction']):5s} "
+            f"{str(e.get('trigger_status', '?')):18s} RR:{rr_str:<6s} "
+            f"Price:{price_str:<10s}",
         ]
     lines += [
         "",

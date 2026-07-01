@@ -28,6 +28,14 @@ def _read_json(path: str) -> dict:
         return {}
 
 
+def _read_jsonl(path: str) -> list[dict]:
+    try:
+        with open(path) as f:
+            return [json.loads(line) for line in f if line.strip()]
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
 def _append_jsonl(path: str, entry: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as f:
