@@ -145,6 +145,11 @@ def run_hourly_alert() -> dict:
     near_miss_total = near_miss_rr_ct + near_miss_psych_ct
     top_rejection = near_miss.get("top_rejection_reason", "N/A") if near_miss else "N/A"
 
+    # Signal integrity from near_miss
+    dedup_removed = near_miss.get("deduplicated_candidates_removed", 0) if near_miss else 0
+    exec_downgraded = near_miss.get("executable_downgraded_count", 0) if near_miss else 0
+    exec_after = near_miss.get("validated_executable_after", 0) if near_miss else 0
+
     final_action, action_reason = _determine_final_action(
         dux_decision, rr_pass, alpha_score, alpha_decision,
         shadow_decision, live_decision, live_armed, execution_mode,
@@ -164,6 +169,11 @@ def run_hourly_alert() -> dict:
         "crypto_only_perps": crypto_perps,
         "excluded_non_crypto": crypto_excluded,
         "directional_theses": directional_theses,
+        "signal_integrity": {
+            "deduplicated_candidates_removed": dedup_removed,
+            "executable_downgraded_count": exec_downgraded,
+            "validated_executable_after": exec_after,
+        },
         "long_theses": long_theses,
         "short_theses": short_theses,
         "dux_scan_symbols": dux_scan_size,
@@ -288,6 +298,9 @@ def _write_text_report(report: dict, action: str, reason: str):
     nm_rr = report.get("near_miss_rr_count", 0)
     nm_psych = report.get("near_miss_psychology_count", 0)
     top_rej = report.get("top_rejection_reason", "N/A")
+    si = report.get("signal_integrity", {})
+    dedup_removed = si.get("deduplicated_candidates_removed", 0)
+    exec_downgraded = si.get("executable_downgraded_count", 0)
     if exec_count > 0 or wl_count > 0 or nm_rr > 0 or nm_psych > 0:
         lines += [
             "  NEAR-MISS DIAGNOSTICS:",
@@ -296,6 +309,14 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Near-miss RR:             {nm_rr}",
             f"    Near-miss psychology:     {nm_psych}",
             f"    Top rejection reason:     {top_rej}",
+            "",
+        ]
+    if dedup_removed > 0 or exec_downgraded > 0:
+        lines += [
+            "  SIGNAL INTEGRITY:",
+            f"    Deduplicated removed:     {dedup_removed}",
+            f"    Executable downgraded:    {exec_downgraded}",
+            f"    Validated executables:    {si.get('validated_executable_after', exec_count)}",
             "",
         ]
 

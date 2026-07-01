@@ -338,7 +338,17 @@ def main():
         directional = near_miss.get("directional_theses_created", 0)
         long_ct = near_miss.get("long_theses", 0)
         short_ct = near_miss.get("short_theses", 0)
+        dedup_removed = near_miss.get("deduplicated_candidates_removed", 0)
+        exec_before = near_miss.get("validated_executable_before", 0)
+        exec_after = near_miss.get("validated_executable_after", 0)
         near_miss_lines = [
+            "",
+            "  SIGNAL INTEGRITY:",
+            f"    Crypto-only filter:        {'PASS' if crypto_excluded > 0 else 'NO EXCLUSIONS'}",
+            f"    Non-crypto excluded:       {crypto_excluded}",
+            f"    Duplicate candidates removed: {dedup_removed}",
+            f"    Executable before validation: {exec_before}",
+            f"    Executable after validation:  {exec_after}",
             "",
             "  CRYPTO-ONLY + THESIS SECTION:",
             f"    Excluded non-crypto symbols: {crypto_excluded}",
@@ -590,6 +600,14 @@ def main():
             "historical_edge_summary": memory.get("historical_edge_summary") if memory else None,
         } if memory else None,
         "near_miss_diagnostics": {
+            "signal_integrity": {
+                "crypto_filter_pass": True,
+                "excluded_non_crypto": near_miss.get("excluded_non_crypto", 0) if near_miss else 0,
+                "deduplicated_candidates_removed": near_miss.get("deduplicated_candidates_removed", 0) if near_miss else 0,
+                "validated_executable_before": near_miss.get("validated_executable_before", 0) if near_miss else 0,
+                "validated_executable_after": near_miss.get("validated_executable_after", 0) if near_miss else 0,
+                "executable_downgraded_count": near_miss.get("executable_downgraded_count", 0) if near_miss else 0,
+            } if near_miss else None,
             "executable_candidates": near_miss.get("bucket_counts", {}).get("EXECUTABLE_CANDIDATE", 0) if near_miss else 0,
             "watchlist_ready": near_miss.get("bucket_counts", {}).get("WATCHLIST_READY", 0) if near_miss else 0,
             "near_miss_rr": near_miss.get("bucket_counts", {}).get("NEAR_MISS_RR", 0) if near_miss else 0,

@@ -14,7 +14,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from production_replay.bingx_client import get_all_swap_tickers
-from production_replay.bingx_universe import KNOWN_MEMECOINS, KNOWN_MAJORS
+from production_replay.bingx_universe import KNOWN_MEMECOINS, KNOWN_MAJORS, is_crypto_usdt_perp
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 TXT_PATH = os.path.join(RESULTS_DIR, "psychology_alpha_report.txt")
@@ -301,7 +301,15 @@ def run_psychology_alpha() -> dict:
 
     scored = []
     rr_pass_count = 0
+    excluded_count = 0
+    excluded_samples = []
     for p in patterns:
+        sym = p.get("symbol", "")
+        if not is_crypto_usdt_perp(sym):
+            excluded_count += 1
+            if len(excluded_samples) < 20:
+                excluded_samples.append(sym)
+            continue
         rr = p.get("rr_2") or 0
         if rr >= RR_MIN and not p.get("rejected", True):
             rr_pass_count += 1
@@ -350,6 +358,8 @@ def run_psychology_alpha() -> dict:
         "total_patterns_detected": len(patterns),
         "total_psychology_evaluated": len(scored),
         "rr_gate_pass_candidates": rr_pass_count,
+        "excluded_non_crypto": excluded_count,
+        "excluded_non_crypto_samples": excluded_samples[:20],
         "psychology_watch_candidates": len(watch),
         "psychology_elite_candidates": len(elite),
         "near_miss_rr_candidates": len(near_miss_rr),
@@ -434,6 +444,7 @@ def _write_text_report(report: dict, best: dict | None):
         f"  BingX contracts discovered: {report['total_raw_contracts']}",
         f"  Dux scan symbols:           {report['dux_scan_symbols']}",
         f"  Symbol-timeframes scanned:  {report['symbol_timeframes_scanned']}",
+        f"  Excluded non-crypto:        {report.get('excluded_non_crypto', 0)}",
         f"  Total patterns detected:    {report['total_patterns_detected']}",
         f"  Total psychology evaluated: {report.get('total_psychology_evaluated', 0)}",
         f"  RR >= 4 candidates:         {report['rr_gate_pass_candidates']}",

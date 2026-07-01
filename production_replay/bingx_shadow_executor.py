@@ -9,7 +9,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_universe import is_bingx_listed, load_universe
+from production_replay.bingx_universe import is_bingx_listed, load_universe, is_crypto_usdt_perp
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
@@ -72,6 +72,7 @@ def run_shadow_executor() -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
+    near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
 
@@ -128,8 +129,18 @@ def run_shadow_executor() -> dict:
     if not candidate:
         reasons.append("no valid Dux candidate")
 
-    # Gate 6: symbol BingX-listed
+    # Gate 6: crypto-only filter (must be real crypto USDT perp)
     symbol = (candidate or {}).get("symbol", "")
+    if symbol and not is_crypto_usdt_perp(symbol):
+        reasons.append(f"{symbol} is not a crypto USDT perpetual (non-crypto synthetic)")
+
+    # Gate 6b: candidate must be from Dux/psychology_alpha, not near_miss labels
+    if near_miss:
+        near_miss_exec_count = near_miss.get("executable_candidate_count", 0)
+        if near_miss_exec_count > 0 and not psych.get("best_candidate"):
+            reasons.append(f"near_miss shows {near_miss_exec_count} executable labels but psychology_alpha has no best candidate; ignoring near-miss labels")
+
+    # Gate 6c: symbol BingX-listed
     if symbol:
         universe = load_universe()["contracts"]
         if not is_bingx_listed(symbol, universe):
@@ -218,8 +229,10 @@ def run_shadow_executor() -> dict:
         "system_safe": doctor.get("system_safe", False),
         "live_disabled": doctor.get("live_disabled", False),
         "paper_disabled": doctor.get("paper_disabled", False),
+        "crypto_filter_pass": bool(symbol) and is_crypto_usdt_perp(symbol) if symbol else False,
         "dux_decision": dux_decision,
         "candidate_exists": candidate is not None,
+        "candidate_from_psychology_alpha": psych.get("best_candidate") is not None,
         "symbol_bingx_listed": bool(symbol) and is_bingx_listed(symbol, load_universe()["contracts"]) if symbol else False,
         "direction": direction,
         "rr_final": rr_final,
@@ -258,8 +271,10 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
         f"  System Safe:           {'YES' if report['system_safe'] else 'NO'}",
         f"  Live Disabled:         {'YES' if report['live_disabled'] else 'NO'}",
         f"  Paper Disabled:        {'YES' if report['paper_disabled'] else 'NO'}",
+        f"  Crypto Filter:         {'PASS' if report.get('crypto_filter_pass') else 'FAIL'}",
         f"  Dux Decision:          {report['dux_decision']}",
         f"  Candidate Exists:      {'YES' if report['candidate_exists'] else 'NO'}",
+        f"  Candidate from Psych:  {'YES' if report.get('candidate_from_psychology_alpha') else 'NO'}",
         f"  Symbol BingX-Listed:   {'YES' if report['symbol_bingx_listed'] else 'NO'}",
         f"  Direction:             {report['direction'] or 'N/A'}",
         f"  RR Final:              {report['rr_final']}",

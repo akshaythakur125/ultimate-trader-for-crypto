@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_universe import load_universe, build_scan_universe, build_adaptive_universe, get_memecoin_symbols, get_major_symbols
+from production_replay.bingx_universe import load_universe, build_scan_universe, build_adaptive_universe, get_memecoin_symbols, get_major_symbols, is_crypto_usdt_perp
 from production_replay.bingx_client import get_klines, load_credentials
 from production_replay.setup_compute import compute_atr, load_candles
 
@@ -518,6 +518,8 @@ def run_dux_engine() -> dict:
             print(f"\n  [guard] API error limit {MAX_API_ERRORS} reached, stopping scan")
             break
 
+        if not is_crypto_usdt_perp(sym):
+            continue
         tfs = _get_timeframes_for_symbol(sym, adaptive)
         symbol_had_results = False
         symbol_had_error = False

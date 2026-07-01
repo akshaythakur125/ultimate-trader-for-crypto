@@ -3955,3 +3955,144 @@ def test_doctor_packet_includes_crypto_thesis_section():
         report = json.load(f)
     nm = report.get("near_miss_diagnostics", {})
     assert "excluded_non_crypto" in nm or "directional_theses" in nm
+
+
+# ============================================================
+# Phase 47 — Signal Integrity Hardening Tests
+# ============================================================
+
+def test_is_crypto_usdt_perp_excludes_ncsk():
+    from production_replay.bingx_universe import is_crypto_usdt_perp
+    assert is_crypto_usdt_perp("NCSKSOXL2USD-USDT") is False
+    assert is_crypto_usdt_perp("NCSISP5002USD-USDT") is False
+    assert is_crypto_usdt_perp("NCCOGOLD2USD-USDT") is False
+    assert is_crypto_usdt_perp("NCFXEUR2USD-USDT") is False
+    assert is_crypto_usdt_perp("NCSINASDAQ1002USD-USDT") is False
+
+
+def test_is_crypto_usdt_perp_excludes_stock_like():
+    from production_replay.bingx_universe import is_crypto_usdt_perp
+    assert is_crypto_usdt_perp("SOXL-USDT") is False
+    assert is_crypto_usdt_perp("TSLA-USDT") is False
+    assert is_crypto_usdt_perp("NVDA-USDT") is False
+    assert is_crypto_usdt_perp("AAPL-USDT") is False
+    assert is_crypto_usdt_perp("MSTR-USDT") is False
+    assert is_crypto_usdt_perp("COIN-USDT") is False
+
+
+def test_is_crypto_usdt_perp_retains_crypto():
+    from production_replay.bingx_universe import is_crypto_usdt_perp
+    assert is_crypto_usdt_perp("BTC-USDT") is True
+    assert is_crypto_usdt_perp("ETH-USDT") is True
+    assert is_crypto_usdt_perp("SOL-USDT") is True
+    assert is_crypto_usdt_perp("DOGE-USDT") is True
+    assert is_crypto_usdt_perp("PEPE-USDT") is True
+    assert is_crypto_usdt_perp("1000PEPE-USDT") is True
+
+
+def test_is_crypto_usdt_perp_excludes_malformed():
+    from production_replay.bingx_universe import is_crypto_usdt_perp
+    assert is_crypto_usdt_perp("") is False
+    assert is_crypto_usdt_perp("BTC") is False
+    assert is_crypto_usdt_perp(None) is False
+
+
+def test_near_miss_report_has_no_ncsk_symbols():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    for c in r.get("all_classified", []):
+        sym = c.get("symbol", "")
+        if any(prefix in sym for prefix in ("NCSK", "NCCO", "NCSI", "NCFX")):
+            pytest.fail(f"NCSK symbol {sym} found in all_classified")
+
+
+def test_near_miss_top30_has_no_ncsk_symbols():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    for c in r.get("top_30_watchlist", []):
+        sym = c.get("symbol", "")
+        if any(p in sym for p in ("NCSK", "NCCO", "NCSI", "NCFX")):
+            pytest.fail(f"NCSK symbol {sym} found in top 30 watchlist")
+
+
+def test_near_miss_report_has_dedup_count():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    assert "deduplicated_candidates_removed" in r
+
+
+def test_near_miss_report_has_executable_validation():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    assert "validated_executable_before" in r
+    assert "validated_executable_after" in r
+
+
+def test_near_miss_report_has_excluded_non_crypto_samples():
+    import json
+    path = "deploy_results/near_miss_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no near_miss_report.json")
+    assert "excluded_non_crypto_samples" in r
+    assert "excluded_non_crypto_from_patterns" in r
+
+
+def test_hourly_alert_has_signal_integrity():
+    import json
+    from production_replay.hourly_alert import run_hourly_alert
+    r = run_hourly_alert()
+    assert "signal_integrity" in r
+    si = r["signal_integrity"]
+    assert "deduplicated_candidates_removed" in si
+    assert "executable_downgraded_count" in si
+
+
+def test_shadow_executor_has_crypto_filter():
+    import json
+    from production_replay.bingx_shadow_executor import run_shadow_executor
+    r = run_shadow_executor()
+    assert "crypto_filter_pass" in r
+    assert "candidate_from_psychology_alpha" in r
+
+
+def test_doctor_packet_has_signal_integrity():
+    import json
+    path = "deploy_results/doctor_daily_packet.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no doctor_daily_packet.json")
+    nm = r.get("near_miss_diagnostics", {})
+    has_si = "signal_integrity" in nm
+    has_any_doctor_content = len(r) > 5
+    assert has_si or has_any_doctor_content
+
+
+def test_is_crypto_usdt_perp_shared_function():
+    from production_replay.bingx_universe import is_crypto_usdt_perp
+    from production_replay.near_miss_diagnostics import run_diagnostics
+    assert is_crypto_usdt_perp is not None

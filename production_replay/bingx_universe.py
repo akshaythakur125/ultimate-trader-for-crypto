@@ -32,7 +32,7 @@ KNOWN_NON_CRYPTO_PREFIXES = {
     "NCSK", "NCCO", "NCSI", "NCFX",
     "SOXL", "TSLA", "TSL", "NVDA", "NBIS",
     "AMD", "DRAM", "AAPL", "META", "MSFT", "GOOGL", "AMZN", "MSTR",
-    "COIN", "MARA", "EUR", "GBP", "JPY", "XAU", "XAG", "XPT", "XPD",
+    "COIN", "MARA",     "EUR", "GBP", "JPY", "XAU", "XAG", "XPT", "XPD",
 }
 KNOWN_NON_CRYPTO_SYMBOLS = {
     "SOXL-USDT", "TSLA-USDT", "TSL-USDT", "NVDA-USDT", "NBIS-USDT",
@@ -48,24 +48,41 @@ KNOWN_STOCK_PATTERNS = [
 ]
 
 
-def _is_crypto_symbol(symbol: str) -> bool:
-    """Check if a symbol is a real crypto USDT perpetual (not stock/forex/commodity synthetic)."""
+def is_crypto_usdt_perp(symbol: str) -> bool:
+    """Check if a symbol is a real crypto USDT perpetual (not stock/forex/commodity synthetic).
+
+    Excludes:
+      - NCSK/NCCO/NCSI/NCFX prefix symbols (stock/ETF synthetics)
+      - Known stock symbols (SOXL, TSLA, NVDA, etc.)
+      - Forex/commodity symbols (EUR, GBP, XAU, etc.)
+      - Malformed symbols (empty, no USDT suffix)
+      - Non-USDT products
+    Keeps:
+      - BTC, ETH, SOL, XRP, DOGE, PEPE, WIF, FLOKI, BONK, TURBO, etc.
+      - 1000-prefixed meme contracts if valid crypto perps
+    """
+    if not symbol or not isinstance(symbol, str):
+        return False
+    if "-USDT" not in symbol and "USDT" not in symbol:
+        return False
     base = symbol.replace("-USDT", "").replace("USDT", "")
-    # Check exact non-crypto list
+    if not base:
+        return False
     if symbol in KNOWN_NON_CRYPTO_SYMBOLS:
         return False
-    # Check prefixes that are known non-crypto
     for prefix in KNOWN_NON_CRYPTO_PREFIXES:
         if base.startswith(prefix):
-            # Skip BTC prefix check — it's valid crypto
             if prefix == "BTC":
                 continue
             return False
-    # Check stock patterns
     for pat in KNOWN_STOCK_PATTERNS:
         if base.startswith(pat):
             return False
     return True
+
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    return is_crypto_usdt_perp(symbol)
 
 
 def _filter_crypto_only(contracts: list[dict]) -> tuple[list[dict], int]:
@@ -158,7 +175,11 @@ def load_universe() -> dict[str, Any]:
 def build_scan_universe(contracts: list[dict], crypto_only: bool = True) -> dict[str, Any]:
     """Build ranked scan universe of at least SCAN_UNIVERSE_TARGET symbols."""
     if crypto_only:
-        contracts, _ = _filter_crypto_only(contracts)
+        crypto_contracts = []
+        for c in contracts:
+            if is_crypto_usdt_perp(c.get("symbol", "")):
+                crypto_contracts.append(c)
+        contracts = crypto_contracts
     memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
     major_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MAJORS})
     priority = set(memecoin_syms + major_syms)
@@ -203,8 +224,19 @@ def build_adaptive_universe(contracts: list[dict], crypto_only: bool = True) -> 
     Returns dict with tier breakdown, timeframes, and symbol list.
     Minimum target: 400 symbols. Falls back gracefully if fewer contracts exist.
     """
+    excluded_samples = []
     if crypto_only:
-        contracts, excluded_count = _filter_crypto_only(contracts)
+        crypto_contracts = []
+        excluded_count = 0
+        for c in contracts:
+            sym = c.get("symbol", "")
+            if is_crypto_usdt_perp(sym):
+                crypto_contracts.append(c)
+            else:
+                excluded_count += 1
+                if len(excluded_samples) < 20:
+                    excluded_samples.append(sym)
+        contracts = crypto_contracts
     else:
         excluded_count = 0
     memecoin_syms = sorted({c["symbol"] for c in contracts if c["symbol"] in KNOWN_MEMECOINS})
@@ -259,6 +291,7 @@ def build_adaptive_universe(contracts: list[dict], crypto_only: bool = True) -> 
         "majors": major_syms,
         "target": 400,
         "excluded_non_crypto": excluded_count,
+        "excluded_non_crypto_samples": excluded_samples[:20],
         "tier_a": {
             "symbols": [c["symbol"] for c in tier_a_raw],
             "size": len(tier_a_raw),
@@ -302,6 +335,7 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
     tier_c = adaptive.get("tier_c", {}) if adaptive else {}
 
     excluded_count = adaptive.get("excluded_non_crypto", 0) if adaptive else 0
+    excluded_samples = adaptive.get("excluded_non_crypto_samples", []) if adaptive else []
     json_report = {
         "mode": "bingx_universe",
         "timestamp": __import__("datetime").datetime.now().isoformat(),
@@ -309,6 +343,7 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
         "total_raw_contracts": universe_result.get("total_raw", 0),
         "active_usdt_perps": universe_result.get("active_usdt", 0),
         "excluded_non_crypto": excluded_count,
+        "excluded_non_crypto_samples": excluded_samples,
         "scan_universe_size": scan["size"],
         "scan_universe_target": scan["target"],
         "memecoin_count": len(scan["memecoins"]),
@@ -328,6 +363,7 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
         json.dump(json_report, f, indent=2)
 
     excluded_count = adaptive.get("excluded_non_crypto", 0) if adaptive else 0
+    excluded_samples = adaptive.get("excluded_non_crypto_samples", []) if adaptive else []
     lines = [
         "=" * 60,
         "  BINGX TRADABLE UNIVERSE",
@@ -345,6 +381,11 @@ def write_reports(universe_result: dict, scan: dict, adaptive: dict | None = Non
         f"  Major controls:          {len(scan['majors'])}",
         "",
     ]
+    if excluded_samples:
+        lines.append(f"  Excluded examples (max 20): {', '.join(excluded_samples[:10])}")
+        if len(excluded_samples) > 10:
+            lines.append(f"    ... and {len(excluded_samples) - 10} more")
+        lines.append("")
     if adaptive:
         total_st = (tier_a.get("size", 0) * len(tier_a.get("timeframes", [])) +
                      tier_b.get("size", 0) * len(tier_b.get("timeframes", [])) +

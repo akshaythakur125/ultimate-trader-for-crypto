@@ -13,6 +13,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from production_replay.bingx_universe import is_crypto_usdt_perp
+
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
 TXT_PATH = os.path.join(RESULTS_DIR, "near_miss_report.txt")
@@ -1011,6 +1013,87 @@ def build_trade_thesis(symbol: str, timeframe: str, candles: list[dict], anomaly
     return thesis
 
 
+def _validate_executable_candidate(c: dict) -> str:
+    """Validate a candidate for EXECUTABLE_CANDIDATE label. Returns bucket name (downgraded if fails)."""
+    if not is_crypto_usdt_perp(c.get("symbol", "")):
+        return "REJECTED"
+    if c.get("direction") not in ("LONG", "SHORT"):
+        return "WATCHLIST_READY"
+    psych = c.get("psychology_score", 0) or 0
+    if psych < 70:
+        if psych >= 50:
+            return "NEAR_MISS_PSYCHOLOGY"
+        return "WATCHLIST_READY"
+    thesis_score = c.get("trade_thesis_score", 0) or 0
+    if thesis_score < 70:
+        return "NEAR_MISS_PSYCHOLOGY" if thesis_score >= 50 else "WATCHLIST_READY"
+    rr_val = c.get("rr_value", 0) or 0
+    rr_raw = c.get("current_rr", "N/A")
+    if rr_val < 4.0:
+        if rr_val >= 2.0:
+            return "NEAR_MISS_RR"
+        return "WATCHLIST_READY"
+    entry = c.get("entry") or c.get("thesis_ideal_entry")
+    stop = c.get("stop") or c.get("thesis_stop")
+    target = c.get("target") or c.get("thesis_target")
+    if not entry or not stop or not target:
+        return "WATCHLIST_READY"
+    try:
+        entry_f = float(entry)
+        stop_f = float(stop)
+        target_f = float(target)
+    except (ValueError, TypeError):
+        return "WATCHLIST_READY"
+    if entry_f <= 0 or stop_f <= 0 or target_f <= 0:
+        return "WATCHLIST_READY"
+    direction = c.get("direction", "UNKNOWN")
+    if direction == "LONG":
+        if stop_f >= entry_f:
+            return "WATCHLIST_READY"
+        if target_f <= entry_f:
+            return "WATCHLIST_READY"
+    else:
+        if stop_f <= entry_f:
+            return "WATCHLIST_READY"
+        if target_f >= entry_f:
+            return "WATCHLIST_READY"
+    risk = abs(entry_f - stop_f)
+    reward = abs(target_f - entry_f)
+    if risk <= 0 or reward <= 0:
+        return "WATCHLIST_READY"
+    actual_rr = round(reward / risk, 2)
+    if actual_rr < 4.0:
+        if actual_rr >= 2.0:
+            return "NEAR_MISS_RR"
+        return "WATCHLIST_READY"
+    # Liquidity check
+    if c.get("liquidity_score", 10) < 3:
+        return "NEAR_MISS_PSYCHOLOGY"
+    # Synthetic warning
+    if "NCSK" in c.get("symbol", "") or "NCCO" in c.get("symbol", "") or "NCSI" in c.get("symbol", ""):
+        return "REJECTED"
+    return "EXECUTABLE_CANDIDATE"
+
+
+def _deduplicate_candidates(classified: list[dict]) -> list[dict]:
+    """Deduplicate by symbol/TF/thesis_type/direction/entry/stop/target, keep highest actionability."""
+    seen = {}
+    for c in classified:
+        key = (
+            c.get("symbol", ""),
+            c.get("timeframe", ""),
+            c.get("thesis_type", "NONE"),
+            c.get("direction", "UNKNOWN"),
+            str(c.get("entry", "")),
+            str(c.get("stop", "")),
+            str(c.get("target", "")),
+        )
+        score = _actionability_score(c)
+        if key not in seen or score > _actionability_score(seen[key]):
+            seen[key] = c
+    return list(seen.values())
+
+
 def run_diagnostics() -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
@@ -1041,9 +1124,16 @@ def run_diagnostics() -> dict:
     if universe_data:
         crypto_excluded = universe_data.get("excluded_non_crypto", 0)
 
+    crypto_excluded_internal = 0
+    crypto_excluded_samples = []
     for p in patterns:
         sym = p.get("symbol", "")
         tf = p.get("timeframe", "")
+        if not is_crypto_usdt_perp(sym):
+            crypto_excluded_internal += 1
+            if len(crypto_excluded_samples) < 20:
+                crypto_excluded_samples.append(sym)
+            continue
         key = f"{sym}|{tf}|{p.get('pattern_id', '')}"
         psych_data = psych_map.get(key)
 
@@ -1153,15 +1243,47 @@ def run_diagnostics() -> dict:
     # Sort by actionability score descending
     classified.sort(key=lambda x: _actionability_score(x), reverse=True)
 
-    # Build watchlist: filter valid entries, max 3 per symbol, max 30 total
+    # Deduplicate candidates
+    dedup_before = len(classified)
+    classified = _deduplicate_candidates(classified)
+    dedup_removed = dedup_before - len(classified)
+
+    # Validate executable candidates
+    validated_executable_before = bucket_counts.get("EXECUTABLE_CANDIDATE", 0)
+    executable_downgraded = 0
+    for c in classified:
+        if c.get("bucket") == "EXECUTABLE_CANDIDATE":
+            new_bucket = _validate_executable_candidate(c)
+            if new_bucket != "EXECUTABLE_CANDIDATE":
+                c["bucket"] = new_bucket
+                executable_downgraded += 1
+                bucket_counts[new_bucket] = bucket_counts.get(new_bucket, 0) + 1
+                bucket_counts["EXECUTABLE_CANDIDATE"] = max(0, bucket_counts.get("EXECUTABLE_CANDIDATE", 0) - 1)
+        elif c.get("bucket") in ("WATCHLIST_READY",):
+            # Also validate non-executable candidates for crypto filter
+            if not is_crypto_usdt_perp(c.get("symbol", "")):
+                c["bucket"] = "REJECTED"
+                bucket_counts["REJECTED"] = bucket_counts.get("REJECTED", 0) + 1
+                bucket_counts["WATCHLIST_READY"] = max(0, bucket_counts.get("WATCHLIST_READY", 0) - 1)
+
+    # Build watchlist: deduplicated, crypto-only, max 1 per symbol/TF/thesis_type, max 2 per symbol total
     watchlist = []
     symbol_count = {}
+    st_count = {}
     for c in classified:
         if not _is_valid_watchlist_entry(c):
             continue
         sym = c.get("symbol", "")
-        if symbol_count.get(sym, 0) >= 3:
+        tf = c.get("timeframe", "")
+        thesis_type = c.get("thesis_type", "NONE")
+        # Max 2 per symbol total
+        if symbol_count.get(sym, 0) >= 2:
             continue
+        # Max 1 per symbol/TF/thesis_type
+        st_key = f"{sym}|{tf}|{thesis_type}"
+        if st_key in st_count:
+            continue
+        st_count[st_key] = True
         c["rank"] = len(watchlist) + 1
         watchlist.append(c)
         symbol_count[sym] = symbol_count.get(sym, 0) + 1
@@ -1200,9 +1322,15 @@ def run_diagnostics() -> dict:
         "total_raw_contracts": total_contracts,
         "scan_symbols": scan_symbols,
         "symbol_timeframes_scanned": st_scanned,
-        "excluded_non_crypto": crypto_excluded,
+        "excluded_non_crypto": crypto_excluded + crypto_excluded_internal,
+        "excluded_non_crypto_from_patterns": crypto_excluded_internal,
+        "excluded_non_crypto_samples": crypto_excluded_samples[:20],
+        "deduplicated_candidates_removed": dedup_removed,
+        "validated_executable_before": validated_executable_before,
+        "validated_executable_after": bucket_counts.get("EXECUTABLE_CANDIDATE", 0),
+        "executable_downgraded_count": executable_downgraded,
         "crypto_contracts_scanned": total_contracts - crypto_excluded if crypto_excluded else total_contracts,
-        "total_patterns_analyzed": len(patterns),
+        "total_patterns_analyzed": len(patterns) - crypto_excluded_internal,
         "formal_dux_traps_detected": formal_traps,
         "raw_anomalies_detected": total_raw_anomalies,
         "directional_theses_created": directional_theses,
@@ -1275,6 +1403,11 @@ def _write_watchlist_jsonl(watchlist: list[dict]):
 def _write_text_report(report: dict, watchlist: list[dict],
                         best_watchlist: dict | None, top_rejection: str,
                         raw_anomaly_counts: dict):
+    excluded_samples = report.get("excluded_non_crypto_samples", [])
+    dedup_removed = report.get("deduplicated_candidates_removed", 0)
+    exec_before = report.get("validated_executable_before", 0)
+    exec_after = report.get("validated_executable_after", 0)
+    
     lines = [
         "=" * 60,
         "  NEAR-MISS DIAGNOSTIC REPORT",
@@ -1366,7 +1499,28 @@ def _write_text_report(report: dict, watchlist: list[dict],
             "",
         ]
 
+    signal_integrity_pass = True
+    si_warnings = []
+    if excluded_samples:
+        si_warnings.append(f"{len(excluded_samples)} non-crypto patterns excluded")
+    if dedup_removed > 0:
+        si_warnings.append(f"{dedup_removed} duplicate candidates removed")
+    if exec_before > exec_after:
+        si_warnings.append(f"{exec_before - exec_after} executables downgraded after validation")
+    if si_warnings:
+        signal_integrity_pass = False
+    
     lines += [
+        "",
+        "  SIGNAL INTEGRITY:",
+        f"    Crypto-only filter:   {'PASS' if not excluded_samples else 'PASS (filtered)'}",
+        f"    Dedup removed:        {dedup_removed}",
+        f"    Executables before:   {exec_before}",
+        f"    Executables after:    {exec_after}",
+        f"    Downgraded:           {exec_before - exec_after}",
+        f"    Non-crypto excluded:  {len(excluded_samples)} from patterns",
+        f"    Integrity:            {'PASS' if signal_integrity_pass else 'WARN: ' + '; '.join(si_warnings)}",
+        "",
         "  WARNING: This system is not approved for live trading.",
         "",
         "=" * 60,
