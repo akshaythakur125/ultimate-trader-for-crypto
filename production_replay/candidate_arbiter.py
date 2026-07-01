@@ -64,8 +64,10 @@ def _evaluate_candidate(
     entry = c.get("entry") or c.get("thesis_ideal_entry") or 0
     stop = c.get("stop") or c.get("thesis_stop") or 0
     target = c.get("target") or c.get("thesis_target") or c.get("target_2") or 0
-    rr = c.get("current_rr") or c.get("rr_2") or 0
-    thesis_score = c.get("trade_thesis_score", 0)
+    rr_raw = c.get("current_rr") or c.get("rr_2") or 0
+    rr = float(rr_raw) if rr_raw not in ("N/A", "", None) else 0.0
+    thesis_raw = c.get("trade_thesis_score") or c.get("thesis_score") or 0
+    thesis_score = float(thesis_raw) if thesis_raw not in ("N/A", "", None) else 0.0
     trigger_status = c.get("trigger_info", {}).get("trigger_status", "NOT_APPLICABLE")
 
     reasons = []
@@ -231,8 +233,9 @@ def run_arbiter() -> dict:
         pb_symbol = psych_best.get("symbol", "")
         pb_tf = psych_best.get("timeframe", "")
         pb_dir = psych_best.get("direction", "")
-        pb_rr = psych_best.get("rr_2", 0)
-        pb_psych = psych_best.get("psychology_score", 0)
+        pb_rr_raw = psych_best.get("rr_2", 0)
+        pb_rr = float(pb_rr_raw) if pb_rr_raw not in ("N/A", "", None) else 0.0
+        pb_psych = float(psych_best.get("psychology_score", 0))
         if (is_crypto_usdt_perp(pb_symbol) and pb_dir in ("LONG", "SHORT")
                 and pb_rr >= 4.0 and pb_psych >= 70):
             psych_best_verdict = "SHADOW_ELIGIBLE"

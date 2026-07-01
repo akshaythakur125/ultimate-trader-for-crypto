@@ -311,20 +311,76 @@ def _load_watchlist_candidates() -> tuple[list[dict], str]:
     return selected, source
 
 
-def _get_recent_candles(symbol: str, tf: str, limit: int = 20) -> list:
-    """Fetch recent candles for a symbol/timeframe.
+def _parse_candles(raw_data: list) -> list[dict]:
+    """Parse BingX klines response into list of candle dicts.
 
-    Tries API first, falls back to cached data.
-    Returns list of candle dicts with at least 'close' and 'high'/'low' fields.
+    Handles both list-of-lists format and list-of-dicts format.
+    """
+    candles = []
+    for item in raw_data:
+        try:
+            if isinstance(item, dict):
+                candles.append({
+                    "timestamp": int(item.get("time", item.get("timestamp", 0))),
+                    "open": float(item["open"]),
+                    "high": float(item["high"]),
+                    "low": float(item["low"]),
+                    "close": float(item["close"]),
+                    "volume": float(item.get("volume", 0)),
+                })
+            elif isinstance(item, (list, tuple)):
+                # BingX list format: [time, open, high, low, close, volume, close_time, quote_vol]
+                candles.append({
+                    "timestamp": int(item[0]),
+                    "open": float(item[1]),
+                    "high": float(item[2]),
+                    "low": float(item[3]),
+                    "close": float(item[4]),
+                    "volume": float(item[5]) if len(item) > 5 else 0,
+                })
+        except (ValueError, TypeError, IndexError, KeyError):
+            continue
+    candles.sort(key=lambda x: x["timestamp"])
+    # Remove duplicates by timestamp
+    seen_ts = set()
+    unique = []
+    for c in candles:
+        if c["timestamp"] not in seen_ts:
+            seen_ts.add(c["timestamp"])
+            unique.append(c)
+    return unique
+
+
+def _get_recent_candles(symbol: str, tf: str, limit: int = 120) -> list[dict]:
+    """Fetch recent candles for a symbol/timeframe via BingX klines API.
+
+    Returns list of candle dicts parsed via _parse_candles.
+    Returns [] on any failure (caller handles gracefully).
     """
     try:
-        from production_replay.bingx_client import get_cached_candles
-        candles = get_cached_candles(symbol, tf, limit=limit)
-        if candles and len(candles) >= 5:
-            return candles
+        from production_replay.bingx_client import get_klines, load_credentials
+        base = load_credentials()["base_url"]
+        # Normalize symbol: BingX API accepts hyphenated format
+        api_symbol = symbol if "-" in symbol else symbol
+        resp = get_klines(api_symbol, tf, limit, base)
+        if not resp.get("success"):
+            return []
+        data = resp.get("data", {})
+        # BingX response wrapper may be nested: {"code":0, "data": [...]}
+        # or direct: {"data": [...]}
+        raw_data = None
+        if isinstance(data, dict):
+            if "data" in data:
+                raw_data = data["data"]
+            elif "code" in data:
+                raw_data = data.get("code")
+        elif isinstance(data, list):
+            raw_data = data
+        if not isinstance(raw_data, list):
+            return []
+        return _parse_candles(raw_data)
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _check_trigger(candidate: dict, candles: list) -> dict:
@@ -484,6 +540,9 @@ def run_trigger_watcher() -> dict:
     confirmed_count = 0
     invalidated_count = 0
     expired_count = 0
+    candle_attempted = 0
+    candle_success = 0
+    candle_failed = 0
 
     ticker_map = {}
     try:
@@ -497,9 +556,15 @@ def run_trigger_watcher() -> dict:
     except Exception:
         pass
 
+    # Min candles per timeframe
+    MIN_CANDLES = {"5m": 20, "15m": 20, "30m": 30, "1h": 30}
+    CANDLE_LIMITS = {"5m": 60, "15m": 60, "30m": 120, "1h": 120}
+
     for c in candidates:
         sym = c["symbol"]
         tf = c["timeframe"]
+        min_req = MIN_CANDLES.get(tf, 20)
+        fetch_limit = CANDLE_LIMITS.get(tf, 120)
 
         # Check expiry first
         expired, expiry_reason = _check_expiry(c, now)
@@ -520,7 +585,12 @@ def run_trigger_watcher() -> dict:
             continue
 
         # Fetch candles for this symbol/TF
-        candles = _get_recent_candles(sym, tf, limit=20)
+        candle_attempted += 1
+        candles = _get_recent_candles(sym, tf, limit=fetch_limit)
+        if candles and len(candles) >= min_req:
+            candle_success += 1
+        else:
+            candle_failed += 1
         if not candles and sym in ticker_map:
             candles = [{"close": ticker_map[sym]}]
 
@@ -583,6 +653,9 @@ def run_trigger_watcher() -> dict:
         "timestamp": now.isoformat(),
         "candidate_source": source,
         "candidates_watched": len(candidates),
+        "candle_fetch_attempted": candle_attempted,
+        "candle_fetch_success": candle_success,
+        "candle_fetch_failed": candle_failed,
         "active_watchlist_size": len(active_watchlist),
         "waiting_count": waiting_count,
         "confirmed_count": confirmed_count,
@@ -612,6 +685,9 @@ def _write_text_report(report: dict):
         f"  Source:                 {report.get('candidate_source', 'unknown')}",
         f"  Candidates watched:     {report['candidates_watched']}",
         f"  Active watchlist size:  {report['active_watchlist_size']}",
+        f"  Candle fetch attempted: {report.get('candle_fetch_attempted', 0)}",
+        f"  Candle fetch succeeded: {report.get('candle_fetch_success', 0)}",
+        f"  Candle fetch failed:    {report.get('candle_fetch_failed', 0)}",
         f"  Waiting:                {report['waiting_count']}",
         f"  TRIGGER_CONFIRMED:      {report['confirmed_count']}",
         f"  INVALIDATED:            {report['invalidated_count']}",
@@ -639,6 +715,7 @@ def _write_text_report(report: dict):
                 f"    Thesis: {best_waiting.get('thesis_type', 'N/A')}  Bucket: {best_waiting.get('bucket', 'N/A')}",
                 f"    RR: 1:{best_waiting.get('rr', 'N/A')}  Score: {best_waiting.get('thesis_score', 'N/A')}",
                 f"    Psychology: {best_waiting.get('psychology_score', 'N/A')}",
+                f"    Latest Price: {best_waiting.get('latest_price', 'N/A')}",
                 f"    Reason: {best_waiting.get('reason', '')}",
                 "",
             ]
@@ -649,11 +726,12 @@ def _write_text_report(report: dict):
         rr_val = e.get('rr', '?')
         rr_str = f"{rr_val}" if not isinstance(rr_val, str) else rr_val
         price_val = e.get('latest_price', '?')
-        price_str = f"{price_val}" if not isinstance(price_val, str) else (price_val or '?')
+        price_str = f"{price_val:.4f}" if isinstance(price_val, (int, float)) else (str(price_val) if price_val else '?')
+        reason_str = str(e.get('reason', ''))[:30]
         lines += [
             f"    {str(e['symbol']):12s} {str(e['timeframe']):4s} {str(e['direction']):5s} "
             f"{str(e.get('trigger_status', '?')):18s} RR:{rr_str:<6s} "
-            f"Price:{price_str:<10s}",
+            f"Price:{price_str:<12s} {reason_str}",
         ]
     lines += [
         "",

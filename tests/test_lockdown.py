@@ -4622,6 +4622,161 @@ def test_trigger_watcher_imports_safe():
     assert callable(_load_watchlist_candidates)
 
 
+# Phase 49C: Trigger Watcher Candle Fetch Fix
+
+def test_parse_candles_list_format():
+    """_parse_candles handles BingX list-of-lists format."""
+    from production_replay.trigger_watcher import _parse_candles
+    raw = [
+        [1700000000000, "100.0", "105.0", "99.0", "102.0", "1000.0", 1700000000000, "50000"],
+        [1700000060000, "102.0", "106.0", "101.0", "103.0", "800.0", 1700000060000, "40000"],
+    ]
+    result = _parse_candles(raw)
+    assert len(result) == 2
+    assert result[0]["timestamp"] == 1700000000000
+    assert result[0]["open"] == 100.0
+    assert result[0]["high"] == 105.0
+    assert result[0]["low"] == 99.0
+    assert result[0]["close"] == 102.0
+    assert result[0]["volume"] == 1000.0
+
+
+def test_parse_candles_dict_format():
+    """_parse_candles handles BingX dict format."""
+    from production_replay.trigger_watcher import _parse_candles
+    raw = [
+        {"time": 1700000000000, "open": "100.0", "high": "105.0", "low": "99.0", "close": "102.0", "volume": "1000.0"},
+        {"time": 1700000060000, "open": "102.0", "high": "106.0", "low": "101.0", "close": "103.0", "volume": "800.0"},
+    ]
+    result = _parse_candles(raw)
+    assert len(result) == 2
+    assert result[0]["close"] == 102.0
+    assert result[1]["high"] == 106.0
+
+
+def test_parse_candles_skips_malformed():
+    """_parse_candles skips malformed candle entries."""
+    from production_replay.trigger_watcher import _parse_candles
+    raw = [
+        [1700000000000, "100.0", "105.0", "99.0", "102.0", "1000.0"],
+        "not a candle",
+        None,
+        {},
+        {"time": "invalid", "open": "x", "high": "y", "low": "z", "close": "w"},
+    ]
+    result = _parse_candles(raw)
+    assert len(result) == 1
+    assert result[0]["close"] == 102.0
+
+
+def test_parse_candles_dedup_by_timestamp():
+    """_parse_candles removes duplicate timestamps, keeping first."""
+    from production_replay.trigger_watcher import _parse_candles
+    raw = [
+        [1700000000000, "100.0", "105.0", "99.0", "102.0", "1000.0"],
+        [1700000000000, "200.0", "205.0", "199.0", "202.0", "2000.0"],
+    ]
+    result = _parse_candles(raw)
+    assert len(result) == 1
+    assert result[0]["close"] == 102.0
+
+
+def test_get_recent_candles_returns_list():
+    """_get_recent_candles returns list (empty if no API)."""
+    from production_replay.trigger_watcher import _get_recent_candles
+    result = _get_recent_candles("BTC-USDT", "15m", limit=5)
+    assert isinstance(result, list)
+
+
+def test_get_recent_candles_handles_api_error_gracefully():
+    """_get_recent_candles does not crash on API error."""
+    from production_replay.trigger_watcher import _get_recent_candles
+    result = _get_recent_candles("NONEXISTENT-SYMBOL-12345", "15m", limit=5)
+    assert isinstance(result, list)
+
+
+def test_trigger_watcher_latest_price_populated():
+    """Latest price is populated when candles are available."""
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [
+        {"timestamp": 1, "open": 100.0, "high": 105.0, "low": 99.0, "close": 105.0, "volume": 1000},
+        {"timestamp": 2, "open": 102.0, "high": 106.0, "low": 101.0, "close": 106.0, "volume": 800},
+        {"timestamp": 3, "open": 106.0, "high": 108.0, "low": 104.0, "close": 107.0, "volume": 900},
+        {"timestamp": 4, "open": 107.0, "high": 109.0, "low": 105.0, "close": 108.0, "volume": 700},
+        {"timestamp": 5, "open": 108.0, "high": 110.0, "low": 106.0, "close": 104.0, "volume": 600},
+    ]
+    candidate = {"thesis_type": "SWEEP_HIGH", "direction": "SHORT", "entry": 110, "stop": 115, "target": 90}
+    result = _check_trigger(candidate, candles)
+    assert result["latest_price"] is not None
+    if result["trigger_status"] != "WAITING":
+        assert result["latest_price"] == 104.0
+
+
+def test_trigger_watcher_insufficient_candles_clear():
+    """Insufficient candle data reason is clear when too few candles."""
+    from production_replay.trigger_watcher import _check_trigger
+    candles = [{"timestamp": 1, "open": 100.0, "high": 105.0, "low": 99.0, "close": 102.0, "volume": 1000}]
+    candidate = {"thesis_type": "UPPER_WICK_EXTENSION", "direction": "SHORT", "entry": 110, "stop": 115, "target": 90}
+    result = _check_trigger(candidate, candles)
+    assert result["trigger_status"] == "WAITING"
+    assert "Insufficient" in result["reason"]
+
+
+def test_trigger_watcher_candle_fetch_failure_does_not_crash():
+    """Candle fetch failure for one symbol does not crash the whole watcher."""
+    from production_replay.trigger_watcher import _get_recent_candles
+    result = _get_recent_candles("", "", limit=5)
+    assert isinstance(result, list)
+
+
+def test_trigger_watcher_report_has_candle_stats():
+    """Report includes candle fetch stats."""
+    import json
+    path = "deploy_results/trigger_watcher_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no trigger_watcher_report.json")
+    assert "candle_fetch_attempted" in r
+    assert "candle_fetch_success" in r
+    assert "candle_fetch_failed" in r
+
+
+def test_trigger_watcher_report_price_not_none():
+    """At least some candidates have price when candles fetched."""
+    import json
+    path = "deploy_results/trigger_watcher_report.json"
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pytest.skip("no trigger_watcher_report.json")
+    candidates = r.get("candidates", [])
+    if not candidates:
+        pytest.skip("no candidates in report")
+    prices_with_value = [c for c in candidates if c.get("latest_price") is not None]
+    if r.get("candle_fetch_success", 0) > 0:
+        assert len(prices_with_value) > 0, "expected at least one price when candles fetched"
+
+
+def test_trigger_watcher_no_withdrawal_functions():
+    """Trigger watcher has no withdrawal/transfer functions."""
+    import inspect
+    import production_replay.trigger_watcher as tw
+    src = inspect.getsource(tw)
+    for kw in ("withdraw", "transfer", "send", "withdrawal"):
+        assert kw not in src.lower()
+
+
+def test_trigger_watcher_no_approved_output():
+    """Trigger watcher does not output APPROVED."""
+    import inspect
+    import production_replay.trigger_watcher as tw
+    src = inspect.getsource(tw)
+    assert "APPROVED" not in src
+
+
 def test_safety_lock_passes_with_trigger_watcher():
     """Trigger watcher does not break safety lock."""
     import subprocess
