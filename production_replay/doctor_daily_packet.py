@@ -474,14 +474,23 @@ def main():
     if shadow:
         shadow_decision = shadow.get("decision", "N/A")
         has_intent = shadow.get("shadow_order_intent") is not None
+        intent_source = shadow.get("shadow_order_intent", {}).get("source", "N/A") if has_intent else "N/A"
         shadow_lines = [
             "",
             "  BINGX SHADOW EXECUTION:",
             f"    Shadow Intent: {'GENERATED' if has_intent else 'NOT_GENERATED'}",
             f"    Shadow Decision: {shadow_decision}",
+            f"    Intent Source: {intent_source}" if has_intent else "",
         ]
+        if has_intent and shadow.get("shadow_order_intent"):
+            si = shadow["shadow_order_intent"]
+            shadow_lines += [
+                f"    Symbol: {si.get('symbol', '?')} {si.get('side', '?')} "
+                f"Entry:{si.get('entry', '?')} Stop:{si.get('stop_loss', '?')} "
+                f"Target:{si.get('final_target', '?')} RR:1:{si.get('rr_final', '?')}",
+            ]
         shr_reasons = shadow.get("reasons", [])
-        if shr_reasons:
+        if shr_reasons and shr_reasons != ["all gates passed"]:
             shadow_lines.append(f"    Reason: {'; '.join(shr_reasons)}")
     else:
         shadow_lines = ["", "  BINGX SHADOW EXECUTION: MISSING (no report)", ""]

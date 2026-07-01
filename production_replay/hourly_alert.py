@@ -48,7 +48,12 @@ def _determine_final_action(
     executable_count: int = 0,
     watchlist_count: int = 0,
     near_miss_count: int = 0,
+    bridge_shadow_ready: bool = False,
 ) -> tuple[str, str]:
+    # Rule 0: trigger bridge shadow ready (Phase 51)
+    if bridge_shadow_ready:
+        return "SHADOW_READY", "Trigger bridge candidate ready for shadow execution"
+
     if emergency:
         return "EMERGENCY_EXIT_REQUIRED", "Emergency situation detected"
     if position_open:
@@ -173,13 +178,21 @@ def run_hourly_alert() -> dict:
     exec_downgraded = near_miss.get("executable_downgraded_count", 0) if near_miss else 0
     exec_after = near_miss.get("validated_executable_after", 0) if near_miss else 0
 
+    # Phase 51: check if shadow intent has trigger_bridge source
+    bridge_shadow_ready = False
+    if shadow and shadow.get("decision") == "SHADOW_READY" and shadow.get("shadow_order_intent"):
+        si = shadow["shadow_order_intent"]
+        if si.get("source") == "trigger_bridge" or si.get("candidate_source") == "trigger_watcher":
+            bridge_shadow_ready = True
+
     final_action, action_reason = _determine_final_action(
         dux_decision, rr_pass, alpha_score, alpha_decision,
         shadow_decision, live_decision, live_armed, execution_mode,
         position_open=position_open, emergency=emergency,
         executable_count=executable_count,
         watchlist_count=watchlist_count,
-        near_miss_count=near_miss_total,
+        near_miss_count=near_miss_count,
+        bridge_shadow_ready=bridge_shadow_ready,
     )
 
     report = {
@@ -286,6 +299,7 @@ def run_hourly_alert() -> dict:
         "shadow_decision": shadow_decision,
         "live_decision": live_decision,
         "execution_mode": execution_mode,
+        "bridge_shadow_ready": bridge_shadow_ready,
         "live_armed": live_armed,
         "open_positions": open_positions,
         "api_credentials_found": api_ok,
@@ -484,7 +498,20 @@ def _write_text_report(report: dict, action: str, reason: str):
             "",
         ]
 
-    if best:
+    # Phase 51: show bridge candidate as best if available
+    bridge_candidate_shown = False
+    if bridge_shadow_ready and shadow and shadow.get("shadow_order_intent"):
+        si = shadow["shadow_order_intent"]
+        lines += [
+            "  BEST CANDIDATE (TRIGGER BRIDGE):",
+            f"    {si.get('pattern_name', 'TRIGGER_BRIDGE')} on {si['symbol']} {shadow.get('candidate_source', 'trigger_watcher')}",
+            f"    Direction: {si['side']}  RR: 1:{si['rr_final']}",
+            f"    Source: {si.get('source', 'trigger_bridge')}",
+            "",
+        ]
+        bridge_candidate_shown = True
+
+    if best and not bridge_candidate_shown:
         lines += [
             "  BEST CANDIDATE:",
             f"    {best['pattern_name']} on {best['symbol']} {best['timeframe']}",
@@ -492,7 +519,7 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Verdict:   {best['verdict']}",
             "",
         ]
-    else:
+    elif not bridge_candidate_shown:
         lines += ["  BEST CANDIDATE: NONE", ""]
 
     if alpha_best:

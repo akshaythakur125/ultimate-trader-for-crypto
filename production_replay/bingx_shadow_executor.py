@@ -77,6 +77,7 @@ def run_shadow_executor() -> dict:
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
 
     reasons = []
+    gate_reasons = []  # actual gate failures (not informational)
     decision = "DO_NOT_EXECUTE"
     dux_decision = "N/A"
 
@@ -100,13 +101,13 @@ def run_shadow_executor() -> dict:
             stop_ok = float(arbiter_best.get("stop", 0)) > 0
             target_ok = float(arbiter_best.get("target", 0)) > 0
             crypto_ok = is_crypto_usdt_perp(arbiter_best.get("symbol", ""))
-            if rr_ok and thesis_ok and sym_ok and dir_ok and entry_ok and stop_ok and target_ok and crypto_ok:
+            bingx_ok = is_bingx_listed(arbiter_best.get("symbol", ""), load_universe()["contracts"])
+            if rr_ok and thesis_ok and sym_ok and dir_ok and entry_ok and stop_ok and target_ok and crypto_ok and bingx_ok:
                 bridge_active = True
                 bridge_candidate = arbiter_best
 
     if bridge_active:
         # Trigger bridge path: bypass old Dux/alpha/psych gates
-        universe = load_universe()["contracts"]
         symbol = bridge_candidate.get("symbol", "")
         direction = bridge_candidate.get("direction", "")
         entry = float(bridge_candidate.get("entry", 0))
@@ -127,6 +128,8 @@ def run_shadow_executor() -> dict:
             "pattern_name": bridge_candidate.get("thesis_type", "TRIGGER_BRIDGE"),
             "pattern_id": f"trigger_bridge_{symbol}_{bridge_candidate.get('timeframe', '')}",
             "verdict": bridge_candidate.get("verdict", "SHADOW_ELIGIBLE"),
+            "candidate_source": "trigger_watcher",
+            "trigger_status": "TRIGGER_CONFIRMED",
         }
         reasons.append("trigger bridge candidate accepted; bypassing Dux/alpha/psych gates")
     else:
@@ -141,11 +144,11 @@ def run_shadow_executor() -> dict:
 
         # Gate 0: alpha_score >= 70
         if alpha_score is None or alpha_score < 70:
-            reasons.append(f"alpha score {alpha_score} < 70")
+            gate_reasons.append(f"alpha score {alpha_score} < 70")
 
         # Gate 0b: psychology_score >= 70
         if psychology_score is None or psychology_score < 70:
-            reasons.append(f"psychology score {psychology_score} < 70")
+            gate_reasons.append(f"psychology score {psychology_score} < 70")
 
         # Gate 4: Dux decision
         dux_decision = (dux.get("dux_pattern_engine") or dux).get("final_decision", dux.get("final_decision", "DO_NOT_TRADE"))
@@ -155,7 +158,7 @@ def run_shadow_executor() -> dict:
             dux_decision = doctor["dux_pattern_engine"].get("final_decision", "DO_NOT_TRADE")
 
         if dux_decision not in ("WATCH", "MANUAL_REVIEW_ONLY"):
-            reasons.append(f"Dux decision is {dux_decision}, not WATCH or MANUAL_REVIEW_ONLY")
+            gate_reasons.append(f"Dux decision is {dux_decision}, not WATCH or MANUAL_REVIEW_ONLY")
 
         # Gate 5: candidate exists
         candidate = None
@@ -166,16 +169,16 @@ def run_shadow_executor() -> dict:
             candidate = dux_section.get("best_candidate")
 
         if not candidate:
-            reasons.append("no valid Dux candidate")
+            gate_reasons.append("no valid Dux candidate")
 
         # Gate 6: crypto-only filter
         symbol = (candidate or {}).get("symbol", "")
         if symbol and not is_crypto_usdt_perp(symbol):
-            reasons.append(f"{symbol} is not a crypto USDT perpetual (non-crypto synthetic)")
+            gate_reasons.append(f"{symbol} is not a crypto USDT perpetual (non-crypto synthetic)")
 
         # Gate 6b: candidate arbiter check
         if arbiter and not arbiter.get("has_shadow_eligible_candidates", False):
-            reasons.append("candidate arbiter has no shadow-eligible candidates")
+            gate_reasons.append("candidate arbiter has no shadow-eligible candidates")
 
         # Gate 6c: trigger watcher check
         if trigger_watcher and arbiter_best:
@@ -183,10 +186,10 @@ def run_shadow_executor() -> dict:
             for tc in trigger_watcher.get("candidates", []):
                 tck = f"{tc.get('symbol', '')}|{tc.get('timeframe', '')}|{tc.get('direction', '')}|{tc.get('thesis_type', '')}"
                 if tck == tw_key and tc.get("trigger_status") in ("INVALIDATED", "EXPIRED"):
-                    reasons.append(f"trigger watcher: {tc.get('trigger_status')} for this candidate")
+                    gate_reasons.append(f"trigger watcher: {tc.get('trigger_status')} for this candidate")
 
         # If arbiter best exists, use its candidate data instead
-        if arbiter_best and not any("trigger watcher" in r for r in reasons):
+        if arbiter_best and not any("trigger watcher" in r for r in gate_reasons):
             candidate = {
                 "symbol": arbiter_best.get("symbol", ""),
                 "timeframe": arbiter_best.get("timeframe", ""),
@@ -207,47 +210,47 @@ def run_shadow_executor() -> dict:
         if symbol:
             universe = load_universe()["contracts"]
             if not is_bingx_listed(symbol, universe):
-                reasons.append(f"{symbol} not BingX-listed")
+                gate_reasons.append(f"{symbol} not BingX-listed")
         else:
-            reasons.append("no symbol from candidate")
+            gate_reasons.append("no symbol from candidate")
 
         # Gate 7: direction
         direction = (candidate or {}).get("direction", "")
         if direction not in ("LONG", "SHORT"):
-            reasons.append(f"invalid direction: {direction}")
+            gate_reasons.append(f"invalid direction: {direction}")
 
         # Gate 8: RR final >= 4.0
         rr_final = (candidate or {}).get("rr_2") or 0
         if rr_final < 4.0:
-            reasons.append(f"RR {rr_final} < 4.0")
+            gate_reasons.append(f"RR {rr_final} < 4.0")
 
         # Gate 9: entry valid
         entry = (candidate or {}).get("entry") or 0
         if entry <= 0:
-            reasons.append("invalid entry")
+            gate_reasons.append("invalid entry")
 
         # Gate 10: stop valid
         stop = (candidate or {}).get("stop") or 0
         if stop <= 0 or stop == entry:
-            reasons.append("invalid stop")
+            gate_reasons.append("invalid stop")
 
         # Gate 11: target valid
         target = (candidate or {}).get("target_2") or 0
         if target <= 0:
-            reasons.append("invalid target")
+            gate_reasons.append("invalid target")
 
     # Common gates for both paths
     # Gate 1: system safe
     if not doctor.get("system_safe", False):
-        reasons.append("system not safe")
+        gate_reasons.append("system not safe")
 
     # Gate 2: live disabled
     if not doctor.get("live_disabled", False):
-        reasons.append("live trading not disabled")
+        gate_reasons.append("live trading not disabled")
 
     # Gate 3: paper disabled
     if not doctor.get("paper_disabled", False):
-        reasons.append("paper trading not disabled")
+        gate_reasons.append("paper trading not disabled")
 
     # Gate 12-14: risk parameters from manual_risk_plan
     risk_params = risk_plan.get("risk_parameters", {})
@@ -257,16 +260,23 @@ def run_shadow_executor() -> dict:
     risk_per_trade = abs(entry - stop)
     risk_usdt = risk_per_trade  # simplified: 1 unit = 1 USDT for shadow estimate
     if risk_usdt > max_risk_per_trade:
-        reasons.append(f"risk {risk_usdt:.2f} USDT > max {max_risk_per_trade} USDT per trade")
+        gate_reasons.append(f"risk {risk_usdt:.2f} USDT > max {max_risk_per_trade} USDT per trade")
 
     # Gate 15: kill switch
     evidence = risk_plan.get("evidence", {})
     kill_switch = evidence.get("kill_switch", "OK")
     if kill_switch == "STOP":
-        reasons.append("kill switch engaged")
+        gate_reasons.append("kill switch engaged")
+
+    # Gate 16: max open positions
+    pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
+    if pos_mon and pos_mon.get("position_found", False):
+        open_positions = float(pos_mon.get("open_position_count", 1))
+        if open_positions >= 1:
+            gate_reasons.append(f"open position exists ({pos_mon.get('symbol', '?')})")
 
     order_intent = None
-    if not reasons:
+    if not gate_reasons:
         decision = "SHADOW_READY"
         risk_usdt = abs(entry - stop)
         position_size = risk_usdt / max(risk_usdt, 1e-10)
@@ -287,6 +297,11 @@ def run_shadow_executor() -> dict:
             max_loss_usdt=round(max_risk_per_trade, 2),
             reason="all gates passed",
         )
+        # Extend intent with bridge metadata
+        order_intent["source"] = "trigger_bridge" if bridge_active else "dux"
+        order_intent["candidate_source"] = candidate.get("candidate_source", "near_miss")
+        order_intent["trigger_status"] = candidate.get("trigger_status", "N/A")
+        order_intent["thesis_score"] = candidate.get("thesis_score", 0)
         _append_to_ledger(order_intent)
 
     report = {
@@ -311,9 +326,8 @@ def run_shadow_executor() -> dict:
         "live_disabled": doctor.get("live_disabled", False),
         "paper_disabled": doctor.get("paper_disabled", False),
         "crypto_filter_pass": bool(symbol) and is_crypto_usdt_perp(symbol) if symbol else False,
-        "dux_decision": dux_decision,
         "candidate_exists": candidate is not None,
-        "candidate_source": bridge_candidate.get("candidate_source", "near_miss") if bridge_active else "near_miss",
+        "candidate_source": candidate.get("candidate_source", "near_miss") if candidate else "near_miss",
         "symbol_bingx_listed": bool(symbol) and is_bingx_listed(symbol, load_universe()["contracts"]) if symbol else False,
         "direction": direction,
         "rr_final": rr_final,
@@ -327,13 +341,13 @@ def run_shadow_executor() -> dict:
         "max_weekly_loss_usdt": max_weekly_loss,
         "shadow_order_intent": order_intent,
         "decision": decision,
-        "reasons": reasons if reasons else ["all gates passed"],
+        "reasons": gate_reasons if gate_reasons else (["all gates passed"] if not reasons and decision == "SHADOW_READY" else reasons),
     }
 
     with open(JSON_PATH, "w") as f:
         json.dump(report, f, indent=2)
 
-    _write_text_report(report, order_intent, decision, reasons)
+    _write_text_report(report, order_intent, decision, gate_reasons if gate_reasons else reasons)
     return report
 
 
@@ -358,6 +372,7 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
         f"  Candidate Exists:      {'YES' if report['candidate_exists'] else 'NO'}",
         f"  Candidate from Arbiter:{'YES' if report.get('candidate_from_arbiter') else 'NO'}",
         f"  Symbol BingX-Listed:   {'YES' if report['symbol_bingx_listed'] else 'NO'}",
+        f"  Candidate Source:      {report.get('candidate_source', 'near_miss')}",
         f"  Direction:             {report['direction'] or 'N/A'}",
         f"  RR Final:              {report['rr_final']}",
         f"  Risk per Trade (USDT): {report['risk_per_trade_usdt']:.2f}",
@@ -371,6 +386,7 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
     if intent:
         lines += [
             "  SHADOW ORDER INTENT GENERATED:",
+            f"    Source:    {intent.get('source', 'dux')}",
             f"    Symbol:    {intent['symbol']}",
             f"    Side:      {intent['side']}",
             f"    Entry:     {intent['entry']}",
@@ -378,6 +394,7 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
             f"    Target 1:  {intent['target_1']}",
             f"    Final Tgt: {intent['final_target']}",
             f"    RR Final:  1:{intent['rr_final']}",
+            f"    Thesis:    {intent.get('thesis_score', 'N/A')}",
             f"    Size:      {intent['position_size']}",
             f"    Risk:      {intent['risk_usdt']} USDT",
             f"    Pattern:   {intent['pattern_name']}",

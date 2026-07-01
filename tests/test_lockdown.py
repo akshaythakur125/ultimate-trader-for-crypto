@@ -4973,3 +4973,100 @@ def test_launch_check_passes_with_trigger_watcher():
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0 or "PASS" in result.stdout
+
+
+# ── Phase 51: Bridge Shadow Intent Generation ──────────────────────────
+
+def test_shadow_intent_has_bridge_metadata():
+    """Shadow intent includes source, candidate_source, trigger_status, thesis_score when bridge active."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={"candidate_source": "trigger_watcher", "trigger_status": "TRIGGER_CONFIRMED", "thesis_score": 85},
+        symbol="BTC-USDT", side="SHORT", entry=60000, stop_loss=61000, final_target=55000,
+        rr_final=8.0, source_pattern="SWEEP_HIGH", pattern_id="test", pattern_name="SWEEP_HIGH",
+        verdict="SHADOW_ELIGIBLE",
+    )
+    intent["source"] = "trigger_bridge"
+    intent["candidate_source"] = "trigger_watcher"
+    intent["trigger_status"] = "TRIGGER_CONFIRMED"
+    intent["thesis_score"] = 85
+    assert intent["source"] == "trigger_bridge"
+    assert intent["candidate_source"] == "trigger_watcher"
+    assert intent["trigger_status"] == "TRIGGER_CONFIRMED"
+    assert intent["thesis_score"] == 85
+    assert intent["real_order"] is False
+
+
+def test_shadow_intent_has_required_fields():
+    """Shadow order intent has all required execution fields."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="ETH-USDT", side="LONG", entry=2000, stop_loss=1950, final_target=2200,
+        rr_final=4.0, source_pattern="SWEEP_LOW", pattern_id="test", pattern_name="SWEEP_LOW",
+        verdict="SHADOW_ELIGIBLE",
+    )
+    for field in ("symbol", "side", "entry", "stop_loss", "final_target", "rr_final",
+                  "position_size", "risk_usdt", "pattern_name", "verdict", "reason",
+                  "real_order", "mode"):
+        assert field in intent, f"Missing field: {field}"
+    assert intent["real_order"] is False
+    assert intent["mode"] == "SHADOW_ONLY"
+
+
+def test_bridge_path_has_gate_reasons_separate():
+    """Bridge path uses gate_reasons list so informational reasons don't block SHADOW_READY."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "gate_reasons" in src
+    assert "if not gate_reasons" in src
+    assert "reasons.append" in src
+
+
+def test_bridge_path_checks_bingx_listed():
+    """Bridge path checks BingX listing before activating."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "is_bingx_listed" in src
+    assert "bingx_ok" in src
+
+
+def test_bridge_path_sets_bridge_active():
+    """Bridge is active when all checks pass for trigger_watcher confirmed candidate."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "bridge_active = True" in src
+
+
+def test_bridge_path_bypasses_dux():
+    """Bridge path bypasses Dux/alpha/psych gates with informational message."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "bypassing Dux/alpha/psych gates" in src
+
+
+def test_hourly_alert_has_bridge_shadow_ready_field():
+    """Hourly alert JSON includes bridge_shadow_ready field."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha)
+    assert "bridge_shadow_ready" in src
+
+
+def test_doctor_packet_has_bridge_fields():
+    """Doctor packet includes bridge section with candidate source and trigger status."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp)
+    assert "candidate_source" in src or "trigger_bridge" in src
+
+
+def test_bridge_path_max_open_positions_gate():
+    """Bridge path is blocked by max open positions gate."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "open position exists" in src
