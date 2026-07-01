@@ -3194,3 +3194,139 @@ def test_position_monitor_no_withdrawal():
     funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
     for bad in ["withdraw", "transfer", "send"]:
         assert all(bad not in f for f in funcs), f"found {bad} in position_monitor"
+
+
+# --- Phase 42: Psychology Memory & Evidence Engine ---
+
+def test_psychology_memory_module_runs():
+    from production_replay.psychology_memory import main as mem_main
+    rc = mem_main()
+    assert rc == 0
+
+
+def test_psychology_memory_creates_report_files():
+    os.makedirs("deploy_results", exist_ok=True)
+    from production_replay.psychology_memory import main as mem_main
+    mem_main()
+    for p in ["deploy_results/psychology_memory_report.json",
+              "deploy_results/psychology_memory_report.txt"]:
+        assert os.path.exists(p), f"missing report: {p}"
+
+
+def test_psychology_memory_report_has_required_fields():
+    path = "deploy_results/psychology_memory_report.json"
+    if not os.path.exists(path):
+        pytest.skip("memory report not generated yet")
+    with open(path) as f:
+        report = json.load(f)
+    required = ["mode", "timestamp", "total_scan_records_stored",
+                "total_outcomes_evaluated", "pending_outcomes",
+                "historical_edge_summary", "research_only"]
+    for key in required:
+        assert key in report, f"missing field in report: {key}"
+    assert report["research_only"] is True
+
+
+def test_psychology_memory_historical_edge_no_approval():
+    from production_replay.psychology_memory import get_historical_edge
+    edge = get_historical_edge("test_pattern", "LONG", "1h", 75, "BTCUSDT")
+    assert 0 <= edge <= 5, f"edge {edge} out of range 0-5"
+
+
+def test_psychology_memory_forward_outcome_simulation_rr_check():
+    from production_replay.psychology_memory import _simulate_outcome
+    outcome = _simulate_outcome([], 100.0, 90.0, 140.0, "LONG", 500)
+    assert outcome["simulated_outcome"] in ("NO_ENTRY", "STOP_FIRST", "TARGET_FIRST",
+                                            "PARTIAL_ONLY", "EXPIRED", "UNKNOWN_DATA",
+                                            "INVALID_PARAMS", "ERROR")
+
+
+def test_psychology_memory_get_historical_edge_accepts_valid_args():
+    from production_replay.psychology_memory import get_historical_edge
+    edge = get_historical_edge("", "", "", 0, "")
+    assert 0 <= edge <= 5
+
+
+def test_psychology_memory_no_withdrawal():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "psychology_memory.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    funcs = [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    for bad in ["withdraw", "transfer", "send"]:
+        assert all(bad not in f for f in funcs), f"found {bad} in psychology_memory"
+
+
+def test_psychology_memory_no_order_execution_imports():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "production_replay", "psychology_memory.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.append(node.module)
+    for bad in ["bingx_executor", "bingx_live_micro_executor", "bingx_shadow_executor",
+                "ccxt", "requests"]:
+        assert all(bad not in i for i in imports), f"found {bad} import in psychology_memory"
+
+
+def test_psychology_memory_record_scan_snapshot_accepts_empty():
+    from production_replay.psychology_memory import _record_scan_snapshot
+    rc = _record_scan_snapshot({"candidates": []})
+    assert isinstance(rc, int)
+
+
+def test_psychology_memory_evaluate_pending_outcomes_handles_empty():
+    from production_replay.psychology_memory import _evaluate_pending_outcomes
+    rc = _evaluate_pending_outcomes([], [])
+    assert isinstance(rc, tuple) and len(rc) == 2
+
+
+def test_psychology_memory_compute_statistics_no_crash():
+    from production_replay.psychology_memory import _compute_statistics
+    stats = _compute_statistics([])
+    assert isinstance(stats, dict)
+    assert "grouped_by_pattern" in stats
+    assert "grouped_by_direction" in stats
+    assert "grouped_by_timeframe" in stats
+    assert "grouped_by_score_band" in stats
+    assert "grouped_by_symbol" in stats
+
+
+def test_psychology_memory_get_historical_edge_from_statistics():
+    from production_replay.psychology_memory import get_historical_edge
+    edge = get_historical_edge("failed_breakout_trap", "LONG", "1h", 80, "BTCUSDT")
+    assert 0 <= edge <= 5
+
+
+def test_psychology_memory_no_approved_output():
+    from production_replay.psychology_memory import main as mem_main
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mem_main()
+    out = buf.getvalue()
+    assert "APPROVED" not in out, "psychology_memory must not output APPROVED"
+
+
+def test_doctor_packet_includes_memory_section():
+    import json
+    from production_replay.doctor_daily_packet import main as ddp_main
+    ddp_main()
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "doctor_daily_packet.json")
+    with open(path) as f:
+        report = json.load(f)
+    assert "psychology_memory" in report
+
+
+def test_hourly_alert_includes_memory_fields():
+    import json
+    from production_replay.hourly_alert import run_hourly_alert
+    report = run_hourly_alert()
+    for key in ["memory_scan_records", "memory_outcomes", "memory_pending"]:
+        assert key in report, f"missing field in report: {key}"

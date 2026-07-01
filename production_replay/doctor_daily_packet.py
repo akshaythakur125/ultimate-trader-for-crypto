@@ -59,6 +59,7 @@ def main():
     _run_module("production_replay.dux_pattern_engine")
     _run_module("production_replay.alpha_intelligence")
     _run_module("production_replay.psychology_alpha")
+    _run_module("production_replay.psychology_memory")
     _run_module("production_replay.bingx_shadow_executor")
     _run_module("production_replay.bingx_live_micro_executor")
     _run_module("production_replay.bingx_position_monitor", "--once")
@@ -70,6 +71,7 @@ def main():
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
+    memory = _read_json(os.path.join(RESULTS_DIR, "psychology_memory_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
@@ -268,6 +270,36 @@ def main():
     else:
         psych_lines = ["", "  MARKET PSYCHOLOGY ALPHA: MISSING (no report)", ""]
 
+    # Psychology memory section
+    memory_lines = []
+    if memory:
+        hes = memory.get("historical_edge_summary", {})
+        mem_records = memory.get("total_scan_records_stored", 0)
+        mem_outcomes = memory.get("total_outcomes_evaluated", 0)
+        mem_pending = memory.get("pending_outcomes", 0)
+        best_pat = hes.get("best_pattern", {})
+        worst_pat = hes.get("worst_pattern", {})
+        best_pat_name = best_pat.get("name", "N/A") if best_pat else "N/A"
+        worst_pat_name = worst_pat.get("name", "N/A") if worst_pat else "N/A"
+        memory_lines = [
+            "",
+            "  PSYCHOLOGY MEMORY:",
+            f"    Scan records stored: {mem_records}",
+            f"    Outcomes evaluated:  {mem_outcomes}",
+            f"    Pending outcomes:    {mem_pending}",
+            f"    Best pattern:        {best_pat_name}",
+            f"    Worst pattern:       {worst_pat_name}",
+        ]
+        dangerous = hes.get("dangerous_symbols", [])
+        reliable = hes.get("reliable_symbols", [])
+        if dangerous:
+            memory_lines.append(f"    Dangerous symbols:  {', '.join(dangerous[:5])}")
+        if reliable:
+            memory_lines.append(f"    Reliable symbols:   {', '.join(reliable[:5])}")
+        memory_lines.append(f"    Historical edge:    {hes.get('overall_target_first_rate', 0):.4f} TF rate")
+    else:
+        memory_lines = ["", "  PSYCHOLOGY MEMORY: MISSING (no report)", ""]
+
     # BingX shadow execution section
     shadow_lines = []
     if shadow:
@@ -387,6 +419,7 @@ def main():
     lines += dux_lines
     lines += alpha_lines
     lines += psych_lines
+    lines += memory_lines
     lines += shadow_lines
     lines += live_lines
     lines += pos_lines
@@ -466,6 +499,12 @@ def main():
             "elite_candidates": psych.get("psychology_elite_candidates", 0) if psych else 0,
             "final_decision": psych.get("final_decision", "N/A") if psych else None,
         } if psych else None,
+        "psychology_memory": {
+            "scan_records_stored": memory.get("total_scan_records_stored", 0) if memory else None,
+            "outcomes_evaluated": memory.get("total_outcomes_evaluated", 0) if memory else None,
+            "pending_outcomes": memory.get("pending_outcomes", 0) if memory else None,
+            "historical_edge_summary": memory.get("historical_edge_summary") if memory else None,
+        } if memory else None,
         "bingx_shadow_execution": {
             "shadow_intent": "GENERATED" if shadow and shadow.get("shadow_order_intent") else "NOT_GENERATED",
             "shadow_decision": shadow.get("decision", "N/A") if shadow else None,

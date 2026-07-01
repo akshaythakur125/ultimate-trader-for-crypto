@@ -90,6 +90,7 @@ def run_hourly_alert() -> dict:
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
+    memory = _read_json(os.path.join(RESULTS_DIR, "psychology_memory_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
 
@@ -145,6 +146,12 @@ def run_hourly_alert() -> dict:
         "alpha_elite_candidates": alpha_elite,
         "alpha_watch_candidates": alpha_watch,
         "psychology_score": psych_score,
+        "memory_scan_records": memory.get("total_scan_records_stored", 0) if memory else 0,
+        "memory_outcomes": memory.get("total_outcomes_evaluated", 0) if memory else 0,
+        "memory_pending": memory.get("pending_outcomes", 0) if memory else 0,
+        "memory_best_pattern": ((memory.get("historical_edge_summary") or {}).get("best_pattern") or {}).get("name") if memory else None,
+        "memory_worst_pattern": ((memory.get("historical_edge_summary") or {}).get("worst_pattern") or {}).get("name") if memory else None,
+        "memory_overall_tf_rate": (memory.get("historical_edge_summary") or {}).get("overall_target_first_rate", 0) if memory else None,
         "best_candidate": {
             "symbol": best["symbol"],
             "timeframe": best["timeframe"],
@@ -228,6 +235,21 @@ def _write_text_report(report: dict, action: str, reason: str):
         lines += [f"  Psychology Score:   {psych_score}/100", ""]
     else:
         lines += ["  Psychology Score: NONE", ""]
+
+    mem_records = report.get("memory_scan_records", 0)
+    mem_outcomes = report.get("memory_outcomes", 0)
+    mem_pending = report.get("memory_pending", 0)
+    if mem_records > 0 or mem_outcomes > 0:
+        mp_best = report.get("memory_best_pattern") or "N/A"
+        mp_worst = report.get("memory_worst_pattern") or "N/A"
+        mp_tf = report.get("memory_overall_tf_rate") or 0
+        lines += [
+            "  PSYCHOLOGY MEMORY:",
+            f"    Records: {mem_records}  Outcomes: {mem_outcomes}  Pending: {mem_pending}",
+            f"    Best pattern: {mp_best}  Worst: {mp_worst}",
+            f"    Overall TF rate: {mp_tf:.4f}",
+            "",
+        ]
 
     if best:
         lines += [

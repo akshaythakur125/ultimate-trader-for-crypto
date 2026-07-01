@@ -167,6 +167,18 @@ def _score_regime(p: dict) -> int:
 
 
 def _score_historical(p: dict) -> int:
+    try:
+        from production_replay.psychology_memory import get_historical_edge
+        edge = get_historical_edge(
+            p.get("pattern_id", ""),
+            p.get("direction", ""),
+            p.get("timeframe", ""),
+            p.get("psychology_score", 0) or 0,
+            p.get("symbol", ""),
+        )
+        return min(edge, PSYCHOLOGY_WEIGHTS["historical_edge"])
+    except Exception:
+        pass
     stats = p.get("stats", {})
     trades = stats.get("trades", 0)
     ev_r = stats.get("ev_r", 0) or 0
@@ -221,14 +233,18 @@ def _compute_psychology(p: dict, ticker_map: dict) -> dict:
     liq = _score_liquidity(sym, ticker_map)
     rr_score = _score_rr_quality(p)
     regime = _score_regime(p)
-    hist = _score_historical(p)
 
     if rr_score < 0:
         return {"psychology_score": 0, "rejected": True,
                 "reject_reason": f"RR {rr} < {RR_MIN}",
                 "scores": {}}
 
-    total = trap + structure + volume + liq + rr_score + regime + hist
+    partial = trap + structure + volume + liq + rr_score + regime
+    partial = min(partial, PSYCHOLOGY_MAX)
+    p["psychology_score"] = partial
+    hist = _score_historical(p)
+
+    total = partial + hist
     total = min(total, PSYCHOLOGY_MAX)
 
     verdict = "REJECT"
