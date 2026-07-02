@@ -127,6 +127,7 @@ def run_live_micro_executor() -> dict:
     psych = _read_json(os.path.join(RESULTS_DIR, "psychology_alpha_report.json"))
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
+    preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     creds = load_credentials()
 
     # -- Determine trigger bridge status --
@@ -344,8 +345,19 @@ def run_live_micro_executor() -> dict:
     if not one_shot_ok:
         reasons.append(f"one-shot guard state is {one_shot_state}, need ARMED_ONCE")
 
+    # -- 9. Contract metadata valid (from preflight) --
+    metadata_ok = False
+    if preflight:
+        meta_valid = preflight.get("checks", {}).get("contract_metadata_valid", False)
+        if meta_valid:
+            metadata_ok = True
+        else:
+            reasons.append("contract metadata invalid per preflight")
+    else:
+        reasons.append("preflight report missing")
+
     # -- Final decision --
-    all_gates = env_ok and safety_ok and strategy_ok and shadow_ok and risk_ok and account_ok and not kill_active and one_shot_ok
+    all_gates = env_ok and safety_ok and strategy_ok and shadow_ok and risk_ok and account_ok and not kill_active and one_shot_ok and metadata_ok
 
     if all_gates and candidate:
         bingx_side = "BUY" if direction == "LONG" else "SELL"
@@ -449,6 +461,7 @@ def run_live_micro_executor() -> dict:
             "account_gates": account_ok,
             "kill_switch": not kill_active,
             "one_shot_gate": one_shot_ok,
+            "metadata_gate": metadata_ok,
         },
         "one_shot_state": one_shot_state,
         "bridge_active": bridge_active,
@@ -531,6 +544,7 @@ def _write_text_report(report: dict, decision: str, reasons: list[str],
         f"    Account:  {'PASS' if report['gates']['account_gates'] else 'FAIL'}",
         f"    Kill Sw:  {'PASS' if report['gates']['kill_switch'] else 'FAIL'}",
         f"    One-Shot: {'PASS' if report['gates']['one_shot_gate'] else 'FAIL'}",
+        f"    Metadata: {'PASS' if report['gates']['metadata_gate'] else 'FAIL'}",
         "",
     ]
 

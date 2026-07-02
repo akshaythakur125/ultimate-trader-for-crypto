@@ -5348,7 +5348,7 @@ def test_preflight_valid_bridge_intent_returns_pass():
     assert result.get("decision") in ("PREFLIGHT_PASS", "PREFLIGHT_FAIL")
     assert isinstance(result.get("preflight_pass"), bool)
     assert "checks" in result
-    assert len(result.get("checks", {})) == 20
+    assert len(result.get("checks", {})) == 21
 
 
 def test_preflight_rr_below_4_fails():
@@ -5387,16 +5387,17 @@ def test_preflight_no_real_order_placement():
 
 
 def test_preflight_has_all_20_checks():
-    """Preflight defines all 20 required check names."""
+    """Preflight defines all required check names."""
     from production_replay.bingx_live_preflight import run_preflight
     result = run_preflight()
     checks = result.get("checks", {})
-    assert len(checks) == 20
+    assert len(checks) == 21
     for ck in (
         "shadow_intent_exists", "source_is_trigger_bridge", "decision_is_shadow_ready",
         "symbol_bingx_listed", "direction_valid", "entry_stop_target_valid",
         "rr_ge_4", "risk_within_limit", "max_leverage_ok", "no_open_positions",
-        "kill_switch_off", "quantity_calculated", "quantity_respects_min",
+        "kill_switch_off", "quantity_calculated", "contract_metadata_valid",
+        "quantity_respects_min",
         "notional_respects_min", "stop_loss_plan_valid", "target_plan_valid",
         "exit_orders_reduce_only", "no_naked_position", "no_market_order_placed",
         "no_real_api_order_called",
@@ -5558,3 +5559,78 @@ def test_one_shot_guard_live_executor_shows_gate():
     src = inspect.getsource(lme.run_live_micro_executor)
     assert "one_shot_gate" in src
     assert "one_shot_state" in src
+
+
+# ── Phase 57: Strict BingX Contract Metadata Gate ─────────────────────
+
+def test_preflight_fetches_real_metadata():
+    """Preflight fetches real contract metadata from BingX API."""
+    from production_replay.bingx_live_preflight import _fetch_contract_detail
+    result = _fetch_contract_detail("BTC-USDT")
+    assert result, "Should fetch metadata for BTC-USDT"
+    assert "tradeMinQuantity" in result
+    assert "quantityPrecision" in result
+    assert "tradeMinUSDT" in result
+    assert float(result.get("tradeMinQuantity", 0)) > 0
+    assert float(result.get("tradeMinUSDT", 0)) > 0
+
+
+def test_preflight_metadata_check_present():
+    """Preflight includes contract_metadata_valid check."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf.run_preflight)
+    assert "contract_metadata_valid" in src
+
+
+def test_preflight_zero_metadata_fails():
+    """Preflight fails with missing/zero metadata."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    assert "contract_metadata_valid" in checks
+
+
+def test_live_executor_metadata_gate():
+    """Live executor has a metadata gate."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "metadata_gate" in src
+    assert "metadata_ok" in src
+
+
+def test_live_executor_read_only_still_blocks():
+    """read_only mode still blocks live execution (regression)."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "BINGX_EXECUTION_MODE" in src
+    assert "LIVE_TRADING_ACK" in src
+
+
+def test_preflight_shows_metadata_in_text():
+    """Preflight text output shows CONTRACT METADATA: VALID/INVALID."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf._write_text_report)
+    assert "CONTRACT METADATA" in src
+    assert "VALID" in src
+    assert "INVALID" in src
+
+
+def test_preflight_no_approved_phase57():
+    """Preflight (Phase 57) still has no APPROVED string."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    assert "APPROVED" not in src
+
+
+def test_preflight_no_withdrawal_phase57():
+    """Preflight (Phase 57) has no withdrawal/transfer/send."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()

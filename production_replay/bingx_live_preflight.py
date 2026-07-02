@@ -12,6 +12,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import requests
+
 from production_replay.bingx_client import load_credentials, get_open_positions
 from production_replay.bingx_universe import is_bingx_listed, load_universe
 
@@ -55,6 +57,23 @@ def _get_contract_metadata(symbol: str, contracts: list[dict]) -> dict:
     for c in contracts:
         if c.get("symbol") == symbol:
             return c
+    return {}
+
+
+def _fetch_contract_detail(symbol: str) -> dict:
+    """Fetch contract detail directly from BingX API for a specific symbol."""
+    creds = load_credentials()
+    base_url = creds["base_url"]
+    try:
+        resp = requests.get(f"{base_url}/openApi/swap/v2/quote/contracts", timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") == 0:
+            for c in data.get("data", []):
+                if c.get("symbol") == symbol:
+                    return c
+    except Exception:
+        pass
     return {}
 
 
@@ -220,65 +239,95 @@ def run_preflight() -> dict:
     if not check_12_ok:
         reasons.append("calculated quantity is 0")
 
-    # -- 13. Quantity respects BingX min/step --
-    contract = _get_contract_metadata(symbol, universe_contracts)
-    min_qty = float(contract.get("minQty", 0)) if contract else 0
-    step_size = float(contract.get("stepSize", 0)) if contract else 0
+    # -- Fetch real contract metadata from API --
+    raw_contract = _fetch_contract_detail(symbol)
+    contract_found = bool(raw_contract)
+    if contract_found:
+        min_qty = float(raw_contract.get("tradeMinQuantity", 0) or 0)
+        qty_precision = int(raw_contract.get("quantityPrecision", 4))
+        step_size = 1 / (10 ** qty_precision) if qty_precision > 0 else 0
+        min_notional = float(raw_contract.get("tradeMinUSDT", 0) or 0)
+        price_precision = int(raw_contract.get("pricePrecision", 2))
+        max_leverage_contract = int(raw_contract.get("maxLeverage", 0) or 0)
+    else:
+        min_qty = 0
+        step_size = 0
+        min_notional = 0
+        price_precision = 0
+        qty_precision = 0
+        max_leverage_contract = 0
+
+    # -- 13. Contract metadata is valid (min_qty > 0, step_size > 0, min_notional > 0) --
+    check_13_ok = contract_found and min_qty > 0 and step_size > 0 and min_notional > 0
+    checks["contract_metadata_valid"] = check_13_ok
+    if not check_13_ok:
+        missing = []
+        if not contract_found:
+            missing.append("no contract data")
+        else:
+            if min_qty <= 0:
+                missing.append("min_qty")
+            if step_size <= 0:
+                missing.append("step_size")
+            if min_notional <= 0:
+                missing.append("min_notional")
+        reasons.append(f"contract metadata invalid: {', '.join(missing)}")
+
+    # -- 14. Quantity respects BingX min/step --
     if check_12_ok and step_size > 0:
         quantity = _round_to_step_size(quantity, step_size)
-    check_13_ok = True
-    if min_qty > 0 and quantity < min_qty:
-        check_13_ok = False
-        reasons.append(f"quantity {quantity} < minQty {min_qty}")
-    checks["quantity_respects_min"] = check_13_ok
-
-    # -- 14. Notional respects BingX minimum --
-    notional = quantity * entry
-    min_notional = float(contract.get("minNotional", 0)) if contract else 0
     check_14_ok = True
-    if min_notional > 0 and notional < min_notional:
+    if min_qty > 0 and quantity < min_qty:
         check_14_ok = False
-        reasons.append(f"notional {notional:.2f} < minNotional {min_notional}")
-    checks["notional_respects_min"] = check_14_ok
+        reasons.append(f"quantity {quantity} < minQty {min_qty}")
+    checks["quantity_respects_min"] = check_14_ok
 
-    # -- 15. Stop-loss plan valid --
+    # -- 15. Notional respects BingX minimum --
+    notional = quantity * entry
+    check_15_ok = True
+    if min_notional > 0 and notional < min_notional:
+        check_15_ok = False
+        reasons.append(f"notional {notional:.2f} < minNotional {min_notional}")
+    checks["notional_respects_min"] = check_15_ok
+
+    # -- 16. Stop-loss plan valid --
     if direction == "LONG":
         stop_valid = stop < entry
     else:
         stop_valid = stop > entry
-    check_15_ok = stop_valid
-    checks["stop_loss_plan_valid"] = check_15_ok
-    if not check_15_ok:
+    check_16_ok = stop_valid
+    checks["stop_loss_plan_valid"] = check_16_ok
+    if not check_16_ok:
         reasons.append("stop-loss plan invalid (wrong direction)")
 
-    # -- 16. Target plan valid --
+    # -- 17. Target plan valid --
     if direction == "LONG":
         target_valid = target > entry
     else:
         target_valid = target < entry
-    check_16_ok = target_valid
-    checks["target_plan_valid"] = check_16_ok
-    if not check_16_ok:
+    check_17_ok = target_valid
+    checks["target_plan_valid"] = check_17_ok
+    if not check_17_ok:
         reasons.append("target plan invalid (wrong direction)")
 
-    # -- 17. Exit orders must be reduce-only in planned payload --
-    check_17_ok = True
-    checks["exit_orders_reduce_only"] = check_17_ok
+    # -- 18. Exit orders must be reduce-only in planned payload --
+    check_18_ok = True
+    checks["exit_orders_reduce_only"] = check_18_ok
 
-    # -- 18. No naked position --
-    check_18_ok = check_15_ok
-    checks["no_naked_position"] = check_18_ok
-    if not check_18_ok:
+    # -- 19. No naked position --
+    check_19_ok = check_16_ok
+    checks["no_naked_position"] = check_19_ok
+    if not check_19_ok:
         if "stop-loss plan invalid" not in reasons:
             reasons.append("stop plan invalid → naked position risk")
 
-    # -- 19. No market order placed by this module --
-    check_19_ok = True
-    checks["no_market_order_placed"] = check_19_ok
-
-    # -- 20. No real API order endpoint called --
+    # -- 20. No market order placed by this module --
     check_20_ok = True
-    checks["no_real_api_order_called"] = check_20_ok
+    checks["no_market_order_placed"] = check_20_ok
+
+    # -- 21. No real API order endpoint called --
+    check_21_ok = True
+    checks["no_real_api_order_called"] = check_21_ok
 
     # -- Final decision --
     all_checks = all(checks.values())
@@ -316,7 +365,14 @@ def run_preflight() -> dict:
         "min_quantity": min_qty,
         "step_size": step_size,
         "min_notional": min_notional,
-        "contract_metadata_found": bool(contract),
+        "contract_metadata_found": contract_found,
+        "contract_metadata_valid": check_13_ok,
+        "min_quantity": min_qty,
+        "step_size": step_size,
+        "min_notional": min_notional,
+        "price_precision": price_precision,
+        "quantity_precision": qty_precision,
+        "max_leverage_contract": max_leverage_contract,
         "reasons": reasons,
         "message": "ready for live_micro arming" if all_checks else "preflight checks failed; review reasons",
     }
@@ -368,12 +424,23 @@ def _write_text_report(report: dict, decision: str, reasons: list[str]):
         lines.append(f"    {ck}: {'PASS' if ok else 'FAIL'}")
 
     if report.get("contract_metadata_found"):
+        meta_valid = report.get("contract_metadata_valid", False)
         lines += [
             "",
             "  Contract Metadata:",
             f"    Min Quantity:  {report['min_quantity']}",
             f"    Step Size:     {report['step_size']}",
             f"    Min Notional:  {report['min_notional']}",
+            f"    Price Prec:    {report['price_precision']}",
+            f"    Qty Prec:      {report['quantity_precision']}",
+            f"    Max Lev (ctr): {report['max_leverage_contract']}",
+            f"    CONTRACT METADATA: {'VALID' if meta_valid else 'INVALID'}",
+        ]
+    else:
+        lines += [
+            "",
+            "  Contract Metadata: NOT FOUND",
+            "    CONTRACT METADATA: INVALID",
         ]
 
     lines += [
