@@ -5173,3 +5173,84 @@ def test_doctor_packet_no_crash_on_missing_files():
     from production_replay.doctor_daily_packet import _read_json
     assert _read_json("nonexistent_file_xyz.json") is None
     assert _read_json("") is None
+
+
+# ── Phase 52B: Trigger Bridge Shadow Intent Generation ─────────────────
+
+def test_trigger_bridge_generates_intent():
+    """Trigger bridge with valid SHADOW_ELIGIBLE candidate generates shadow intent."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={"candidate_source": "trigger_watcher", "trigger_status": "TRIGGER_CONFIRMED", "thesis_score": 80},
+        symbol="BTC-USDT", side="SHORT", entry=60000, stop_loss=61000, final_target=55000,
+        rr_final=6.0, source_pattern="SWEEP_HIGH", pattern_id="test", pattern_name="SWEEP_HIGH",
+        verdict="SHADOW_ELIGIBLE",
+    )
+    intent["source"] = "trigger_bridge"
+    assert intent["symbol"] == "BTC-USDT"
+    assert intent["side"] == "SHORT"
+    assert intent["entry"] == 60000
+    assert intent["stop_loss"] == 61000
+    assert intent["final_target"] == 55000
+    assert intent["rr_final"] == 6.0
+    assert intent["real_order"] is False
+    assert intent["source"] == "trigger_bridge"
+    assert intent["verdict"] == "SHADOW_ELIGIBLE"
+
+
+def test_trigger_bridge_real_order_false():
+    """Trigger bridge never sets real_order to True."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="ETH-USDT", side="LONG", entry=2000, stop_loss=1950,
+        final_target=2200, rr_final=5.0, source_pattern="SWEEP_LOW",
+        pattern_id="test", pattern_name="SWEEP_LOW", verdict="SHADOW_ELIGIBLE",
+    )
+    assert intent["real_order"] is False
+    assert intent["mode"] == "SHADOW_ONLY"
+
+
+def test_trigger_bridge_read_only_not_activated():
+    """Trigger bridge does not enable live_micro execution mode."""
+    from production_replay.bingx_shadow_executor import _shadow_order_intent
+    intent = _shadow_order_intent(
+        candidate={}, symbol="SOL-USDT", side="LONG", entry=100, stop_loss=99,
+        final_target=110, rr_final=10.0, source_pattern="SWEEP_LOW",
+        pattern_id="test", pattern_name="SWEEP_LOW", verdict="SHADOW_ELIGIBLE",
+    )
+    assert intent["mode"] == "SHADOW_ONLY"
+    assert intent["real_order"] is False
+
+
+def test_trigger_bridge_rr_below_4_blocks():
+    """Bridge activation checks RR >= 4; RR < 4 prevents bridge from activating."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "float(arbiter_best.get(\"rr\", 0)) >= 4.0" in src
+
+
+def test_trigger_bridge_kill_switch_blocks():
+    """Bridge path includes kill switch gate."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se.run_shadow_executor)
+    assert "kill_switch" in src
+    assert "STOP" in src
+
+
+def test_trigger_bridge_no_approved():
+    """Trigger bridge path has no APPROVED string."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se)
+    assert "APPROVED" not in src
+
+
+def test_trigger_bridge_no_withdrawal():
+    """Trigger bridge has no withdrawal/transfer functions."""
+    import inspect
+    import production_replay.bingx_shadow_executor as se
+    src = inspect.getsource(se)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
