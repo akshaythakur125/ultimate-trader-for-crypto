@@ -796,6 +796,12 @@ def main():
             f"    Latest Decision: {ldec}",
             f"    Latest Reason: {'; '.join(lreasons[:3])}" if lreasons else "    Latest Reason: N/A",
         ]
+        # Phase 65: Evidence lock override — force executor unavailable
+        evidence_live_allowed = evidence.get("live_allowed", False) if evidence else False
+        if not evidence_live_allowed:
+            live_lines.append(
+                f"    Evidence Lock:  BLOCKED ({evidence.get('evidence_verdict', '?')})"
+            )
     else:
         live_lines = ["", "  BINGX LIVE MICRO EXECUTION: MISSING (no report)", ""]
 

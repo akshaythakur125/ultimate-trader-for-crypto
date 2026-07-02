@@ -278,6 +278,13 @@ def run_hourly_alert() -> dict:
         live_blocked_by_env=live_blocked_by_env,
     )
 
+    # Phase 65: Evidence lock overrides final action — master gate
+    evidence_live_allowed = evidence.get("live_allowed", False) if evidence else False
+    if not evidence_live_allowed:
+        if final_action in ("LIVE_ARMABLE", "LIVE_BLOCKED", "LIVE_READY") or final_action.startswith("LIVE_"):
+            final_action = "EVIDENCE_BLOCKED"
+            action_reason = "preflight passed, evidence blocked"
+
     report = {
         "mode": "hourly_alert",
         "timestamp": ts,
