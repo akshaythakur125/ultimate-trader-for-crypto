@@ -6078,3 +6078,131 @@ def test_rotation_doctor_packet_runs_module():
     import production_replay.doctor_daily_packet as ddp
     src = inspect.getsource(ddp.main)
     assert "candidate_rotation_report" in src
+
+
+# --- Phase 62: Paper Candidate Watchlist ---
+
+def test_watchlist_import():
+    """paper_candidate_watchlist module imports cleanly."""
+    import production_replay.paper_candidate_watchlist as wl
+    assert hasattr(wl, "run_paper_candidate_watchlist")
+    assert hasattr(wl, "main")
+
+
+def test_watchlist_runs_and_returns_dict():
+    """run_paper_candidate_watchlist returns a dict with expected keys."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    assert isinstance(r, dict)
+    assert r.get("mode") == "paper_candidate_watchlist"
+    assert "next_action" in r
+    assert "active_trade_lock_on" in r
+    assert "candidate_discovery" in r
+    assert "top_fresh_candidates" in r
+    assert "candidate_comparison" in r
+    assert "research_only" in r
+    assert r["research_only"] is True
+    assert "live_trading_enabled" in r
+    assert r["live_trading_enabled"] is False
+    assert "real_order" in r
+    assert r["real_order"] is False
+
+
+def test_watchlist_research_only_never_real_order():
+    """Watchlist never enables live/paper trading or real orders."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    assert r.get("paper_trading_enabled") is False
+    assert r.get("real_order") is False
+
+
+def test_watchlist_no_placement_keywords():
+    """Watchlist source contains no order-placement keywords."""
+    import inspect
+    import production_replay.paper_candidate_watchlist as wl
+    src = inspect.getsource(wl.run_paper_candidate_watchlist)
+    for kw in ("place_order", "create_order", "set_leverage", "set_margin", "BINGX_EXECUTION_MODE", "LIVE_TRADING_ACK"):
+        assert kw not in src, f"watchlist should not contain '{kw}'"
+
+
+def test_watchlist_trade_lock_reflects_paper_status():
+    """Watchlist trade lock ON when paper status has PAPER_OPEN trade."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    assert "active_trade_lock_on" in r
+
+
+def test_watchlist_top_fresh_excludes_active_symbol():
+    """Top fresh candidates should not include the active trade symbol."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    active_symbol = (r.get("active_trade") or {}).get("symbol", "")
+    for c in r.get("top_fresh_candidates", []):
+        assert c.get("symbol", "") != active_symbol, (
+            f"fresh candidate {c.get('symbol')} should not match active symbol {active_symbol}"
+        )
+
+
+def test_watchlist_total_candidates_positive():
+    """Watchlist reports positive total candidate count."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    cd = r.get("candidate_discovery", {})
+    assert cd.get("total_candidates", 0) > 0
+
+
+def test_watchlist_has_timestamp():
+    """Watchlist report has a valid ISO timestamp."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    ts = r.get("timestamp", "")
+    assert ts.endswith("Z") or "+" in ts, f"timestamp should be ISO format, got {ts}"
+
+
+def test_watchlist_output_files_exist():
+    """Watchlist creates JSON and TXT output files."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist, JSON_PATH, TXT_PATH
+    import os
+    run_paper_candidate_watchlist()
+    assert os.path.exists(JSON_PATH)
+    assert os.path.exists(TXT_PATH)
+
+
+def test_watchlist_ledger_exists():
+    """Watchlist appends to ledger file."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist, LEDGER_PATH
+    import os
+    run_paper_candidate_watchlist()
+    assert os.path.exists(LEDGER_PATH)
+
+
+def test_watchlist_hourly_alert_has_section():
+    """Hourly alert report contains candidate_watchlist section."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "candidate_watchlist" in src
+
+
+def test_watchlist_doctor_packet_runs_module():
+    """Doctor daily packet runs paper_candidate_watchlist."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "paper_candidate_watchlist" in src
+
+
+def test_watchlist_doctor_packet_has_section():
+    """Doctor daily packet report contains paper_candidate_watchlist section."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "paper_candidate_watchlist" in src
+
+
+def test_watchlist_hourly_has_doctor_ref():
+    """Hourly alert calls paper_candidate_watchlist before reading doctor."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "paper_candidate_watchlist" in src

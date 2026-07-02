@@ -71,6 +71,7 @@ def main():
     _run_module("production_replay.paper_execution_ledger")
     _run_module("production_replay.paper_outcome_validator")
     _run_module("production_replay.candidate_rotation_report")
+    _run_module("production_replay.paper_candidate_watchlist")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -88,6 +89,7 @@ def main():
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
+    watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     entry = _read_ledger_latest()
@@ -638,6 +640,32 @@ def main():
     else:
         rotation_lines = ["", "  CANDIDATE ROTATION: MISSING (no report)", ""]
 
+    # Paper candidate watchlist section (Phase 62)
+    watchlist_lines = []
+    if watchlist:
+        wl_next = watchlist.get("next_action", "N/A")
+        wl_lock = watchlist.get("active_trade_lock_on", False)
+        wl_cd = watchlist.get("candidate_discovery", {})
+        wl_bf = watchlist.get("candidate_comparison", {}).get("best_fresh_candidate")
+        watchlist_lines = [
+            "",
+            "  PAPER CANDIDATE WATCHLIST:",
+            f"    Next Action:   {wl_next}",
+            f"    Trade Lock:    {'ON' if wl_lock else 'OFF'}",
+            f"    Total:         {wl_cd.get('total_candidates',0)}  "
+            f"Confirmed: {wl_cd.get('trigger_confirmed',0)}  "
+            f"Eligible: {wl_cd.get('shadow_eligible',0)}",
+        ]
+        if wl_bf:
+            watchlist_lines.append(
+                f"    Best Fresh:    {wl_bf.get('symbol','?')} {wl_bf.get('direction','?')} "
+                f"RR:{wl_bf.get('rr','?')} Score:{wl_bf.get('thesis_score','?')} "
+                f"{'STRONGER' if watchlist.get('best_fresh_stronger') else 'weaker'}"
+            )
+        watchlist_lines.append("")
+    else:
+        watchlist_lines = ["", "  PAPER CANDIDATE WATCHLIST: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -751,6 +779,7 @@ def main():
     lines += paper_lines
     lines += outcome_lines
     lines += rotation_lines
+    lines += watchlist_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -929,6 +958,13 @@ def main():
             "best_eligible_candidate": rotation.get("best_eligible_candidate") if rotation else None,
             "best_rejected_candidate": rotation.get("best_rejected_candidate") if rotation else None,
         } if rotation else None,
+        "paper_candidate_watchlist": {
+            "next_action": watchlist.get("next_action", "N/A") if watchlist else None,
+            "active_trade_lock_on": watchlist.get("active_trade_lock_on", False) if watchlist else False,
+            "candidate_discovery": watchlist.get("candidate_discovery", {}) if watchlist else {},
+            "best_fresh_candidate": watchlist.get("candidate_comparison", {}).get("best_fresh_candidate") if watchlist else None,
+            "best_fresh_stronger": watchlist.get("candidate_comparison", {}).get("best_fresh_stronger", False) if watchlist else False,
+        } if watchlist else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

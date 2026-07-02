@@ -118,6 +118,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run paper candidate watchlist for fresh data (Phase 62)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_candidate_watchlist"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -133,6 +141,7 @@ def run_hourly_alert() -> dict:
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
+    watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -395,6 +404,14 @@ def run_hourly_alert() -> dict:
             "best_eligible_candidate": rotation.get("best_eligible_candidate") if rotation else None,
             "best_rejected_candidate": rotation.get("best_rejected_candidate") if rotation else None,
         } if rotation else None,
+        "candidate_watchlist": {
+            "next_action": watchlist.get("next_action", "N/A") if watchlist else "N/A",
+            "active_trade_lock_on": watchlist.get("active_trade_lock_on", False) if watchlist else False,
+            "candidate_discovery": watchlist.get("candidate_discovery", {}) if watchlist else {},
+            "top_fresh_count": len(watchlist.get("top_fresh_candidates", [])) if watchlist else 0,
+            "best_fresh_candidate": watchlist.get("candidate_comparison", {}).get("best_fresh_candidate") if watchlist else None,
+            "best_fresh_stronger": watchlist.get("candidate_comparison", {}).get("best_fresh_stronger", False) if watchlist else False,
+        } if watchlist else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -705,6 +722,27 @@ def _write_text_report(report: dict, action: str, reason: str):
             lines.append(
                 f"    Best Rejected:      {br.get('symbol','?')} {br.get('direction','?')} "
                 f"Reason: {br.get('rejection_reason_display','?')}"
+            )
+        lines += [""]
+
+    # Phase 62: Paper candidate watchlist
+    wl = report.get("candidate_watchlist")
+    if wl and wl.get("next_action", "N/A") != "N/A":
+        cd = wl.get("candidate_discovery", {})
+        bf = wl.get("best_fresh_candidate")
+        lines += [
+            "  PAPER CANDIDATE WATCHLIST:",
+            f"    Next Action:   {wl['next_action']}",
+            f"    Trade Lock:    {'ON' if wl.get('active_trade_lock_on') else 'OFF'}",
+            f"    Total:         {cd.get('total_candidates',0)}  "
+            f"Confirmed: {cd.get('trigger_confirmed',0)}  "
+            f"Eligible: {cd.get('shadow_eligible',0)}",
+        ]
+        if bf:
+            lines.append(
+                f"    Best Fresh:    {bf.get('symbol','?')} {bf.get('direction','?')} "
+                f"RR:{bf.get('rr','?')} Score:{bf.get('thesis_score','?')} "
+                f"{'STRONGER' if wl.get('best_fresh_stronger') else 'weaker'}"
             )
         lines += [""]
 
