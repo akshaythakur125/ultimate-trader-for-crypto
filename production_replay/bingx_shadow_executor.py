@@ -77,9 +77,17 @@ def run_shadow_executor() -> dict:
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
 
     reasons = []
-    gate_reasons = []  # actual gate failures (not informational)
     decision = "DO_NOT_EXECUTE"
+    show_reasons = []
     dux_decision = "N/A"
+
+    # Shared risk/kill params
+    risk_params = risk_plan.get("risk_parameters", {})
+    max_risk_per_trade = risk_params.get("max_risk_per_trade_usdt", 1.0)
+    max_daily_loss = risk_params.get("max_daily_loss_usdt", 2.0)
+    max_weekly_loss = risk_params.get("max_weekly_loss_usdt", 5.0)
+    evidence = risk_plan.get("evidence", {})
+    kill_switch = evidence.get("kill_switch", "OK")
 
     # Phase 50: Check for trigger bridge candidate first
     arbiter = _read_json(os.path.join(RESULTS_DIR, "candidate_arbiter_report.json"))
@@ -106,8 +114,8 @@ def run_shadow_executor() -> dict:
                 bridge_active = True
                 bridge_candidate = arbiter_best
 
+    # ── TRIGGER BRIDGE PATH (fully self-contained) ──
     if bridge_active:
-        # Trigger bridge path: bypass old Dux/alpha/psych gates
         symbol = bridge_candidate.get("symbol", "")
         direction = bridge_candidate.get("direction", "")
         entry = float(bridge_candidate.get("entry", 0))
@@ -126,14 +134,80 @@ def run_shadow_executor() -> dict:
             "thesis_score": bridge_candidate.get("thesis_score", 0),
             "raw_anomaly_score": bridge_candidate.get("raw_anomaly_score", 0),
             "pattern_name": bridge_candidate.get("thesis_type", "TRIGGER_BRIDGE"),
-            "pattern_id": f"trigger_bridge_{symbol}_{bridge_candidate.get('timeframe', '')}",
+            "pattern_id": "trigger_bridge_%s_%s" % (symbol, bridge_candidate.get("timeframe", "")),
             "verdict": bridge_candidate.get("verdict", "SHADOW_ELIGIBLE"),
             "candidate_source": "trigger_watcher",
             "trigger_status": "TRIGGER_CONFIRMED",
         }
         reasons.append("trigger bridge candidate accepted; bypassing Dux/alpha/psych gates")
+
+        # Bridge-specific safety gates
+        bridge_ok = True
+        bridge_gate_reasons = []
+
+        if not doctor.get("system_safe", False):
+            bridge_gate_reasons.append("system not safe")
+            bridge_ok = False
+
+        if not doctor.get("live_disabled", False):
+            bridge_gate_reasons.append("live trading not disabled")
+            bridge_ok = False
+
+        if not doctor.get("paper_disabled", False):
+            bridge_gate_reasons.append("paper trading not disabled")
+            bridge_ok = False
+
+        risk_per_trade = abs(entry - stop)
+        if risk_per_trade > max_risk_per_trade:
+            bridge_gate_reasons.append("risk %.2f USDT > max %.2f USDT per trade" % (risk_per_trade, max_risk_per_trade))
+            bridge_ok = False
+
+        if kill_switch == "STOP":
+            bridge_gate_reasons.append("kill switch engaged")
+            bridge_ok = False
+
+        pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
+        if pos_mon and pos_mon.get("position_found", False):
+            open_positions = float(pos_mon.get("open_position_count", 1))
+            if open_positions >= 1:
+                bridge_gate_reasons.append("open position exists (%s)" % pos_mon.get("symbol", "?"))
+                bridge_ok = False
+
+        if bridge_ok:
+            decision = "SHADOW_READY"
+            risk_usdt = abs(entry - stop)
+            position_size = risk_usdt / max(risk_usdt, 1e-10)
+            order_intent = _shadow_order_intent(
+                candidate=candidate,
+                symbol=symbol,
+                side=direction,
+                entry=entry,
+                stop_loss=stop,
+                final_target=target,
+                rr_final=rr_final,
+                source_pattern=candidate.get("pattern_name", ""),
+                pattern_id=candidate.get("pattern_id", ""),
+                pattern_name=candidate.get("pattern_name", ""),
+                verdict=candidate.get("verdict", ""),
+                position_size=round(position_size, 4),
+                risk_usdt=round(risk_usdt, 2),
+                max_loss_usdt=round(max_risk_per_trade, 2),
+                reason="all gates passed",
+            )
+            order_intent["source"] = "trigger_bridge"
+            order_intent["candidate_source"] = candidate.get("candidate_source", "near_miss")
+            order_intent["trigger_status"] = candidate.get("trigger_status", "N/A")
+            order_intent["thesis_score"] = candidate.get("thesis_score", 0)
+            _append_to_ledger(order_intent)
+        else:
+            order_intent = None
+            show_reasons = bridge_gate_reasons
+
+    # ── OLD DUX PATH (fallback) ──
     else:
-        # Fall back to old Dux path
+        gate_reasons = []
+        order_intent = None
+
         # Extract alpha score
         alpha_candidate = alpha.get("best_candidate") if alpha else None
         alpha_score = alpha_candidate["alpha_score"] if alpha_candidate else None
@@ -144,11 +218,11 @@ def run_shadow_executor() -> dict:
 
         # Gate 0: alpha_score >= 70
         if alpha_score is None or alpha_score < 70:
-            gate_reasons.append(f"alpha score {alpha_score} < 70")
+            gate_reasons.append("alpha score %s < 70" % alpha_score)
 
         # Gate 0b: psychology_score >= 70
         if psychology_score is None or psychology_score < 70:
-            gate_reasons.append(f"psychology score {psychology_score} < 70")
+            gate_reasons.append("psychology score %s < 70" % psychology_score)
 
         # Gate 4: Dux decision
         dux_decision = (dux.get("dux_pattern_engine") or dux).get("final_decision", dux.get("final_decision", "DO_NOT_TRADE"))
@@ -158,7 +232,7 @@ def run_shadow_executor() -> dict:
             dux_decision = doctor["dux_pattern_engine"].get("final_decision", "DO_NOT_TRADE")
 
         if dux_decision not in ("WATCH", "MANUAL_REVIEW_ONLY"):
-            gate_reasons.append(f"Dux decision is {dux_decision}, not WATCH or MANUAL_REVIEW_ONLY")
+            gate_reasons.append("Dux decision is %s, not WATCH or MANUAL_REVIEW_ONLY" % dux_decision)
 
         # Gate 5: candidate exists
         candidate = None
@@ -174,7 +248,7 @@ def run_shadow_executor() -> dict:
         # Gate 6: crypto-only filter
         symbol = (candidate or {}).get("symbol", "")
         if symbol and not is_crypto_usdt_perp(symbol):
-            gate_reasons.append(f"{symbol} is not a crypto USDT perpetual (non-crypto synthetic)")
+            gate_reasons.append("%s is not a crypto USDT perpetual (non-crypto synthetic)" % symbol)
 
         # Gate 6b: candidate arbiter check
         if arbiter and not arbiter.get("has_shadow_eligible_candidates", False):
@@ -182,11 +256,11 @@ def run_shadow_executor() -> dict:
 
         # Gate 6c: trigger watcher check
         if trigger_watcher and arbiter_best:
-            tw_key = f"{arbiter_best.get('symbol', '')}|{arbiter_best.get('timeframe', '')}|{arbiter_best.get('direction', '')}|{arbiter_best.get('thesis_type', '')}"
+            tw_key = "%s|%s|%s|%s" % (arbiter_best.get("symbol", ""), arbiter_best.get("timeframe", ""), arbiter_best.get("direction", ""), arbiter_best.get("thesis_type", ""))
             for tc in trigger_watcher.get("candidates", []):
-                tck = f"{tc.get('symbol', '')}|{tc.get('timeframe', '')}|{tc.get('direction', '')}|{tc.get('thesis_type', '')}"
+                tck = "%s|%s|%s|%s" % (tc.get("symbol", ""), tc.get("timeframe", ""), tc.get("direction", ""), tc.get("thesis_type", ""))
                 if tck == tw_key and tc.get("trigger_status") in ("INVALIDATED", "EXPIRED"):
-                    gate_reasons.append(f"trigger watcher: {tc.get('trigger_status')} for this candidate")
+                    gate_reasons.append("trigger watcher: %s for this candidate" % tc.get("trigger_status"))
 
         # If arbiter best exists, use its candidate data instead
         if arbiter_best and not any("trigger watcher" in r for r in gate_reasons):
@@ -202,7 +276,7 @@ def run_shadow_executor() -> dict:
                 "thesis_score": arbiter_best.get("thesis_score", 0),
                 "raw_anomaly_score": arbiter_best.get("raw_anomaly_score", 0),
                 "pattern_name": arbiter_best.get("thesis_type", "ARBITER_PASS"),
-                "pattern_id": f"arbiter_{arbiter_best.get('symbol', '')}_{arbiter_best.get('timeframe', '')}",
+                "pattern_id": "arbiter_%s_%s" % (arbiter_best.get("symbol", ""), arbiter_best.get("timeframe", "")),
                 "verdict": "SHADOW_ELIGIBLE",
             }
 
@@ -210,19 +284,19 @@ def run_shadow_executor() -> dict:
         if symbol:
             universe = load_universe()["contracts"]
             if not is_bingx_listed(symbol, universe):
-                gate_reasons.append(f"{symbol} not BingX-listed")
+                gate_reasons.append("%s not BingX-listed" % symbol)
         else:
             gate_reasons.append("no symbol from candidate")
 
         # Gate 7: direction
         direction = (candidate or {}).get("direction", "")
         if direction not in ("LONG", "SHORT"):
-            gate_reasons.append(f"invalid direction: {direction}")
+            gate_reasons.append("invalid direction: %s" % direction)
 
         # Gate 8: RR final >= 4.0
         rr_final = (candidate or {}).get("rr_2") or 0
         if rr_final < 4.0:
-            gate_reasons.append(f"RR {rr_final} < 4.0")
+            gate_reasons.append("RR %s < 4.0" % rr_final)
 
         # Gate 9: entry valid
         entry = (candidate or {}).get("entry") or 0
@@ -239,70 +313,57 @@ def run_shadow_executor() -> dict:
         if target <= 0:
             gate_reasons.append("invalid target")
 
-    # Common gates for both paths
-    # Gate 1: system safe
-    if not doctor.get("system_safe", False):
-        gate_reasons.append("system not safe")
+        # Common safety gates (Dux path only)
+        if not doctor.get("system_safe", False):
+            gate_reasons.append("system not safe")
 
-    # Gate 2: live disabled
-    if not doctor.get("live_disabled", False):
-        gate_reasons.append("live trading not disabled")
+        if not doctor.get("live_disabled", False):
+            gate_reasons.append("live trading not disabled")
 
-    # Gate 3: paper disabled
-    if not doctor.get("paper_disabled", False):
-        gate_reasons.append("paper trading not disabled")
+        if not doctor.get("paper_disabled", False):
+            gate_reasons.append("paper trading not disabled")
 
-    # Gate 12-14: risk parameters from manual_risk_plan
-    risk_params = risk_plan.get("risk_parameters", {})
-    max_risk_per_trade = risk_params.get("max_risk_per_trade_usdt", 1.0)
-    max_daily_loss = risk_params.get("max_daily_loss_usdt", 2.0)
-    max_weekly_loss = risk_params.get("max_weekly_loss_usdt", 5.0)
-    risk_per_trade = abs(entry - stop)
-    risk_usdt = risk_per_trade  # simplified: 1 unit = 1 USDT for shadow estimate
-    if risk_usdt > max_risk_per_trade:
-        gate_reasons.append(f"risk {risk_usdt:.2f} USDT > max {max_risk_per_trade} USDT per trade")
+        risk_per_trade = abs(entry - stop)
+        if risk_per_trade > max_risk_per_trade:
+            gate_reasons.append("risk %.2f USDT > max %.2f USDT per trade" % (risk_per_trade, max_risk_per_trade))
 
-    # Gate 15: kill switch
-    evidence = risk_plan.get("evidence", {})
-    kill_switch = evidence.get("kill_switch", "OK")
-    if kill_switch == "STOP":
-        gate_reasons.append("kill switch engaged")
+        if kill_switch == "STOP":
+            gate_reasons.append("kill switch engaged")
 
-    # Gate 16: max open positions
-    pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
-    if pos_mon and pos_mon.get("position_found", False):
-        open_positions = float(pos_mon.get("open_position_count", 1))
-        if open_positions >= 1:
-            gate_reasons.append(f"open position exists ({pos_mon.get('symbol', '?')})")
+        pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
+        if pos_mon and pos_mon.get("position_found", False):
+            open_positions = float(pos_mon.get("open_position_count", 1))
+            if open_positions >= 1:
+                gate_reasons.append("open position exists (%s)" % pos_mon.get("symbol", "?"))
 
-    order_intent = None
-    if not gate_reasons:
-        decision = "SHADOW_READY"
-        risk_usdt = abs(entry - stop)
-        position_size = risk_usdt / max(risk_usdt, 1e-10)
-        order_intent = _shadow_order_intent(
-            candidate=candidate,
-            symbol=symbol,
-            side=direction,
-            entry=entry,
-            stop_loss=stop,
-            final_target=target,
-            rr_final=rr_final,
-            source_pattern=candidate.get("pattern_name", ""),
-            pattern_id=candidate.get("pattern_id", ""),
-            pattern_name=candidate.get("pattern_name", ""),
-            verdict=candidate.get("verdict", ""),
-            position_size=round(position_size, 4),
-            risk_usdt=round(risk_usdt, 2),
-            max_loss_usdt=round(max_risk_per_trade, 2),
-            reason="all gates passed",
-        )
-        # Extend intent with bridge metadata
-        order_intent["source"] = "trigger_bridge" if bridge_active else "dux"
-        order_intent["candidate_source"] = candidate.get("candidate_source", "near_miss")
-        order_intent["trigger_status"] = candidate.get("trigger_status", "N/A")
-        order_intent["thesis_score"] = candidate.get("thesis_score", 0)
-        _append_to_ledger(order_intent)
+        if not gate_reasons:
+            decision = "SHADOW_READY"
+            risk_usdt = abs(entry - stop)
+            position_size = risk_usdt / max(risk_usdt, 1e-10)
+            order_intent = _shadow_order_intent(
+                candidate=candidate,
+                symbol=symbol,
+                side=direction,
+                entry=entry,
+                stop_loss=stop,
+                final_target=target,
+                rr_final=rr_final,
+                source_pattern=candidate.get("pattern_name", ""),
+                pattern_id=candidate.get("pattern_id", ""),
+                pattern_name=candidate.get("pattern_name", ""),
+                verdict=candidate.get("verdict", ""),
+                position_size=round(position_size, 4),
+                risk_usdt=round(risk_usdt, 2),
+                max_loss_usdt=round(max_risk_per_trade, 2),
+                reason="all gates passed",
+            )
+            order_intent["source"] = "dux"
+            order_intent["candidate_source"] = candidate.get("candidate_source", "near_miss") if candidate else "near_miss"
+            order_intent["trigger_status"] = candidate.get("trigger_status", "N/A") if candidate else "N/A"
+            order_intent["thesis_score"] = candidate.get("thesis_score", 0) if candidate else 0
+            _append_to_ledger(order_intent)
+
+        show_reasons = gate_reasons
 
     report = {
         "mode": "bingx_shadow_executor",
@@ -341,13 +402,13 @@ def run_shadow_executor() -> dict:
         "max_weekly_loss_usdt": max_weekly_loss,
         "shadow_order_intent": order_intent,
         "decision": decision,
-        "reasons": gate_reasons if gate_reasons else (["all gates passed"] if not reasons and decision == "SHADOW_READY" else reasons),
+        "reasons": show_reasons if show_reasons else (["all gates passed"] if not reasons and decision == "SHADOW_READY" else reasons),
     }
 
     with open(JSON_PATH, "w") as f:
         json.dump(report, f, indent=2)
 
-    _write_text_report(report, order_intent, decision, gate_reasons if gate_reasons else reasons)
+    _write_text_report(report, order_intent, decision, show_reasons if show_reasons else reasons)
     return report
 
 
@@ -360,23 +421,23 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
     lines = [
         "=" * 60,
         "  BINGX SHADOW EXECUTION BRIDGE",
-        f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "  %s" % datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "=" * 60,
         "",
-        f"  System Safe:           {'YES' if report['system_safe'] else 'NO'}",
-        f"  Live Disabled:         {'YES' if report['live_disabled'] else 'NO'}",
-        f"  Paper Disabled:        {'YES' if report['paper_disabled'] else 'NO'}",
-        f"  Trigger Bridge:        {'ACTIVE' if report.get('trigger_bridge_active') else 'INACTIVE'}",
-        f"  Crypto Filter:         {'PASS' if report.get('crypto_filter_pass') else 'FAIL'}",
-        f"  Dux Decision:          {report['dux_decision']}",
-        f"  Candidate Exists:      {'YES' if report['candidate_exists'] else 'NO'}",
-        f"  Candidate from Arbiter:{'YES' if report.get('candidate_from_arbiter') else 'NO'}",
-        f"  Symbol BingX-Listed:   {'YES' if report['symbol_bingx_listed'] else 'NO'}",
-        f"  Candidate Source:      {report.get('candidate_source', 'near_miss')}",
-        f"  Direction:             {report['direction'] or 'N/A'}",
-        f"  RR Final:              {report['rr_final']}",
-        f"  Risk per Trade (USDT): {report['risk_per_trade_usdt']:.2f}",
-        f"  Kill Switch:           {report['kill_switch']}",
+        "  System Safe:           %s" % ('YES' if report['system_safe'] else 'NO'),
+        "  Live Disabled:         %s" % ('YES' if report['live_disabled'] else 'NO'),
+        "  Paper Disabled:        %s" % ('YES' if report['paper_disabled'] else 'NO'),
+        "  Trigger Bridge:        %s" % ('ACTIVE' if report.get('trigger_bridge_active') else 'INACTIVE'),
+        "  Crypto Filter:         %s" % ('PASS' if report.get('crypto_filter_pass') else 'FAIL'),
+        "  Dux Decision:          %s" % report['dux_decision'],
+        "  Candidate Exists:      %s" % ('YES' if report['candidate_exists'] else 'NO'),
+        "  Candidate from Arbiter:%s" % ('YES' if report.get('candidate_from_arbiter') else 'NO'),
+        "  Symbol BingX-Listed:   %s" % ('YES' if report['symbol_bingx_listed'] else 'NO'),
+        "  Candidate Source:      %s" % report.get('candidate_source', 'near_miss'),
+        "  Direction:             %s" % (report['direction'] or 'N/A'),
+        "  RR Final:              %s" % report['rr_final'],
+        "  Risk per Trade (USDT): %.2f" % report['risk_per_trade_usdt'],
+        "  Kill Switch:           %s" % report['kill_switch'],
         "",
         "  EXECUTION MODE: SHADOW_ONLY",
         "  REAL ORDER:     FALSE",
@@ -386,31 +447,31 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
     if intent:
         lines += [
             "  SHADOW ORDER INTENT GENERATED:",
-            f"    Source:    {intent.get('source', 'dux')}",
-            f"    Symbol:    {intent['symbol']}",
-            f"    Side:      {intent['side']}",
-            f"    Entry:     {intent['entry']}",
-            f"    Stop:      {intent['stop_loss']}",
-            f"    Target 1:  {intent['target_1']}",
-            f"    Final Tgt: {intent['final_target']}",
-            f"    RR Final:  1:{intent['rr_final']}",
-            f"    Thesis:    {intent.get('thesis_score', 'N/A')}",
-            f"    Size:      {intent['position_size']}",
-            f"    Risk:      {intent['risk_usdt']} USDT",
-            f"    Pattern:   {intent['pattern_name']}",
-            f"    Verdict:   {intent['verdict']}",
+            "    Source:    %s" % intent.get('source', 'dux'),
+            "    Symbol:    %s" % intent['symbol'],
+            "    Side:      %s" % intent['side'],
+            "    Entry:     %s" % intent['entry'],
+            "    Stop:      %s" % intent['stop_loss'],
+            "    Target 1:  %s" % intent['target_1'],
+            "    Final Tgt: %s" % intent['final_target'],
+            "    RR Final:  1:%s" % intent['rr_final'],
+            "    Thesis:    %s" % intent.get('thesis_score', 'N/A'),
+            "    Size:      %s" % intent['position_size'],
+            "    Risk:      %s USDT" % intent['risk_usdt'],
+            "    Pattern:   %s" % intent['pattern_name'],
+            "    Verdict:   %s" % intent['verdict'],
             "",
         ]
     else:
         lines += ["  SHADOW ORDER INTENT: NOT GENERATED", ""]
 
     lines += [
-        f"  DECISION: {decision}",
+        "  DECISION: %s" % decision,
         "",
     ]
     if reasons:
         for r in reasons:
-            lines.append(f"    - {r}")
+            lines.append("    - %s" % r)
         lines.append("")
 
     lines += [
@@ -422,10 +483,10 @@ def _write_text_report(report: dict, intent: dict | None, decision: str, reasons
     with open(TXT_PATH, "w") as f:
         f.write("\n".join(lines) + "\n")
     print("\n".join(lines))
-    print(f"\n[JSON] {JSON_PATH}")
-    print(f"[TXT]  {TXT_PATH}")
+    print("\n[JSON] %s" % JSON_PATH)
+    print("[TXT]  %s" % TXT_PATH)
     if intent:
-        print(f"[LEDGER] {SHADOW_LEDGER}")
+        print("[LEDGER] %s" % SHADOW_LEDGER)
 
 
 def main():

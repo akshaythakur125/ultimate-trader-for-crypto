@@ -300,6 +300,15 @@ def run_hourly_alert() -> dict:
         "live_decision": live_decision,
         "execution_mode": execution_mode,
         "bridge_shadow_ready": bridge_shadow_ready,
+        "bridge_candidate": (lambda si: {
+            "symbol": si.get("symbol", "?"),
+            "side": si.get("side", "?"),
+            "entry": si.get("entry", "?"),
+            "stop_loss": si.get("stop_loss", "?"),
+            "final_target": si.get("final_target", "?"),
+            "rr_final": si.get("rr_final", "?"),
+            "risk_usdt": si.get("risk_usdt", 0),
+        })(shadow.get("shadow_order_intent", {})) if bridge_shadow_ready and shadow and shadow.get("shadow_order_intent") else None,
         "live_armed": live_armed,
         "open_positions": open_positions,
         "api_credentials_found": api_ok,
@@ -501,10 +510,20 @@ def _write_text_report(report: dict, action: str, reason: str):
     # Phase 51: TRIGGER BRIDGE active indicator
     bridge_candidate_shown = False
     if report.get("bridge_shadow_ready"):
-        lines += [
-            "  TRIGGER BRIDGE ACTIVE — SHADOW_READY",
-            "",
-        ]
+        bc = report.get("bridge_candidate")
+        if bc:
+            lines += [
+                "  TRIGGER BRIDGE — SHADOW_READY",
+                "    Symbol:   %s %s" % (bc.get("symbol", "?"), bc.get("side", "?")),
+                "    Entry:    %s  Stop: %s  Target: %s" % (bc.get("entry", "?"), bc.get("stop_loss", "?"), bc.get("final_target", "?")),
+                "    RR:       1:%s  Risk: %s USDT" % (bc.get("rr_final", "?"), bc.get("risk_usdt", 0)),
+                "",
+            ]
+        else:
+            lines += [
+                "  TRIGGER BRIDGE ACTIVE — SHADOW_READY",
+                "",
+            ]
         bridge_candidate_shown = True
 
     if best and not bridge_candidate_shown:
