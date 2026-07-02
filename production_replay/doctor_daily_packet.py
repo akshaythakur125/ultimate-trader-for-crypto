@@ -69,6 +69,7 @@ def main():
     _run_module("production_replay.live_one_shot_guard", "--status")
     _run_module("production_replay.hourly_alert")
     _run_module("production_replay.paper_execution_ledger")
+    _run_module("production_replay.paper_outcome_validator")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -84,6 +85,7 @@ def main():
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
+    paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     entry = _read_ledger_latest()
@@ -571,6 +573,39 @@ def main():
     else:
         paper_lines = ["", "  PAPER EXECUTION: MISSING (no report)", ""]
 
+    # Paper outcome validator section (Phase 60)
+    outcome_lines = []
+    if paper_outcome:
+        po_verdict = paper_outcome.get("verdict", "N/A")
+        po_total = paper_outcome.get("total_paper_trades", 0)
+        po_agg = paper_outcome.get("agg_stats", {})
+        outcome_lines = [
+            "",
+            "  PAPER TRADE OUTCOME:",
+            f"    Verdict:            {po_verdict}",
+            f"    Total Paper Trades: {po_total}",
+        ]
+        if po_agg:
+            outcome_lines += [
+                f"    Closed: {po_agg.get('total_closed', 0)}  "
+                f"Wins: {po_agg.get('wins', 0)}  "
+                f"Losses: {po_agg.get('losses', 0)}  "
+                f"WR: {po_agg.get('win_rate', 0)}%",
+                f"    Total P&L: {po_agg.get('total_pnl', 0):.2f} USDT  "
+                f"Avg R: {po_agg.get('average_r', 0)}  "
+                f"Max Loss: {po_agg.get('max_loss', 0):.2f}  "
+                f"Consec Losses: {po_agg.get('consecutive_losses', 0)}",
+            ]
+        po_ct = paper_outcome.get("current_trade")
+        if po_ct:
+            outcome_lines += [
+                f"    Current: {po_ct.get('symbol', 'N/A')} {po_ct.get('side', 'N/A')} "
+                f"{po_ct.get('status', 'N/A')} {po_ct.get('hit_reason') or ''}",
+            ]
+        outcome_lines.append("")
+    else:
+        outcome_lines = ["", "  PAPER TRADE OUTCOME: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -682,6 +717,7 @@ def main():
     lines += preflight_lines
     lines += guard_lines
     lines += paper_lines
+    lines += outcome_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -845,6 +881,12 @@ def main():
             "status": paper.get("status", "N/A") if paper else None,
             "current_trade": paper.get("current_paper_trade") if paper else None,
         } if paper else None,
+        "paper_outcome": {
+            "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else None,
+            "total_paper_trades": paper_outcome.get("total_paper_trades", 0) if paper_outcome else 0,
+            "agg_stats": paper_outcome.get("agg_stats", {}) if paper_outcome else {},
+            "current_trade": paper_outcome.get("current_trade") if paper_outcome else None,
+        } if paper_outcome else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

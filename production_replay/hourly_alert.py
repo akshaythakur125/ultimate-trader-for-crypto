@@ -102,6 +102,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run paper outcome validator for fresh data (Phase 60)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_outcome_validator"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -115,6 +123,7 @@ def run_hourly_alert() -> dict:
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
+    paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -362,6 +371,12 @@ def run_hourly_alert() -> dict:
             "has_open_trade": bool(paper and paper.get("current_paper_trade") and paper["current_paper_trade"].get("status") == "PAPER_OPEN"),
             "current_paper_trade": paper.get("current_paper_trade") if paper else None,
         } if paper else None,
+        "paper_outcome": {
+            "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else "N/A",
+            "total_paper_trades": paper_outcome.get("total_paper_trades", 0) if paper_outcome else 0,
+            "agg_stats": paper_outcome.get("agg_stats", {}) if paper_outcome else {},
+            "current_trade": paper_outcome.get("current_trade") if paper_outcome else None,
+        } if paper_outcome else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -620,6 +635,34 @@ def _write_text_report(report: dict, action: str, reason: str):
                 lines.append(f"    Realized P&L:   {pt['realized_pnl']:.2f} USDT")
             if pt.get("exit_reason"):
                 lines.append(f"    Exit Reason:    {pt['exit_reason']}")
+        lines += [""]
+
+    # Phase 60: Paper trade outcome validator
+    po = report.get("paper_outcome")
+    if po and po.get("verdict", "N/A") != "N/A":
+        lines += [
+            "  PAPER TRADE OUTCOME:",
+            f"    Verdict:            {po['verdict']}",
+            f"    Total Paper Trades: {po['total_paper_trades']}",
+        ]
+        agg = po.get("agg_stats", {})
+        if agg:
+            lines += [
+                f"    Closed: {agg.get('total_closed', 0)}  "
+                f"Wins: {agg.get('wins', 0)}  "
+                f"Losses: {agg.get('losses', 0)}  "
+                f"WR: {agg.get('win_rate', 0)}%",
+                f"    Total P&L: {agg.get('total_pnl', 0):.2f} USDT  "
+                f"Avg R: {agg.get('average_r', 0)}  "
+                f"Max Loss: {agg.get('max_loss', 0):.2f}  "
+                f"Consec Losses: {agg.get('consecutive_losses', 0)}",
+            ]
+        oct = po.get("current_trade")
+        if oct:
+            lines += [
+                f"    Current: {oct.get('symbol', 'N/A')} {oct.get('side', 'N/A')} "
+                f"{oct.get('status', 'N/A')} {oct.get('hit_reason') or ''}",
+            ]
         lines += [""]
 
     if best and not bridge_candidate_shown:

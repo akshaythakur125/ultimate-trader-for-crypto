@@ -5813,3 +5813,149 @@ def test_paper_execution_shadow_gate_fails_when_not_ready():
     result = run_paper_execution()
     assert "shadow_ready" in result.get("gates", {})
     assert "preflight_pass" in result.get("gates", {})
+
+
+# ── Phase 60: Paper Trade Outcome Validator ───────────────────────────
+
+def test_outcome_long_target_hit():
+    """_evaluate_trade returns PAPER_CLOSED TARGET_HIT for LONG when price >= target."""
+    from production_replay.paper_outcome_validator import _evaluate_trade
+    status, reason, exit_price = _evaluate_trade("LONG", 100, 90, 110, 115)
+    assert status == "PAPER_CLOSED"
+    assert reason == "TARGET_HIT"
+    assert exit_price == 115
+
+
+def test_outcome_long_stop_hit():
+    """_evaluate_trade returns PAPER_CLOSED STOP_HIT for LONG when price <= stop."""
+    from production_replay.paper_outcome_validator import _evaluate_trade
+    status, reason, exit_price = _evaluate_trade("LONG", 100, 90, 110, 85)
+    assert status == "PAPER_CLOSED"
+    assert reason == "STOP_HIT"
+    assert exit_price == 85
+
+
+def test_outcome_short_target_hit():
+    """_evaluate_trade returns PAPER_CLOSED TARGET_HIT for SHORT when price <= target."""
+    from production_replay.paper_outcome_validator import _evaluate_trade
+    status, reason, exit_price = _evaluate_trade("SHORT", 100, 110, 90, 85)
+    assert status == "PAPER_CLOSED"
+    assert reason == "TARGET_HIT"
+    assert exit_price == 85
+
+
+def test_outcome_short_stop_hit():
+    """_evaluate_trade returns PAPER_CLOSED STOP_HIT for SHORT when price >= stop."""
+    from production_replay.paper_outcome_validator import _evaluate_trade
+    status, reason, exit_price = _evaluate_trade("SHORT", 100, 110, 90, 115)
+    assert status == "PAPER_CLOSED"
+    assert reason == "STOP_HIT"
+    assert exit_price == 115
+
+
+def test_outcome_open_remains_open():
+    """_evaluate_trade returns PAPER_OPEN when price between stop and target."""
+    from production_replay.paper_outcome_validator import _evaluate_trade
+    status, reason, exit_price = _evaluate_trade("LONG", 100, 90, 110, 105)
+    assert status == "PAPER_OPEN"
+    status2, _, _ = _evaluate_trade("SHORT", 100, 110, 90, 95)
+    assert status2 == "PAPER_OPEN"
+
+
+def test_outcome_no_real_api_order():
+    """Outcome validator has no real API order call capability."""
+    import inspect
+    import production_replay.paper_outcome_validator as pov
+    src = inspect.getsource(pov)
+    assert "real_order" not in src or '"real_order": False' in src or "'real_order': False" in src
+
+
+def test_outcome_no_approved():
+    """Outcome validator has no APPROVED string."""
+    import inspect
+    import production_replay.paper_outcome_validator as pov
+    src = inspect.getsource(pov)
+    assert "APPROVED" not in src
+
+
+def test_outcome_no_withdrawal():
+    """Outcome validator has no withdrawal/transfer/send."""
+    import inspect
+    import production_replay.paper_outcome_validator as pov
+    src = inspect.getsource(pov)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
+
+
+def test_outcome_output_files_exist():
+    """Outcome validator creates JSON and TXT output files."""
+    import production_replay.paper_outcome_validator as pov
+    import os
+    pov.run_paper_outcome_validator()
+    assert os.path.exists(pov.JSON_PATH)
+    assert os.path.exists(pov.TXT_PATH)
+
+
+def test_outcome_calculate_pnl():
+    """_calculate_pnl computes correct LONG and SHORT P&L."""
+    from production_replay.paper_outcome_validator import _calculate_pnl
+    # LONG: entry=100, exit=110, qty=1 -> P&L=10
+    assert _calculate_pnl("LONG", 100, 110, 1) == 10.0
+    # SHORT: entry=100, exit=90, qty=1 -> P&L=10
+    assert _calculate_pnl("SHORT", 100, 90, 1) == 10.0
+    # LONG: entry=100, exit=90, qty=1 -> P&L=-10
+    assert _calculate_pnl("LONG", 100, 90, 1) == -10.0
+
+
+def test_outcome_r_multiple():
+    """_r_multiple calculates R multiple correctly."""
+    from production_replay.paper_outcome_validator import _r_multiple
+    assert _r_multiple(10, 5) == 2.0
+    assert _r_multiple(-5, 5) == -1.0
+    assert _r_multiple(0, 0) == 0.0
+
+
+def test_outcome_determine_verdict():
+    """_determine_verdict returns correct verdicts."""
+    from production_replay.paper_outcome_validator import _determine_verdict
+    stats = {"total_closed": 0, "average_r": 0, "win_rate": 0}
+    assert _determine_verdict(stats, "PAPER_OPEN") == "PAPER_OPEN_MONITORING"
+    assert _determine_verdict(stats, "PAPER_CLOSED", "TARGET_HIT") == "PAPER_CLOSED_TARGET"
+    assert _determine_verdict(stats, "PAPER_CLOSED", "STOP_HIT") == "PAPER_CLOSED_STOP"
+    assert _determine_verdict(stats, "NO_PAPER_TRADE") == "LIVE_BLOCKED"
+    good_stats = {"total_closed": 10, "average_r": 1.5, "win_rate": 60}
+    assert _determine_verdict(good_stats, "NO_PAPER_TRADE") == "LIVE_REVIEW_READY"
+
+
+def test_outcome_report_has_verdict():
+    """Outcome validator report contains verdict field."""
+    from production_replay.paper_outcome_validator import run_paper_outcome_validator
+    result = run_paper_outcome_validator()
+    assert "verdict" in result
+    assert result["verdict"] in ("NO_PAPER_TRADE", "PAPER_OPEN_MONITORING", "PAPER_CLOSED_TARGET",
+                                 "PAPER_CLOSED_STOP", "LIVE_REVIEW_READY", "LIVE_BLOCKED")
+
+
+def test_outcome_report_has_agg_stats():
+    """Outcome validator report contains agg_stats dict."""
+    from production_replay.paper_outcome_validator import run_paper_outcome_validator
+    result = run_paper_outcome_validator()
+    assert "agg_stats" in result
+    assert "total_closed" in result["agg_stats"]
+    assert "win_rate" in result["agg_stats"]
+
+
+def test_outcome_hourly_alert_has_section():
+    """Hourly alert report contains paper_outcome section."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "paper_outcome" in src
+
+
+def test_outcome_doctor_packet_runs_module():
+    """Doctor daily packet runs paper_outcome_validator."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "paper_outcome_validator" in src
