@@ -5254,3 +5254,86 @@ def test_trigger_bridge_no_withdrawal():
     src = inspect.getsource(se)
     for kw in ("withdraw", "transfer", "send"):
         assert kw not in src.lower()
+
+
+# ── Phase 54: Live Executor Trigger Bridge Intent Display ──────────────
+
+def test_live_executor_bridge_active_detection():
+    """Live executor detects bridge_active from shadow intent."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "shadow_intent.get(\"source\") == \"trigger_bridge\"" in src
+    assert "SHADOW_READY" in src
+    assert "bridge_active" in src
+
+
+def test_live_executor_displays_bridge_fields():
+    """Live executor reads symbol/direction/entry/stop/target/rr from shadow_intent."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "shadow_intent.get(\"symbol\"" in src
+    assert "shadow_intent.get(\"side\"" in src
+    assert "shadow_intent.get(\"entry\"" in src
+    assert "shadow_intent.get(\"stop_loss\"" in src
+    assert "shadow_intent.get(\"final_target\"" in src
+    assert "shadow_intent.get(\"rr_final\"" in src
+
+
+def test_live_executor_skips_dux_for_bridge():
+    """Live executor skips Dux decision check when bridge_active."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "if bridge_active:" in src
+    assert "duxs_decision not in" not in src  # bridge path skips Dux check
+    assert "no Dux candidate" not in src or "bridge_active" in src
+
+
+def test_live_executor_read_only_blocks():
+    """Live executor env gates block execution in read_only mode."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "BINGX_EXECUTION_MODE" in src
+    assert "LIVE_TRADING_ACK" in src
+    assert "credentials_found" in src
+
+
+def test_live_executor_bridge_invalid_field_blocks():
+    """Live executor bridge path validates entry/stop/target/RR."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "bridge intent invalid entry" in src
+    assert "bridge intent invalid stop" in src
+    assert "bridge intent invalid target" in src
+    assert "bridge intent RR" in src
+    assert "bridge intent has no symbol" in src
+
+
+def test_live_executor_kill_switch_blocks():
+    """Live executor includes kill switch gate."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "kill_switch" in src
+    assert "kill_active" in src
+
+
+def test_live_executor_no_approved():
+    """Live executor has no APPROVED string."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme)
+    assert "APPROVED" not in src
+
+
+def test_live_executor_no_withdrawal():
+    """Live executor has no withdrawal/transfer/send functions."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()

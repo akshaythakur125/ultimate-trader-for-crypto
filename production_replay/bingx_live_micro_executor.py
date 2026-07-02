@@ -128,6 +128,51 @@ def run_live_micro_executor() -> dict:
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     creds = load_credentials()
 
+    # -- Determine trigger bridge status --
+    shadow_intent = shadow.get("shadow_order_intent") if shadow else None
+    shadow_decision = shadow.get("decision", "") if shadow else ""
+    bridge_active = bool(shadow_intent and shadow_decision == "SHADOW_READY" and shadow_intent.get("source") == "trigger_bridge")
+
+    # -- Resolve candidate & display fields --
+    dux_decision = "DO_NOT_TRADE"
+    candidate = None
+    psych_score = None
+    symbol = ""
+    direction = ""
+    rr_final = 0
+    entry = 0
+    stop = 0
+    target = 0
+
+    if bridge_active and shadow_intent:
+        symbol = str(shadow_intent.get("symbol", "") or "")
+        direction = str(shadow_intent.get("side", "") or "")
+        rr_raw = str(shadow_intent.get("rr_final", "0") or "0")
+        try:
+            rr_final = float(rr_raw.replace("1:", "").replace(":1", ""))
+        except (ValueError, TypeError):
+            rr_final = 0
+        entry = float(shadow_intent.get("entry", 0) or 0)
+        stop = float(shadow_intent.get("stop_loss", 0) or 0)
+        target = float(shadow_intent.get("final_target", 0) or 0)
+        candidate = shadow_intent
+    else:
+        if dux.get("mode") == "dux_pattern_engine":
+            dux_decision = dux.get("final_decision", "DO_NOT_TRADE")
+        elif "dux_pattern_engine" in doctor:
+            dux_decision = doctor["dux_pattern_engine"].get("final_decision", "DO_NOT_TRADE")
+        if dux.get("mode") == "dux_pattern_engine":
+            candidate = dux.get("best_candidate")
+        else:
+            candidate = doctor.get("dux_pattern_engine", {}).get("best_candidate")
+        if candidate:
+            symbol = candidate.get("symbol", "")
+            direction = candidate.get("direction", "")
+            rr_final = candidate.get("rr_2") or 0
+            entry = candidate.get("entry") or 0
+            stop = candidate.get("stop") or 0
+            target = candidate.get("target_2") or 0
+
     # -- 1. Environment gates --
     env_ok = True
     exec_mode = os.environ.get("BINGX_EXECUTION_MODE", "").lower()
@@ -159,62 +204,67 @@ def run_live_micro_executor() -> dict:
 
     # -- 3. Strategy gates --
     strategy_ok = True
-    dux_decision = "DO_NOT_TRADE"
-    if dux.get("mode") == "dux_pattern_engine":
-        dux_decision = dux.get("final_decision", "DO_NOT_TRADE")
-    elif "dux_pattern_engine" in doctor:
-        dux_decision = doctor["dux_pattern_engine"].get("final_decision", "DO_NOT_TRADE")
-
-    if dux_decision not in ("WATCH", "MANUAL_REVIEW_ONLY"):
-        reasons.append(f"Dux decision is {dux_decision}")
-        strategy_ok = False
-
-    candidate = None
-    if dux.get("mode") == "dux_pattern_engine":
-        candidate = dux.get("best_candidate")
-    else:
-        candidate = doctor.get("dux_pattern_engine", {}).get("best_candidate")
-
-    if not candidate:
-        reasons.append("no Dux candidate")
-        strategy_ok = False
-    else:
-        symbol = candidate.get("symbol", "")
-        direction = candidate.get("direction", "")
-        rr_final = candidate.get("rr_2") or 0
-        entry = candidate.get("entry") or 0
-        stop = candidate.get("stop") or 0
-        target = candidate.get("target_2") or 0
-
+    if bridge_active:
+        if not symbol:
+            reasons.append("bridge intent has no symbol")
+            strategy_ok = False
+        if direction not in ("LONG", "SHORT"):
+            reasons.append(f"bridge intent invalid direction {direction}")
+            strategy_ok = False
+        if entry <= 0:
+            reasons.append("bridge intent invalid entry")
+            strategy_ok = False
+        if stop <= 0 or stop == entry:
+            reasons.append("bridge intent invalid stop")
+            strategy_ok = False
+        if target <= 0:
+            reasons.append("bridge intent invalid target")
+            strategy_ok = False
+        if rr_final < 4.0:
+            reasons.append(f"bridge intent RR {rr_final} < 4.0")
+            strategy_ok = False
         universe = load_universe()["contracts"]
         if not is_bingx_listed(symbol, universe):
             reasons.append(f"{symbol} not BingX-listed")
             strategy_ok = False
-        if direction not in ("LONG", "SHORT"):
-            reasons.append(f"invalid direction {direction}")
+        if not strategy_ok:
+            reasons.append("strategy gates failed")
+    else:
+        if dux_decision not in ("WATCH", "MANUAL_REVIEW_ONLY"):
+            reasons.append(f"Dux decision is {dux_decision}")
             strategy_ok = False
-        if rr_final < 4.0:
-            reasons.append(f"RR {rr_final} < 4.0")
+        if not candidate:
+            reasons.append("no Dux candidate")
             strategy_ok = False
-        if entry <= 0:
-            reasons.append("invalid entry")
+        else:
+            universe = load_universe()["contracts"]
+            if not is_bingx_listed(symbol, universe):
+                reasons.append(f"{symbol} not BingX-listed")
+                strategy_ok = False
+            if direction not in ("LONG", "SHORT"):
+                reasons.append(f"invalid direction {direction}")
+                strategy_ok = False
+            if rr_final < 4.0:
+                reasons.append(f"RR {rr_final} < 4.0")
+                strategy_ok = False
+            if entry <= 0:
+                reasons.append("invalid entry")
+                strategy_ok = False
+            if stop <= 0 or stop == entry:
+                reasons.append("invalid stop")
+                strategy_ok = False
+            if target <= 0:
+                reasons.append("invalid target")
+                strategy_ok = False
+        psych_score = None
+        if psych:
+            pc = psych.get("best_candidate")
+            psych_score = pc["psychology_score"] if pc else None
+        if psych_score is None or psych_score < 70:
+            reasons.append(f"psychology score {psych_score} < 70")
             strategy_ok = False
-        if stop <= 0 or stop == entry:
-            reasons.append("invalid stop")
-            strategy_ok = False
-        if target <= 0:
-            reasons.append("invalid target")
-            strategy_ok = False
-    psych_score = None
-    if psych:
-        pc = psych.get("best_candidate")
-        psych_score = pc["psychology_score"] if pc else None
-    if psych_score is None or psych_score < 70:
-        reasons.append(f"psychology score {psych_score} < 70")
-        strategy_ok = False
-
-    if not strategy_ok:
-        reasons.append("strategy gates failed")
+        if not strategy_ok:
+            reasons.append("strategy gates failed")
 
     # -- 4. Shadow gate --
     shadow_ok = True
@@ -226,11 +276,9 @@ def run_live_micro_executor() -> dict:
         reasons.append("shadow intent stale (>15 min)")
         shadow_ok = False
     else:
-        shadow_dec = shadow.get("decision", "")
-        if shadow_dec != "SHADOW_READY":
-            reasons.append(f"shadow decision is {shadow_dec}")
+        if shadow_decision != "SHADOW_READY":
+            reasons.append(f"shadow decision is {shadow_decision}")
             shadow_ok = False
-        shadow_intent = shadow.get("shadow_order_intent")
         if not shadow_intent:
             reasons.append("no shadow order intent")
             shadow_ok = False
@@ -391,15 +439,16 @@ def run_live_micro_executor() -> dict:
             "account_gates": account_ok,
             "kill_switch": not kill_active,
         },
+        "bridge_active": bridge_active,
         "dux_decision": dux_decision,
-        "psychology_score": psych_score,
-        "shadow_decision": shadow.get("decision", "N/A") if shadow else "N/A",
-        "symbol": symbol if candidate else None,
-        "direction": direction if candidate else None,
-        "rr_final": rr_final if candidate else 0,
-        "entry": entry if candidate else None,
-        "stop": stop if candidate else None,
-        "target": target if candidate else None,
+        "psychology_score": psych_score if not bridge_active else None,
+        "shadow_decision": shadow_decision if shadow_decision else "N/A",
+        "symbol": symbol if symbol else None,
+        "direction": direction if direction else None,
+        "rr_final": rr_final if rr_final else 0,
+        "entry": entry if entry else None,
+        "stop": stop if stop else None,
+        "target": target if target else None,
         "risk_usdt": round(risk_usdt, 2),
         "open_position_count": open_pos_count,
         "order_result": order_result,
@@ -444,10 +493,14 @@ def _write_text_report(report: dict, decision: str, reasons: list[str],
         f"  Live Armed:         {'YES' if report['live_armed'] else 'NO'}",
         f"  Kill Switch:        {report['kill_switch']}",
         "",
+        f"  Source:             {'trigger_bridge' if report.get('bridge_active') else 'dux'}",
         f"  Dux Decision:       {report['dux_decision']}",
         f"  Shadow Decision:    {report['shadow_decision']}",
         f"  Symbol:             {report['symbol'] or 'N/A'}",
         f"  Direction:          {report['direction'] or 'N/A'}",
+        f"  Entry:              {report['entry'] or 'N/A'}",
+        f"  Stop:               {report['stop'] or 'N/A'}",
+        f"  Target:             {report['target'] or 'N/A'}",
         f"  RR Final:           {report['rr_final']}",
         f"  Risk (USDT):        {report['risk_usdt']:.2f}",
         f"  Open Positions:     {report['open_position_count']}",
