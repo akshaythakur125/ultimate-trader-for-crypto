@@ -1,7 +1,7 @@
 """Auto paper rotation engine.
 
-Selects the next best fresh SHADOW_ELIGIBLE candidate after a paper trade
-closes. Does NOT open a second paper trade while one is active. Does NOT
+Selects the next best fresh SHADOW_ELIGIBLE candidate when paper portfolio
+has available slots (fewer than MAX_PAPER_TRADES active trades). Does NOT
 enable live trading. Does NOT place real orders.
 
 This module NEVER places real orders, NEVER sets BINGX_EXECUTION_MODE=live_micro,
@@ -20,6 +20,8 @@ JSON_PATH = os.path.join(RESULTS_DIR, "paper_rotation_report.json")
 LEDGER_PATH = os.path.join(STATE_DIR, "paper_rotation_events.jsonl")
 PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
+
+MAX_PAPER_TRADES = 5
 
 
 def _read_json(path: str) -> dict:
@@ -86,9 +88,10 @@ def run_paper_rotation_engine() -> dict:
 
     reasons = []
     active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
-    trade_lock_on = len(active_trades) > 0
+    trade_lock_on = len(active_trades) >= MAX_PAPER_TRADES
     active_symbols = set(t.get("symbol", "") for t in active_trades)
     active_entries = [(t.get("symbol", ""), t.get("side", "")) for t in active_trades]
+    available_slots = max(0, MAX_PAPER_TRADES - len(active_trades))
 
     all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
 
@@ -123,10 +126,10 @@ def run_paper_rotation_engine() -> dict:
     best_candidate = filtered_eligible[0] if filtered_eligible else None
 
     if trade_lock_on:
-        next_action = "ACTIVE_TRADE_MONITORING"
+        next_action = "PORTFOLIO_FULL"
         syms = ', '.join(t.get('symbol','?') for t in active_trades)
         reasons.append(
-            f"{len(active_trades)} active paper trade(s): {syms}; trade lock ON"
+            f"{len(active_trades)} active paper trade(s): {syms}; portfolio full ({MAX_PAPER_TRADES}/{MAX_PAPER_TRADES})"
         )
     elif best_candidate:
         best_rr = float(best_candidate.get("rr", 0) or 0)
@@ -155,6 +158,8 @@ def run_paper_rotation_engine() -> dict:
         "next_action": next_action,
         "active_trade_lock_on": trade_lock_on,
         "active_trades_count": len(active_trades),
+        "available_slots": available_slots,
+        "max_paper_trades": MAX_PAPER_TRADES,
         "active_trades": active_trades,
         "rotation_candidate": {
             "symbol": best_candidate.get("symbol", ""),
@@ -196,6 +201,8 @@ def _write_text_report(report: dict):
         "",
         f"  Next Action:       {report['next_action']}",
         f"  Trade Lock:        {'ON' if report['active_trade_lock_on'] else 'OFF'}",
+        f"  Portfolio:         {report['active_trades_count']} / {report['max_paper_trades']} active",
+        f"  Available Slots:   {report['available_slots']}",
         "",
     ]
 
@@ -241,7 +248,7 @@ def _write_text_report(report: dict):
         "",
         "  Rotation Allowed: " + (
             "YES" if report['next_action'] == "ROTATE_TO_NEW_PAPER_TRADE" else
-            "NO (active trade)" if report['next_action'] == "ACTIVE_TRADE_MONITORING" else
+            "NO (portfolio full)" if report['next_action'] in ("PORTFOLIO_FULL", "ACTIVE_TRADE_MONITORING") else
             "NO (no candidate)"
         ),
         "",
@@ -250,7 +257,7 @@ def _write_text_report(report: dict):
         lines.append(f"    - {r}")
     lines += [
         "",
-        "  WARNING: Paper rotation only. No real orders placed. Max one paper trade.",
+        "  WARNING: Paper rotation only. No real orders placed. Max 5 paper trades.",
         "",
         "=" * 60,
     ]

@@ -358,6 +358,7 @@ def run_paper_execution() -> dict:
         "portfolio": {
             "active_count": len(active_trades),
             "max_allowed": MAX_PAPER_TRADES,
+            "available_slots": max(0, MAX_PAPER_TRADES - len(active_trades)),
             "active_trades": active_trades,
             "new_trades_opened": new_trades_opened,
             "skipped_duplicates": skipped_duplicates,

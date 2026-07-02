@@ -20,6 +20,8 @@ JSON_PATH = os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json")
 LEDGER_PATH = os.path.join(STATE_DIR, "paper_candidate_watchlist.jsonl")
 PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 
+MAX_PAPER_TRADES = 5
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -64,7 +66,7 @@ def run_paper_candidate_watchlist() -> dict:
     else:
         active_trades_list = []
     active_symbols = set(t.get("symbol", "") for t in active_trades_list)
-    trade_lock_on = len(active_trades_list) > 0
+    trade_lock_on = len(active_trades_list) >= MAX_PAPER_TRADES
 
     # -- All candidates from trigger watcher --
     all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
@@ -104,21 +106,22 @@ def run_paper_candidate_watchlist() -> dict:
     )
 
     # -- Next action --
+    available_slots = max(0, MAX_PAPER_TRADES - len(active_trades_list))
     if trade_lock_on:
         if best_fresh_stronger and best_fresh:
-            next_action = "WAIT_FOR_CURRENT_TRADE_CLOSE"
+            next_action = "PORTFOLIO_FULL_STRONGER_CANDIDATE"
             reasons.append(
                 f"stronger candidate {best_fresh['symbol']} {best_fresh['direction']} "
-                f"(RR:{best_fresh.get('rr','?')}) exists but {len(active_trades_list)} active paper trade(s) lock ON"
+                f"(RR:{best_fresh.get('rr','?')}) exists but portfolio full ({MAX_PAPER_TRADES}/{MAX_PAPER_TRADES})"
             )
         else:
-            next_action = "ACTIVE_TRADE_MONITORING"
+            next_action = "PORTFOLIO_FULL"
             syms = ', '.join(t.get('symbol','?') for t in active_trades_list)
-            reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; trade lock ON")
+            reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; portfolio full ({MAX_PAPER_TRADES}/{MAX_PAPER_TRADES})")
     elif shadow_eligible or best_fresh:
         next_action = "NEW_CANDIDATE_AVAILABLE"
         label = best_fresh.get("symbol", "?") if best_fresh else "?"
-        reasons.append(f"candidate {label} available; no active trade lock")
+        reasons.append(f"candidate {label} available; {available_slots} slot(s) open in portfolio")
     else:
         next_action = "NO_VALID_CANDIDATE"
         reasons.append("no valid candidates found")
@@ -132,6 +135,8 @@ def run_paper_candidate_watchlist() -> dict:
         "real_order": False,
         "active_trade_lock_on": trade_lock_on,
         "active_trades_count": len(active_trades_list),
+        "available_slots": max(0, MAX_PAPER_TRADES - len(active_trades_list)),
+        "max_paper_trades": MAX_PAPER_TRADES,
         "active_trade_symbols": list(active_symbols),
         "active_trades": active_trades_list,
         "candidate_discovery": {
@@ -177,6 +182,8 @@ def _write_text_report(report: dict):
         "=" * 60,
         "",
         f"  Trade Lock:         {'ON' if report['active_trade_lock_on'] else 'OFF'}",
+        f"  Portfolio:          {report['active_trades_count']} / {report['max_paper_trades']} active",
+        f"  Available Slots:    {report['available_slots']}",
         "",
     ]
 

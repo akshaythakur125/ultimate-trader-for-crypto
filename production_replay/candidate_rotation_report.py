@@ -19,6 +19,8 @@ TXT_PATH = os.path.join(RESULTS_DIR, "candidate_rotation_report.txt")
 JSON_PATH = os.path.join(RESULTS_DIR, "candidate_rotation_report.json")
 LEDGER_PATH = os.path.join(STATE_DIR, "candidate_rotation.jsonl")
 
+MAX_PAPER_TRADES = 5
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -84,7 +86,7 @@ def run_candidate_rotation_report() -> dict:
         active_trades_list = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
     else:
         active_trades_list = []
-    trade_lock_on = len(active_trades_list) > 0
+    trade_lock_on = len(active_trades_list) >= MAX_PAPER_TRADES
 
     # -- Total candidates scanned --
     tw_candidates = trigger_watcher.get("candidates", []) if trigger_watcher else []
@@ -105,8 +107,8 @@ def run_candidate_rotation_report() -> dict:
     # -- Determine next action --
     if trade_lock_on:
         syms = ', '.join(t.get('symbol','?') for t in active_trades_list)
-        next_action = "ACTIVE_TRADE_MONITORING"
-        reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; trade lock ON")
+        next_action = "PORTFOLIO_FULL"
+        reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; portfolio full ({MAX_PAPER_TRADES}/{MAX_PAPER_TRADES})")
     elif best_eligible:
         next_action = "NEW_CANDIDATE_AVAILABLE"
         reasons.append(
@@ -130,6 +132,8 @@ def run_candidate_rotation_report() -> dict:
         "active_trade_lock_on": trade_lock_on,
         "active_trades": active_trades_list,
         "active_trades_count": len(active_trades_list),
+        "available_slots": max(0, MAX_PAPER_TRADES - len(active_trades_list)),
+        "max_paper_trades": MAX_PAPER_TRADES,
         "total_candidates_scanned": total_candidates,
         "trigger_confirmed_count": trigger_confirmed,
         "shadow_eligible_count": shadow_eligible,
@@ -155,6 +159,8 @@ def _write_text_report(report: dict):
         "=" * 60,
         "",
         f"  Active Trade Lock:   {'ON' if report['active_trade_lock_on'] else 'OFF'}",
+        f"  Portfolio:           {report.get('active_trades_count', 0)} / {report.get('max_paper_trades', 5)} active",
+        f"  Available Slots:     {report.get('available_slots', 0)}",
         "",
     ]
 

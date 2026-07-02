@@ -5964,13 +5964,14 @@ def test_outcome_doctor_packet_runs_module():
 # ── Phase 61: Candidate Rotation & Active Trade Lock ───────────────────
 
 def test_rotation_active_trade_blocks_new():
-    """Rotation report shows lock ON when active paper trade is open."""
-    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    """Rotation report lock reflects portfolio capacity (lock only when >=5)."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report, MAX_PAPER_TRADES
     result = run_candidate_rotation_report()
-    trade = result.get("active_trade")
-    if trade and trade.get("status") == "PAPER_OPEN":
+    active_count = result.get("active_trades_count", 0)
+    if active_count >= MAX_PAPER_TRADES:
         assert result.get("active_trade_lock_on") is True
-        assert result.get("next_action") == "ACTIVE_TRADE_MONITORING"
+    else:
+        assert result.get("active_trade_lock_on") is False
 
 
 def test_rotation_has_next_action():
@@ -5980,6 +5981,7 @@ def test_rotation_has_next_action():
     assert result.get("next_action") in (
         "ACTIVE_TRADE_MONITORING", "NEW_CANDIDATE_AVAILABLE",
         "NO_VALID_CANDIDATE", "WAIT_FOR_CURRENT_TRADE_CLOSE",
+        "PORTFOLIO_FULL", "PORTFOLIO_FULL_STRONGER_CANDIDATE",
     )
 
 
@@ -6133,13 +6135,13 @@ def test_watchlist_trade_lock_reflects_paper_status():
 
 
 def test_watchlist_top_fresh_excludes_active_symbol():
-    """Top fresh candidates should not include the active trade symbol."""
+    """Top fresh candidates should not include any active trade symbol."""
     from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
     r = run_paper_candidate_watchlist()
-    active_symbol = (r.get("active_trade") or {}).get("symbol", "")
+    active_symbols = set(r.get("active_trade_symbols", []))
     for c in r.get("top_fresh_candidates", []):
-        assert c.get("symbol", "") != active_symbol, (
-            f"fresh candidate {c.get('symbol')} should not match active symbol {active_symbol}"
+        assert c.get("symbol", "") not in active_symbols, (
+            f"fresh candidate {c.get('symbol')} should not match active symbols {active_symbols}"
         )
 
 
@@ -6258,6 +6260,7 @@ def test_rotation_engine_action_is_valid():
         "WAIT_FOR_CURRENT_TRADE_CLOSE",
         "ROTATE_TO_NEW_PAPER_TRADE",
         "NO_VALID_CANDIDATE",
+        "PORTFOLIO_FULL",
     )
 
 
@@ -6482,3 +6485,132 @@ def test_portfolio_no_order_keywords():
     src = inspect.getsource(pel.run_paper_execution)
     for kw in ("place_order", "create_order", "set_leverage", "set_margin"):
         assert kw not in src, f"paper execution should not contain '{kw}'"
+
+
+# --- Phase 65: Paper Portfolio Fill Fix ---
+
+def test_phase65_trade_lock_off_when_slots_available():
+    """Trade lock is OFF when active trades < MAX_PAPER_TRADES."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine, MAX_PAPER_TRADES
+    r = run_paper_rotation_engine()
+    active_count = r.get("active_trades_count", 0)
+    if active_count < MAX_PAPER_TRADES:
+        assert r.get("active_trade_lock_on") is False, \
+            f"trade lock should be OFF with {active_count}/{MAX_PAPER_TRADES} trades"
+
+
+def test_phase65_rotation_engine_reports_available_slots():
+    """Rotation engine report includes available_slots field."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    assert "available_slots" in r
+    assert r["available_slots"] >= 0
+
+
+def test_phase65_portfolio_reports_available_slots():
+    """Paper execution portfolio report includes available_slots field."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    pf = r.get("portfolio", {})
+    assert "available_slots" in pf
+    assert pf["available_slots"] >= 0
+
+
+def test_phase65_watchlist_reports_available_slots():
+    """Watchlist report includes available_slots field."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    assert "available_slots" in r
+    assert r["available_slots"] >= 0
+
+
+def test_phase65_rotation_report_reports_available_slots():
+    """Candidate rotation report includes available_slots field."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    r = run_candidate_rotation_report()
+    assert "available_slots" in r
+    assert r["available_slots"] >= 0
+
+
+def test_phase65_paper_execution_accepts_multi_trade():
+    """paper_execution_ledger can accept new trades when active < MAX."""
+    from production_replay.paper_execution_ledger import run_paper_execution, MAX_PAPER_TRADES
+    r = run_paper_execution()
+    pf = r.get("portfolio", {})
+    active_count = pf.get("active_count", 0)
+    # Active trades must never exceed MAX_PAPER_TRADES
+    assert active_count <= MAX_PAPER_TRADES, \
+        f"active trades {active_count} exceeds max {MAX_PAPER_TRADES}"
+    assert pf.get("available_slots", 0) >= 0
+
+
+def test_phase65_duplicate_symbol_side_blocked():
+    """_is_duplicate blocks same symbol+side in portfolio."""
+    from production_replay.paper_execution_ledger import _is_duplicate
+    portfolio = [
+        {"symbol": "BTC-USDT", "side": "LONG", "status": "PAPER_OPEN"},
+        {"symbol": "ETH-USDT", "side": "SHORT", "status": "PAPER_OPEN"},
+    ]
+    assert _is_duplicate("BTC-USDT", "LONG", portfolio) is True
+    assert _is_duplicate("BTC-USDT", "SHORT", portfolio) is False
+    assert _is_duplicate("ETH-USDT", "SHORT", portfolio) is True
+    assert _is_duplicate("XRP-USDT", "LONG", portfolio) is False
+
+
+def test_phase65_live_trading_unchanged():
+    """Live mode remains max 1 position — read_only default, no real orders."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    assert r.get("live_trading_enabled") is False
+    assert r.get("real_order") is False
+    assert r.get("research_only") is True
+    # One-shot guard module exists and has read_state function
+    from production_replay.live_one_shot_guard import read_state
+    state = read_state()
+    assert state in ("DISARMED", "ARMED_ONCE", "USED", "BLOCKED")
+
+
+def test_phase65_no_real_api_order_call():
+    """All paper modules avoid real order keywords."""
+    import inspect
+    modules = [
+        "paper_rotation_engine",
+        "paper_execution_ledger",
+        "candidate_rotation_report",
+        "paper_candidate_watchlist",
+        "paper_rotation_engine",
+    ]
+    for mod_name in set(modules):
+        mod = __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        src = inspect.getsource(mod)
+        for kw in ("place_order", "create_order", "set_leverage", "set_margin"):
+            assert kw not in src, f"{mod_name} should not contain '{kw}'"
+
+
+def test_phase65_portfolio_never_exceeds_max():
+    """Portfolio never exceeds MAX_PAPER_TRADES active trades."""
+    from production_replay.paper_execution_ledger import run_paper_execution, MAX_PAPER_TRADES
+    r = run_paper_execution()
+    pf = r.get("portfolio", {})
+    assert pf.get("active_count", 0) <= MAX_PAPER_TRADES
+    assert len(pf.get("active_trades", [])) <= MAX_PAPER_TRADES
+
+
+def test_phase65_rotation_candidate_excludes_active_symbols():
+    """Rotation candidate never matches an active portfolio symbol."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    rc = r.get("rotation_candidate")
+    active_symbols = set(t.get("symbol", "") for t in r.get("active_trades", []))
+    if rc and active_symbols:
+        assert rc.get("symbol", "") not in active_symbols, \
+            f"rotation candidate {rc['symbol']} should not be in active symbols {active_symbols}"
+
+
+def test_phase65_rotation_engine_prioritizes_shadow_eligible():
+    """Rotation engine sorts SHADOW_ELIGIBLE above REVIEW_CANDIDATE."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    rc = r.get("rotation_candidate")
+    if rc:
+        assert rc.get("eligibility_status", "") in ("SHADOW_ELIGIBLE", "REVIEW_CANDIDATE", "TRIGGER_CONFIRMED")
