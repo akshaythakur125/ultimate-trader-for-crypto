@@ -68,6 +68,7 @@ def main():
     _run_module("production_replay.bingx_position_monitor", "--once")
     _run_module("production_replay.live_one_shot_guard", "--status")
     _run_module("production_replay.hourly_alert")
+    _run_module("production_replay.paper_execution_ledger")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -82,6 +83,7 @@ def main():
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
+    paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     entry = _read_ledger_latest()
@@ -541,6 +543,34 @@ def main():
         "",
     ]
 
+    # Paper execution ledger section (Phase 59)
+    paper_lines = []
+    if paper:
+        pstatus = paper.get("status", "N/A")
+        ptrade = paper.get("current_paper_trade")
+        paper_lines = [
+            "",
+            "  PAPER EXECUTION:",
+            f"    Status:    {pstatus}",
+        ]
+        if ptrade:
+            paper_lines += [
+                f"    Symbol:    {ptrade.get('symbol', 'N/A')} {ptrade.get('side', 'N/A')}",
+                f"    Entry:     {ptrade.get('entry', 0)}  Stop: {ptrade.get('stop', 0)}  Target: {ptrade.get('target', 0)}",
+                f"    Qty:       {ptrade.get('quantity', 0)}  Notional: {ptrade.get('notional', 0)}  Risk: {ptrade.get('risk', 0)}",
+                f"    RR:        1:{ptrade.get('rr', 0)}",
+                f"    Entry Fill: {'YES' if ptrade.get('entry_fill_check') else 'NO'}",
+            ]
+            if ptrade.get("unrealized_pnl") is not None:
+                paper_lines.append(f"    Unrealized P&L: {ptrade['unrealized_pnl']:.2f} USDT")
+            if ptrade.get("realized_pnl") is not None:
+                paper_lines.append(f"    Realized P&L:   {ptrade['realized_pnl']:.2f} USDT")
+            if ptrade.get("exit_reason"):
+                paper_lines.append(f"    Exit Reason:    {ptrade['exit_reason']}")
+        paper_lines.append("")
+    else:
+        paper_lines = ["", "  PAPER EXECUTION: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -651,6 +681,7 @@ def main():
     lines += shadow_lines
     lines += preflight_lines
     lines += guard_lines
+    lines += paper_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -810,6 +841,10 @@ def main():
             "emergency_status": pos_mon.get("emergency_status") if pos_mon else None,
             "warnings": pos_mon.get("warnings", []) if pos_mon else None,
         } if pos_mon else None,
+        "paper_execution": {
+            "status": paper.get("status", "N/A") if paper else None,
+            "current_trade": paper.get("current_paper_trade") if paper else None,
+        } if paper else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

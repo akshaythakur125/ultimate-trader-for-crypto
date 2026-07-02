@@ -93,6 +93,16 @@ def run_hourly_alert() -> dict:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
+    # Run paper execution ledger for fresh data (Phase 59)
+    import subprocess
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_execution_ledger"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
+
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
     alpha = _read_json(os.path.join(RESULTS_DIR, "alpha_intelligence_report.json"))
@@ -104,6 +114,7 @@ def run_hourly_alert() -> dict:
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
+    paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -346,6 +357,11 @@ def run_hourly_alert() -> dict:
         "one_shot_state": one_shot_state,
         "position_open": position_open,
         "emergency": emergency,
+        "paper_execution": {
+            "status": paper.get("status", "N/A") if paper else "N/A",
+            "has_open_trade": bool(paper and paper.get("current_paper_trade") and paper["current_paper_trade"].get("status") == "PAPER_OPEN"),
+            "current_paper_trade": paper.get("current_paper_trade") if paper else None,
+        } if paper else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -575,6 +591,36 @@ def _write_text_report(report: dict, action: str, reason: str):
         f"    State:    {os_state}",
         "",
     ]
+
+    # Phase 59: Paper execution ledger
+    paper_exec = report.get("paper_execution")
+    if paper_exec and paper_exec.get("status", "N/A") != "N/A":
+        lines += [
+            "  PAPER EXECUTION:",
+            f"    Status:         {paper_exec['status']}",
+        ]
+        pt = paper_exec.get("current_paper_trade")
+        if pt:
+            lines += [
+                f"    Symbol:         {pt.get('symbol', 'N/A')}",
+                f"    Side:           {pt.get('side', 'N/A')}",
+                f"    Entry:          {pt.get('entry', 0)}",
+                f"    Stop:           {pt.get('stop', 0)}",
+                f"    Target:         {pt.get('target', 0)}",
+                f"    Quantity:       {pt.get('quantity', 0)}",
+                f"    Notional:       {pt.get('notional', 0)} USDT",
+                f"    Risk:           {pt.get('risk', 0)} USDT",
+                f"    RR:             1:{pt.get('rr', 0)}",
+                f"    Trade Status:   {pt.get('status', 'N/A')}",
+                f"    Entry Filled:   {'YES' if pt.get('entry_fill_check') else 'NO'}",
+            ]
+            if pt.get("unrealized_pnl") is not None:
+                lines.append(f"    Unrealized P&L: {pt['unrealized_pnl']:.2f} USDT")
+            if pt.get("realized_pnl") is not None:
+                lines.append(f"    Realized P&L:   {pt['realized_pnl']:.2f} USDT")
+            if pt.get("exit_reason"):
+                lines.append(f"    Exit Reason:    {pt['exit_reason']}")
+        lines += [""]
 
     if best and not bridge_candidate_shown:
         lines += [
