@@ -361,7 +361,11 @@ def run_live_micro_executor() -> dict:
 
     if all_gates and candidate:
         bingx_side = "BUY" if direction == "LONG" else "SELL"
-        qty = 1  # micro quantity placeholder
+        # Use exchange-validated quantity from preflight (Phase 58)
+        qty = float(preflight.get("quantity", 0)) if preflight else 0
+        if qty <= 0:
+            qty = 1  # fallback should never happen if preflight passes
+            reasons.append("WARNING: preflight quantity missing, using fallback 1.0")
 
         # -- Mark one-shot USED before any order attempt --
         set_used()

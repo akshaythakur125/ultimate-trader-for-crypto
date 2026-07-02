@@ -7,7 +7,7 @@ This module NEVER places real orders, NEVER changes execution mode,
 and NEVER sets LIVE_TRADING_ACK.
 """
 
-import json, os, sys
+import json, math, os, sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -84,17 +84,68 @@ def _calculate_quantity(risk_usdt: float, entry: float, stop: float) -> float:
     return round(risk_usdt / diff, 4)
 
 
-def _round_to_step_size(value: float, step_size: float) -> float:
+def _round_to_step_size(value: float, step_size: float, ceil: bool = True) -> float:
     if step_size <= 0:
         return value
     precision = 0
     s = str(step_size)
     if "." in s:
         precision = len(s.split(".")[1])
-    step_size_clean = int(round(step_size * 10 ** precision))
-    value_clean = int(round(value * 10 ** precision))
-    floored = (value_clean // step_size_clean) * step_size_clean
-    return floored / 10 ** precision
+    mult = 10 ** precision
+    step_clean = int(round(step_size * mult))
+    scaled = value * mult
+    if ceil:
+        import math
+        result = math.ceil(scaled - 1e-9)  # tiny epsilon to avoid float issues
+        # align to step
+        result = ((result + step_clean - 1) // step_clean) * step_clean
+    else:
+        result = int(scaled // step_clean) * step_clean
+    return result / mult
+
+
+def _calculate_exchange_quantity(
+    requested_qty: float, min_qty: float, step_size: float,
+    entry: float, stop: float, min_notional: float, max_risk: float,
+) -> tuple[float, float, float, bool, str]:
+    """Calculate exchange-valid quantity and return (qty, notional, actual_risk, ok, reason)."""
+    qty = requested_qty
+    if qty <= 0:
+        return 0, 0, 0, False, "requested quantity is 0"
+
+    # Round UP to next valid step
+    if step_size > 0:
+        qty = _round_to_step_size(qty, step_size, ceil=True)
+
+    # Ensure >= min_qty
+    if min_qty > 0 and qty < min_qty:
+        qty = min_qty
+        if step_size > 0:
+            qty = _round_to_step_size(qty, step_size, ceil=True)
+
+    notional = qty * entry
+    diff = abs(entry - stop)
+    actual_risk = qty * diff if diff > 0 else 0
+
+    if min_notional > 0 and notional < min_notional:
+        needed_qty = _round_to_step_size(min_notional / entry, step_size, ceil=True) if step_size > 0 else min_notional / entry
+        qty = max(qty, needed_qty)
+        notional = qty * entry
+        actual_risk = qty * diff if diff > 0 else 0
+
+    if step_size > 0:
+        qty = _round_to_step_size(qty, step_size, ceil=True)
+        notional = qty * entry
+        actual_risk = qty * diff if diff > 0 else 0
+
+    if min_qty > 0 and qty < min_qty:
+        return 0, 0, 0, False, f"cannot reach minQty {min_qty}"
+    if min_notional > 0 and notional < min_notional:
+        return 0, 0, 0, False, f"cannot reach minNotional {min_notional}"
+    if actual_risk > max_risk:
+        return qty, notional, actual_risk, False, f"actual risk {actual_risk:.2f} > max {max_risk} USDT"
+
+    return qty, notional, actual_risk, True, "valid"
 
 
 def _min_qty_str(qty: float) -> str:
@@ -232,9 +283,11 @@ def run_preflight() -> dict:
     if kill_active:
         reasons.append("kill switch ON")
 
-    # -- 12. Quantity calculation valid --
-    quantity = _calculate_quantity(risk_usdt, entry, stop) if risk_usdt > 0 else 0
-    check_12_ok = quantity > 0
+    # -- 12. Requested quantity calculation (risk-based) --
+    diff = abs(entry - stop)
+    risk_usdt = diff
+    requested_qty = _calculate_quantity(risk_usdt, entry, stop) if risk_usdt > 0 else 0
+    check_12_ok = requested_qty > 0
     checks["quantity_calculated"] = check_12_ok
     if not check_12_ok:
         reasons.append("calculated quantity is 0")
@@ -273,22 +326,26 @@ def run_preflight() -> dict:
                 missing.append("min_notional")
         reasons.append(f"contract metadata invalid: {', '.join(missing)}")
 
-    # -- 14. Quantity respects BingX min/step --
-    if check_12_ok and step_size > 0:
-        quantity = _round_to_step_size(quantity, step_size)
-    check_14_ok = True
-    if min_qty > 0 and quantity < min_qty:
-        check_14_ok = False
-        reasons.append(f"quantity {quantity} < minQty {min_qty}")
-    checks["quantity_respects_min"] = check_14_ok
+    # -- 14. Exchange-valid quantity sizing (Phase 58) --
+    try:
+        max_risk_allowed = float(os.environ.get("MAX_RISK_PER_TRADE_USDT", "1"))
+    except (ValueError, TypeError):
+        max_risk_allowed = 1
+    final_qty, final_notional, actual_risk, sizing_ok, sizing_reason = _calculate_exchange_quantity(
+        requested_qty, min_qty, step_size, entry, stop, min_notional, max_risk_allowed,
+    )
+    quantity = final_qty
+    notional = final_notional
+    check_14_ok = sizing_ok
+    checks["exchange_sizing_valid"] = check_14_ok
+    if not check_14_ok:
+        reasons.append(f"exchange sizing: {sizing_reason}")
 
-    # -- 15. Notional respects BingX minimum --
-    notional = quantity * entry
-    check_15_ok = True
-    if min_notional > 0 and notional < min_notional:
-        check_15_ok = False
-        reasons.append(f"notional {notional:.2f} < minNotional {min_notional}")
-    checks["notional_respects_min"] = check_15_ok
+    # -- 15. Risk recalculated after sizing (actual risk <= max risk) --
+    check_15_ok = actual_risk <= max_risk_allowed if sizing_ok else False
+    checks["risk_after_sizing"] = check_15_ok
+    if not check_15_ok and sizing_ok:
+        reasons.append(f"final risk {actual_risk:.2f} > max {max_risk_allowed} USDT")
 
     # -- 16. Stop-loss plan valid --
     if direction == "LONG":
@@ -356,8 +413,10 @@ def run_preflight() -> dict:
         "target": target,
         "rr_final": rr_final,
         "risk_usdt": round(risk_usdt, 2),
+        "requested_quantity": round(requested_qty, 6),
         "quantity": quantity,
         "notional": round(notional, 2),
+        "actual_risk_usdt": round(actual_risk, 2),
         "open_position_count": open_pos_count,
         "kill_switch": "ON" if kill_active else "OFF",
         "max_risk_usdt": max_risk,
@@ -413,8 +472,10 @@ def _write_text_report(report: dict, decision: str, reasons: list[str]):
         f"  Target:            {report['target']}",
         f"  RR Final:          {report['rr_final']}",
         f"  Risk (USDT):       {report['risk_usdt']:.2f}",
-        f"  Quantity:          {_min_qty_str(report['quantity']) if report['quantity'] else '0'}",
-        f"  Notional (USDT):   {report['notional']:.2f}",
+        f"  Requested Qty:     {report['requested_quantity']}",
+        f"  Final Qty:         {report['quantity'] if report['quantity'] else '0'}",
+        f"  Final Notional:    {report['notional']:.2f}",
+        f"  Final Risk:        {report['actual_risk_usdt']:.2f} USDT",
         f"  Open Positions:    {report['open_position_count']}",
         f"  Kill Switch:       {report['kill_switch']}",
         "",

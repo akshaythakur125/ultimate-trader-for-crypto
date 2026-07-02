@@ -5397,8 +5397,8 @@ def test_preflight_has_all_20_checks():
         "symbol_bingx_listed", "direction_valid", "entry_stop_target_valid",
         "rr_ge_4", "risk_within_limit", "max_leverage_ok", "no_open_positions",
         "kill_switch_off", "quantity_calculated", "contract_metadata_valid",
-        "quantity_respects_min",
-        "notional_respects_min", "stop_loss_plan_valid", "target_plan_valid",
+        "exchange_sizing_valid",
+        "risk_after_sizing", "stop_loss_plan_valid", "target_plan_valid",
         "exit_orders_reduce_only", "no_naked_position", "no_market_order_placed",
         "no_real_api_order_called",
     ):
@@ -5629,6 +5629,95 @@ def test_preflight_no_approved_phase57():
 
 def test_preflight_no_withdrawal_phase57():
     """Preflight (Phase 57) has no withdrawal/transfer/send."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
+
+
+# ── Phase 58: Exchange-Valid Live Micro Quantity Sizing ───────────────
+
+def test_preflight_rounds_up_to_step_size():
+    """Preflight _round_to_step_size rounds UP when ceil=True."""
+    from production_replay.bingx_live_preflight import _round_to_step_size
+    assert _round_to_step_size(1.0, 0.001, ceil=True) >= 1.0
+    assert _round_to_step_size(1.0001, 0.001, ceil=True) == 1.001
+    assert _round_to_step_size(1.0, 0.5, ceil=True) == 1.0
+    assert _round_to_step_size(1.1, 0.5, ceil=True) == 1.5
+
+
+def test_preflight_requested_qty_shown():
+    """Preflight report includes requested_quantity field."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    assert "requested_quantity" in result
+    assert result["requested_quantity"] > 0
+
+
+def test_preflight_final_qty_meets_min_qty():
+    """Preflight final quantity meets or exceeds min_qty."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    if checks.get("contract_metadata_valid") and result.get("min_quantity", 0) > 0:
+        assert result["quantity"] >= result["min_quantity"]
+
+
+def test_preflight_notional_meets_min():
+    """Preflight final notional meets or exceeds min_notional."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    if checks.get("contract_metadata_valid") and result.get("min_notional", 0) > 0:
+        assert result["notional"] >= result["min_notional"]
+
+
+def test_preflight_risk_recalculated_after_sizing():
+    """Preflight recalculates actual risk after quantity rounding."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    assert "actual_risk_usdt" in result
+    assert result["actual_risk_usdt"] > 0
+
+
+def test_preflight_shows_final_qty_in_report():
+    """Preflight text report shows Final Qty and Requested Qty."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf._write_text_report)
+    assert "Final Qty" in src
+    assert "Requested Qty" in src
+    assert "Final Risk" in src
+
+
+def test_live_executor_uses_preflight_quantity():
+    """Live executor reads validated quantity from preflight report."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "preflight.get(\"quantity\"" in src or "preflight.get('quantity')" in src
+
+
+def test_preflight_exchange_sizing_check_present():
+    """Preflight has exchange_sizing_valid and risk_after_sizing checks."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    assert "exchange_sizing_valid" in checks
+    assert "risk_after_sizing" in checks
+
+
+def test_preflight_no_approved_phase58():
+    """Preflight (Phase 58) still has no APPROVED string."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    assert "APPROVED" not in src
+
+
+def test_preflight_no_withdrawal_phase58():
+    """Preflight (Phase 58) has no withdrawal/transfer/send."""
     import inspect
     import production_replay.bingx_live_preflight as pf
     src = inspect.getsource(pf)
