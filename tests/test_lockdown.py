@@ -5959,3 +5959,122 @@ def test_outcome_doctor_packet_runs_module():
     import production_replay.doctor_daily_packet as ddp
     src = inspect.getsource(ddp.main)
     assert "paper_outcome_validator" in src
+
+
+# ── Phase 61: Candidate Rotation & Active Trade Lock ───────────────────
+
+def test_rotation_active_trade_blocks_new():
+    """Rotation report shows lock ON when active paper trade is open."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    trade = result.get("active_trade")
+    if trade and trade.get("status") == "PAPER_OPEN":
+        assert result.get("active_trade_lock_on") is True
+        assert result.get("next_action") == "ACTIVE_TRADE_MONITORING"
+
+
+def test_rotation_has_next_action():
+    """Rotation report always has a valid next_action."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    assert result.get("next_action") in (
+        "ACTIVE_TRADE_MONITORING", "NEW_CANDIDATE_AVAILABLE",
+        "NO_VALID_CANDIDATE", "WAIT_FOR_CURRENT_TRADE_CLOSE",
+    )
+
+
+def test_rotation_shows_candidate_counts():
+    """Rotation report shows total, confirmed, and eligible counts."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    assert "total_candidates_scanned" in result
+    assert "trigger_confirmed_count" in result
+    assert "shadow_eligible_count" in result
+
+
+def test_rotation_best_eligible_or_none():
+    """Rotation report has best_eligible_candidate field (may be None)."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    assert "best_eligible_candidate" in result
+
+
+def test_rotation_best_rejected_or_none():
+    """Rotation report has best_rejected_candidate field (may be None)."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    assert "best_rejected_candidate" in result
+
+
+def test_rotation_rejected_shows_reason():
+    """Rotation report best_rejected_candidate includes a reason."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    br = result.get("best_rejected_candidate")
+    if br:
+        assert "rejection_reason_display" in br
+
+
+def test_rotation_no_approved():
+    """Rotation report has no APPROVED string."""
+    import inspect
+    import production_replay.candidate_rotation_report as crr
+    src = inspect.getsource(crr)
+    assert "APPROVED" not in src
+
+
+def test_rotation_no_real_order():
+    """Rotation report has no real order functions."""
+    import inspect
+    import production_replay.candidate_rotation_report as crr
+    src = inspect.getsource(crr)
+    assert "real_order" not in src or '"real_order": False' in src or "'real_order': False" in src
+
+
+def test_rotation_no_withdrawal():
+    """Rotation report has no withdrawal/transfer/send."""
+    import inspect
+    import production_replay.candidate_rotation_report as crr
+    src = inspect.getsource(crr)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
+
+
+def test_rotation_live_trading_disabled():
+    """Rotation report has live_trading_enabled=False."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report
+    result = run_candidate_rotation_report()
+    assert result.get("live_trading_enabled") is False
+
+
+def test_rotation_output_files_exist():
+    """Rotation report creates JSON and TXT output files."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report, JSON_PATH, TXT_PATH
+    import os
+    run_candidate_rotation_report()
+    assert os.path.exists(JSON_PATH)
+    assert os.path.exists(TXT_PATH)
+
+
+def test_rotation_ledger_exists():
+    """Rotation report appends to ledger file."""
+    from production_replay.candidate_rotation_report import run_candidate_rotation_report, LEDGER_PATH
+    import os
+    run_candidate_rotation_report()
+    assert os.path.exists(LEDGER_PATH)
+
+
+def test_rotation_hourly_alert_has_section():
+    """Hourly alert report contains candidate_rotation section."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "candidate_rotation" in src
+
+
+def test_rotation_doctor_packet_runs_module():
+    """Doctor daily packet runs candidate_rotation_report."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "candidate_rotation_report" in src

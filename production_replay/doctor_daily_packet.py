@@ -70,6 +70,7 @@ def main():
     _run_module("production_replay.hourly_alert")
     _run_module("production_replay.paper_execution_ledger")
     _run_module("production_replay.paper_outcome_validator")
+    _run_module("production_replay.candidate_rotation_report")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -86,6 +87,7 @@ def main():
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
+    rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     entry = _read_ledger_latest()
@@ -606,6 +608,36 @@ def main():
     else:
         outcome_lines = ["", "  PAPER TRADE OUTCOME: MISSING (no report)", ""]
 
+    # Candidate rotation section (Phase 61)
+    rotation_lines = []
+    if rotation:
+        rot_next = rotation.get("next_action", "N/A")
+        rot_lock = rotation.get("active_trade_lock_on", False)
+        rotation_lines = [
+            "",
+            "  CANDIDATE ROTATION:",
+            f"    Next Action:        {rot_next}",
+            f"    Trade Lock:         {'ON' if rot_lock else 'OFF'}",
+            f"    Total Candidates:   {rotation.get('total_candidates_scanned', 0)}",
+            f"    Trigger Confirmed:  {rotation.get('trigger_confirmed_count', 0)}",
+            f"    Shadow Eligible:    {rotation.get('shadow_eligible_count', 0)}",
+        ]
+        be = rotation.get("best_eligible_candidate")
+        if be:
+            rotation_lines.append(
+                f"    Best Eligible:      {be.get('symbol','?')} {be.get('direction','?')} "
+                f"RR:{be.get('rr','?')}"
+            )
+        br = rotation.get("best_rejected_candidate")
+        if br:
+            rotation_lines.append(
+                f"    Best Rejected:      {br.get('symbol','?')} {br.get('direction','?')} "
+                f"Reason: {br.get('rejection_reason_display','?')}"
+            )
+        rotation_lines.append("")
+    else:
+        rotation_lines = ["", "  CANDIDATE ROTATION: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -718,6 +750,7 @@ def main():
     lines += guard_lines
     lines += paper_lines
     lines += outcome_lines
+    lines += rotation_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -887,6 +920,15 @@ def main():
             "agg_stats": paper_outcome.get("agg_stats", {}) if paper_outcome else {},
             "current_trade": paper_outcome.get("current_trade") if paper_outcome else None,
         } if paper_outcome else None,
+        "candidate_rotation": {
+            "next_action": rotation.get("next_action", "N/A") if rotation else None,
+            "active_trade_lock_on": rotation.get("active_trade_lock_on", False) if rotation else False,
+            "total_candidates_scanned": rotation.get("total_candidates_scanned", 0) if rotation else 0,
+            "trigger_confirmed_count": rotation.get("trigger_confirmed_count", 0) if rotation else 0,
+            "shadow_eligible_count": rotation.get("shadow_eligible_count", 0) if rotation else 0,
+            "best_eligible_candidate": rotation.get("best_eligible_candidate") if rotation else None,
+            "best_rejected_candidate": rotation.get("best_rejected_candidate") if rotation else None,
+        } if rotation else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

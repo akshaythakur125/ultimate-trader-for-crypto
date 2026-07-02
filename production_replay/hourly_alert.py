@@ -110,6 +110,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run candidate rotation report for fresh data (Phase 61)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.candidate_rotation_report"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -124,6 +132,7 @@ def run_hourly_alert() -> dict:
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
+    rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -377,6 +386,15 @@ def run_hourly_alert() -> dict:
             "agg_stats": paper_outcome.get("agg_stats", {}) if paper_outcome else {},
             "current_trade": paper_outcome.get("current_trade") if paper_outcome else None,
         } if paper_outcome else None,
+        "candidate_rotation": {
+            "next_action": rotation.get("next_action", "N/A") if rotation else "N/A",
+            "active_trade_lock_on": rotation.get("active_trade_lock_on", False) if rotation else False,
+            "total_candidates_scanned": rotation.get("total_candidates_scanned", 0) if rotation else 0,
+            "trigger_confirmed_count": rotation.get("trigger_confirmed_count", 0) if rotation else 0,
+            "shadow_eligible_count": rotation.get("shadow_eligible_count", 0) if rotation else 0,
+            "best_eligible_candidate": rotation.get("best_eligible_candidate") if rotation else None,
+            "best_rejected_candidate": rotation.get("best_rejected_candidate") if rotation else None,
+        } if rotation else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -663,6 +681,31 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"    Current: {oct.get('symbol', 'N/A')} {oct.get('side', 'N/A')} "
                 f"{oct.get('status', 'N/A')} {oct.get('hit_reason') or ''}",
             ]
+        lines += [""]
+
+    # Phase 61: Candidate rotation report
+    rot = report.get("candidate_rotation")
+    if rot and rot.get("next_action", "N/A") != "N/A":
+        lines += [
+            "  CANDIDATE ROTATION:",
+            f"    Next Action:        {rot['next_action']}",
+            f"    Trade Lock:         {'ON' if rot.get('active_trade_lock_on') else 'OFF'}",
+            f"    Total Candidates:   {rot.get('total_candidates_scanned', 0)}",
+            f"    Trigger Confirmed:  {rot.get('trigger_confirmed_count', 0)}",
+            f"    Shadow Eligible:    {rot.get('shadow_eligible_count', 0)}",
+        ]
+        be = rot.get("best_eligible_candidate")
+        if be:
+            lines.append(
+                f"    Best Eligible:      {be.get('symbol','?')} {be.get('direction','?')} "
+                f"RR:{be.get('rr','?')} Score:{be.get('thesis_score','?')}"
+            )
+        br = rot.get("best_rejected_candidate")
+        if br:
+            lines.append(
+                f"    Best Rejected:      {br.get('symbol','?')} {br.get('direction','?')} "
+                f"Reason: {br.get('rejection_reason_display','?')}"
+            )
         lines += [""]
 
     if best and not bridge_candidate_shown:
