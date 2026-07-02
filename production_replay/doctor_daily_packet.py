@@ -566,14 +566,14 @@ def main():
         if pcfg:
             cap_risk = pcfg.get("capital_usdt", "?")
             max_risk_tt = pcfg.get("max_risk_per_trade_usdt", "?")
-            max_port_risk = pcfg.get("max_total_portfolio_risk_usdt", "?")
-            max_notional = pcfg.get("max_notional_per_trade_usdt", "?")
+            max_port_notional = pcfg.get("max_portfolio_notional_usdt", "?")
+            max_lev = pcfg.get("max_leverage", "?")
             paper_lines += [
-                "  PAPER CAPITAL RISK (Hard Caps):",
-                f"    Capital:         {cap_risk} USDT",
-                f"    Max Risk/Trade:  {max_risk_tt} USDT",
-                f"    Max Portfolio Risk: {max_port_risk} USDT",
-                f"    Max Notional/Trade: {max_notional} USDT",
+                "  PAPER CAPITAL RISK (Risk vs Notional Model):",
+                f"    Capital:                  {cap_risk} USDT",
+                f"    Max Risk / Trade:         {max_risk_tt} USDT",
+                f"    Max Portfolio Notional:   {max_port_notional} USDT (2x capital)",
+                f"    Max Leverage:             {max_lev}x",
             ]
         if ptrade:
             paper_lines += [
@@ -600,13 +600,15 @@ def main():
                 paper_lines.append(
                     f"      {t.get('symbol','?')} {t.get('side','?')} "
                     f"RR:1:{t.get('rr',0)} Entry:{t.get('entry',0)} "
-                    f"Risk:{t.get('risk',0):.2f} "
+                    f"Risk:{t.get('risk',0):.2f} Notional:{t.get('notional',0):.2f} "
                     f"P&L:{t.get('unrealized_pnl',0):.2f} "
                     f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
                 )
             paper_lines.append(
-                f"    Exposure: {pf.get('total_notional_exposure',0):.2f} USDT  "
-                f"Total Risk: {pf.get('total_risk_usdt',0):.2f} USDT  "
+                f"    Risk USDT:       {pf.get('total_risk_usdt',0):.2f}  "
+                f"Notional: {pf.get('total_notional_exposure',0):.2f} USDT  "
+                f"Lev: {pf.get('portfolio_leverage',0):.2f}x  "
+                f"Remaining Cap: {pf.get('remaining_notional_capacity',0):.2f} USDT  "
                 f"Unrealized: {pf.get('total_unrealized_pnl',0):.4f} USDT"
             )
             rejected = pf.get("rejected_candidates", [])

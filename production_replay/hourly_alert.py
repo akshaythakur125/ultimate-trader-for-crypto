@@ -806,14 +806,14 @@ def _write_text_report(report: dict, action: str, reason: str):
         if paper_cfg:
             cap_risk = paper_cfg.get("capital_usdt", "?")
             max_risk_tt = paper_cfg.get("max_risk_per_trade_usdt", "?")
-            max_port_risk = paper_cfg.get("max_total_portfolio_risk_usdt", "?")
-            max_notional = paper_cfg.get("max_notional_per_trade_usdt", "?")
+            max_port_notional = paper_cfg.get("max_portfolio_notional_usdt", "?")
+            max_lev = paper_cfg.get("max_leverage", "?")
             lines += [
-                "  PAPER CAPITAL RISK (Hard Caps):",
-                f"    Capital:         {cap_risk} USDT",
-                f"    Max Risk/Trade:  {max_risk_tt} USDT",
-                f"    Max Portfolio Risk: {max_port_risk} USDT",
-                f"    Max Notional/Trade: {max_notional} USDT",
+                "  PAPER CAPITAL RISK (Risk vs Notional Model):",
+                f"    Capital:                  {cap_risk} USDT",
+                f"    Max Risk / Trade:         {max_risk_tt} USDT",
+                f"    Max Portfolio Notional:   {max_port_notional} USDT (2x capital)",
+                f"    Max Leverage:             {max_lev}x",
             ]
         for t in portfolio.get("active_trades", []):
             lines.append(
@@ -824,8 +824,10 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
             )
         lines.append(
-            f"    Exposure: {portfolio.get('total_notional_exposure',0):.2f} USDT  "
-            f"Total Risk: {portfolio.get('total_risk_usdt',0):.2f} USDT ({portfolio.get('total_risk_pct',0)}%)  "
+            f"    Risk USDT: {portfolio.get('total_risk_usdt',0):.2f}  "
+            f"Notional: {portfolio.get('total_notional_exposure',0):.2f} USDT  "
+            f"Lev: {portfolio.get('portfolio_leverage',0):.2f}x  "
+            f"Remaining Cap: {portfolio.get('remaining_notional_capacity',0):.2f} USDT  "
             f"Unrealized: {portfolio.get('total_unrealized_pnl',0):.4f} USDT"
         )
         rejected = portfolio.get("rejected_candidates", [])

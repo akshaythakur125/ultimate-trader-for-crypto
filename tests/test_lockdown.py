@@ -6619,37 +6619,38 @@ def test_phase65_rotation_engine_prioritizes_shadow_eligible():
 # --- Phase 66: Paper Portfolio Risk & Capital Lock ---
 
 def test_phase66_config_constants():
-    """Paper execution ledger has all hard cap risk/capital config constants."""
+    """Paper execution ledger has all risk/capital config constants (risk vs notional model)."""
     import production_replay.paper_execution_ledger as pel
     assert hasattr(pel, "PAPER_CAPITAL_USDT")
-    assert hasattr(pel, "PAPER_MAX_RISK_PCT")
+    assert hasattr(pel, "PAPER_RISK_PCT_PER_TRADE")
     assert hasattr(pel, "PAPER_MAX_RISK_PER_TRADE_USDT")
-    assert hasattr(pel, "PAPER_MAX_NOTIONAL_PER_TRADE_USDT")
+    assert hasattr(pel, "PAPER_MAX_LEVERAGE")
+    assert hasattr(pel, "PAPER_MAX_PORTFOLIO_NOTIONAL_USDT")
     assert hasattr(pel, "PAPER_MAX_ACTIVE_TRADES")
-    assert hasattr(pel, "PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT")
     assert pel.PAPER_CAPITAL_USDT == 400
-    assert pel.PAPER_MAX_RISK_PCT == 0.03
+    assert pel.PAPER_RISK_PCT_PER_TRADE == 0.03
     assert pel.PAPER_MAX_RISK_PER_TRADE_USDT == 12
-    assert pel.PAPER_MAX_NOTIONAL_PER_TRADE_USDT == 200
+    assert pel.PAPER_MAX_LEVERAGE == 2
+    assert pel.PAPER_MAX_PORTFOLIO_NOTIONAL_USDT == 800
     assert pel.PAPER_MAX_ACTIVE_TRADES == 5
-    assert pel.PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT == 12
 
 
 def test_phase66_report_has_paper_config():
-    """Paper execution report includes paper_config with all hard cap fields."""
+    """Paper execution report includes paper_config with risk-vs-notional fields."""
     from production_replay.paper_execution_ledger import run_paper_execution
     r = run_paper_execution()
     pc = r.get("paper_config")
     assert pc is not None
     assert "capital_usdt" in pc
+    assert "risk_pct_per_trade" in pc
     assert "max_risk_per_trade_usdt" in pc
-    assert "max_total_portfolio_risk_usdt" in pc
-    assert "max_notional_per_trade_usdt" in pc
+    assert "max_portfolio_notional_usdt" in pc
+    assert "max_leverage" in pc
     assert "max_active_trades" in pc
     assert pc["capital_usdt"] == 400
     assert pc["max_risk_per_trade_usdt"] == 12
-    assert pc["max_total_portfolio_risk_usdt"] == 12
-    assert pc["max_notional_per_trade_usdt"] == 200
+    assert pc["max_portfolio_notional_usdt"] == 800
+    assert pc["max_leverage"] == 2
     assert pc["max_active_trades"] == 5
 
 
@@ -6659,8 +6660,8 @@ def test_phase66_rejection_reason_codes_exist():
     assert pel.REASON_PORTFOLIO_FULL == "PAPER_MAX_OPEN_TRADES_REACHED"
     assert pel.REASON_DUPLICATE == "PAPER_DUPLICATE_SYMBOL_SIDE"
     assert pel.REASON_RISK_TOO_HIGH == "PAPER_RISK_TOO_HIGH"
-    assert pel.REASON_PORTFOLIO_RISK_TOO_HIGH == "PAPER_PORTFOLIO_RISK_TOO_HIGH"
-    assert pel.REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL == "NOTIONAL_TOO_HIGH_FOR_CAPITAL"
+    assert pel.REASON_PORTFOLIO_NOTIONAL_TOO_HIGH == "PAPER_PORTFOLIO_NOTIONAL_TOO_HIGH"
+    assert pel.REASON_PORTFOLIO_NOTIONAL_TOO_HIGH == "PAPER_PORTFOLIO_NOTIONAL_TOO_HIGH"
     assert pel.REASON_EXCHANGE_MIN_SIZE == "PAPER_EXCHANGE_MIN_SIZE_TOO_LARGE"
 
 
@@ -6696,14 +6697,12 @@ def test_phase66_paper_risk_check_sizing_fails_for_extreme():
 
 
 def test_phase66_paper_risk_check_notional_too_high():
-    """_paper_risk_check rejects when notional exceeds max."""
-    from production_replay.paper_execution_ledger import _paper_risk_check, REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL
-    # Use a tiny diff (risk low), high entry price so notional blows up
+    """_paper_risk_check rejects when portfolio notional exceeds max."""
+    from production_replay.paper_execution_ledger import _paper_risk_check, REASON_PORTFOLIO_NOTIONAL_TOO_HIGH
     # entry=500000, stop=499900, diff=100 -> max_risk=12 usdt -> qty=0.12
-    # notional = 500000 * 0.12 = 60000 >> 200 max
+    # notional = 500000 * 0.12 = 60000 >> 800 portfolio max
     empty_portfolio = []
     result = _paper_risk_check("BTC-USDT", "LONG", 500000, 499900, 510000, empty_portfolio)
-    # May fail with risk_too_high if exchange sizing bumps qty too much, or notional_too_high_for_capital
     assert result["ok"] is False
 
 
@@ -6778,14 +6777,14 @@ def test_phase66_no_real_order():
 # ──────────────────────────────────────────────
 
 def test_phase67_hard_cap_constants():
-    """Hard cap constants have correct values."""
+    """Risk vs notional model constants have correct values."""
     import production_replay.paper_execution_ledger as pel
     assert pel.PAPER_CAPITAL_USDT == 400
     assert pel.PAPER_MAX_RISK_PER_TRADE_USDT == 12
-    assert pel.PAPER_MAX_NOTIONAL_PER_TRADE_USDT == 200
+    assert pel.PAPER_MAX_LEVERAGE == 2
+    assert pel.PAPER_MAX_PORTFOLIO_NOTIONAL_USDT == 800
     assert pel.PAPER_MAX_ACTIVE_TRADES == 5
-    assert pel.PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT == 12
-    assert pel.REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL == "NOTIONAL_TOO_HIGH_FOR_CAPITAL"
+    assert pel.REASON_PORTFOLIO_NOTIONAL_TOO_HIGH == "PAPER_PORTFOLIO_NOTIONAL_TOO_HIGH"
 
 
 def test_phase67_passes_capital_gate_exists():
@@ -6821,14 +6820,15 @@ def test_phase67_capital_gate_rejects_when_portfolio_full():
     assert "max 5 active trades" in reason.lower()
 
 
-def test_phase67_capital_gate_rejects_portfolio_risk_exceeded():
-    """_passes_capital_gate rejects when adding trade would exceed portfolio risk cap."""
+def test_phase67_capital_gate_rejects_portfolio_notional_exceeded():
+    """_passes_capital_gate rejects when adding trade would exceed portfolio notional cap of 800 USDT."""
     from production_replay.paper_rotation_engine import _passes_capital_gate
-    candidate = {"symbol": "BTC-USDT", "direction": "LONG", "entry": 10, "stop": 9, "rr": 5, "trigger_status": "TRIGGER_CONFIRMED"}
-    portfolio = [{"symbol": "COIN1", "side": "LONG", "status": "PAPER_OPEN", "risk": 11.0}]
+    # High entry price + tight stop -> estimated_notional can be very large
+    candidate = {"symbol": "BTC-USDT", "direction": "LONG", "entry": 10000, "stop": 9999, "rr": 5, "trigger_status": "TRIGGER_CONFIRMED"}
+    portfolio = [{"symbol": "COIN1", "side": "LONG", "status": "PAPER_OPEN", "risk": 1.0, "notional": 790.0}]  # 790 + est 12000 >> 800
     ok, reason = _passes_capital_gate(candidate, portfolio)
     assert ok is False
-    assert "portfolio" in reason.lower()
+    assert "notional" in reason.lower()
 
 
 def test_phase67_rotation_engine_prefilters():
@@ -6841,24 +6841,24 @@ def test_phase67_rotation_engine_prefilters():
 
 
 def test_phase67_notional_too_high_for_capital_check():
-    """_paper_risk_check can return NOTIONAL_TOO_HIGH_FOR_CAPITAL for extreme entry price."""
-    from production_replay.paper_execution_ledger import _paper_risk_check, REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL
+    """_paper_risk_check can return PORTFOLIO_NOTIONAL_TOO_HIGH for extreme notional."""
+    from production_replay.paper_execution_ledger import _paper_risk_check, REASON_PORTFOLIO_NOTIONAL_TOO_HIGH
     empty_portfolio = []
     result = _paper_risk_check("BTC-USDT", "LONG", 500000, 499900, 510000, empty_portfolio)
-    if result["reason_code"] == REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL:
-        assert "notional" in result["reason"].lower() and "capital" in result["reason"].lower()
+    if result["reason_code"] == REASON_PORTFOLIO_NOTIONAL_TOO_HIGH:
+        assert "notional" in result["reason"].lower()
 
 
 def test_phase67_hourly_has_paper_capital_risk():
-    """Hourly alert report contains paper_config with hard cap fields."""
+    """Hourly alert report contains paper_config with risk-vs-notional fields."""
     from production_replay.hourly_alert import run_hourly_alert
     r = run_hourly_alert()
     pe = r.get("paper_execution", {})
     pc = pe.get("paper_config", {})
     assert "capital_usdt" in pc
     assert "max_risk_per_trade_usdt" in pc
-    assert "max_total_portfolio_risk_usdt" in pc
-    assert "max_notional_per_trade_usdt" in pc
+    assert "max_portfolio_notional_usdt" in pc
+    assert "max_leverage" in pc
 
 
 def test_phase67_doctor_has_paper_capital_risk():
@@ -6869,17 +6869,17 @@ def test_phase67_doctor_has_paper_capital_risk():
 
 
 def test_phase67_rotation_config_has_hard_caps():
-    """Rotation engine risk_config uses hard cap field names."""
+    """Rotation engine risk_config uses risk-vs-notional field names."""
     from production_replay.paper_rotation_engine import run_paper_rotation_engine
     r = run_paper_rotation_engine()
     rcfg = r.get("risk_config", {})
     assert "capital_usdt" in rcfg
     assert "max_risk_per_trade_usdt" in rcfg
-    assert "max_total_portfolio_risk_usdt" in rcfg
-    assert "max_notional_per_trade_usdt" in rcfg
+    assert "max_portfolio_notional_usdt" in rcfg
+    assert "max_leverage" in rcfg
     assert "max_active_trades" in rcfg
     assert rcfg["capital_usdt"] == 400
     assert rcfg["max_risk_per_trade_usdt"] == 12
-    assert rcfg["max_total_portfolio_risk_usdt"] == 12
-    assert rcfg["max_notional_per_trade_usdt"] == 200
+    assert rcfg["max_portfolio_notional_usdt"] == 800
+    assert rcfg["max_leverage"] == 2
     assert rcfg["max_active_trades"] == 5

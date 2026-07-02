@@ -28,20 +28,19 @@ PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 
 MAX_PAPER_TRADES = 5
 
-# Paper portfolio risk/capital config (hard flat caps)
+# Paper portfolio risk/capital config (risk vs notional model)
 PAPER_CAPITAL_USDT = 400
-PAPER_MAX_RISK_PCT = 0.03
+PAPER_RISK_PCT_PER_TRADE = 0.03
 PAPER_MAX_RISK_PER_TRADE_USDT = 12
-PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 200
+PAPER_MAX_LEVERAGE = 2
+PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 800  # 2x capital
 PAPER_MAX_ACTIVE_TRADES = 5
-PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT = 12
 
 # Rejection reason codes
 REASON_PORTFOLIO_FULL = "PAPER_MAX_OPEN_TRADES_REACHED"
 REASON_DUPLICATE = "PAPER_DUPLICATE_SYMBOL_SIDE"
 REASON_RISK_TOO_HIGH = "PAPER_RISK_TOO_HIGH"
-REASON_PORTFOLIO_RISK_TOO_HIGH = "PAPER_PORTFOLIO_RISK_TOO_HIGH"
-REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL = "NOTIONAL_TOO_HIGH_FOR_CAPITAL"
+REASON_PORTFOLIO_NOTIONAL_TOO_HIGH = "PAPER_PORTFOLIO_NOTIONAL_TOO_HIGH"
 REASON_EXCHANGE_MIN_SIZE = "PAPER_EXCHANGE_MIN_SIZE_TOO_LARGE"
 
 
@@ -218,7 +217,7 @@ def _paper_exchange_sizing(symbol: str, entry: float, stop: float) -> dict:
 
 
 def _paper_risk_check(symbol: str, side: str, entry: float, stop: float, target: float, portfolio: list[dict]) -> dict:
-    """Run all paper risk/capital checks using hard capital caps. Returns result dict with ok + reason_code."""
+    """Run paper risk/capital checks: per-trade risk <= 12 USDT, portfolio notional <= 800 USDT."""
     active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
     sizing = _paper_exchange_sizing(symbol, entry, stop)
 
@@ -227,24 +226,16 @@ def _paper_risk_check(symbol: str, side: str, entry: float, stop: float, target:
 
     final_risk = sizing["risk"]
     final_notional = sizing["notional"]
-    final_qty = sizing["quantity"]
-
-    max_risk_per_trade = PAPER_MAX_RISK_PER_TRADE_USDT
-    max_portfolio_risk = PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT
-    max_notional_per_trade = PAPER_MAX_NOTIONAL_PER_TRADE_USDT
 
     if len(active_trades) >= PAPER_MAX_ACTIVE_TRADES:
         return {"ok": False, "reason_code": REASON_PORTFOLIO_FULL, "reason": f"max {PAPER_MAX_ACTIVE_TRADES} open trades reached", "sizing": sizing}
 
-    if final_risk > max_risk_per_trade:
-        return {"ok": False, "reason_code": REASON_RISK_TOO_HIGH, "reason": f"risk {final_risk:.2f} > max per trade {max_risk_per_trade:.2f} USDT", "sizing": sizing}
+    if final_risk > PAPER_MAX_RISK_PER_TRADE_USDT:
+        return {"ok": False, "reason_code": REASON_RISK_TOO_HIGH, "reason": f"risk {final_risk:.2f} > max per trade {PAPER_MAX_RISK_PER_TRADE_USDT:.2f} USDT", "sizing": sizing}
 
-    total_open_risk = sum(float(t.get("risk", 0) or 0) for t in active_trades)
-    if total_open_risk + final_risk > max_portfolio_risk:
-        return {"ok": False, "reason_code": REASON_PORTFOLIO_RISK_TOO_HIGH, "reason": f"total risk {total_open_risk + final_risk:.2f} > max portfolio {max_portfolio_risk:.2f} USDT", "sizing": sizing}
-
-    if final_notional > max_notional_per_trade:
-        return {"ok": False, "reason_code": REASON_NOTIONAL_TOO_HIGH_FOR_CAPITAL, "reason": f"notional {final_notional:.2f} > max {max_notional_per_trade:.2f} USDT for capital {PAPER_CAPITAL_USDT}", "sizing": sizing}
+    total_open_notional = sum(float(t.get("notional", 0) or 0) for t in active_trades)
+    if total_open_notional + final_notional > PAPER_MAX_PORTFOLIO_NOTIONAL_USDT:
+        return {"ok": False, "reason_code": REASON_PORTFOLIO_NOTIONAL_TOO_HIGH, "reason": f"portfolio notional {total_open_notional + final_notional:.2f} > max {PAPER_MAX_PORTFOLIO_NOTIONAL_USDT:.2f} USDT (2x capital)", "sizing": sizing}
 
     return {"ok": True, "reason_code": None, "reason": None, "sizing": sizing}
 
@@ -487,11 +478,11 @@ def run_paper_execution() -> dict:
 
     paper_config = {
         "capital_usdt": PAPER_CAPITAL_USDT,
-        "max_risk_per_trade_pct": PAPER_MAX_RISK_PCT,
+        "risk_pct_per_trade": PAPER_RISK_PCT_PER_TRADE,
         "max_risk_per_trade_usdt": PAPER_MAX_RISK_PER_TRADE_USDT,
-        "max_notional_per_trade_usdt": PAPER_MAX_NOTIONAL_PER_TRADE_USDT,
+        "max_leverage": PAPER_MAX_LEVERAGE,
+        "max_portfolio_notional_usdt": PAPER_MAX_PORTFOLIO_NOTIONAL_USDT,
         "max_active_trades": PAPER_MAX_ACTIVE_TRADES,
-        "max_total_portfolio_risk_usdt": PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT,
     }
 
     total_risk_pct = round(total_risk / PAPER_CAPITAL_USDT * 100.0, 2) if PAPER_CAPITAL_USDT > 0 else 0
@@ -526,6 +517,9 @@ def run_paper_execution() -> dict:
             "total_unrealized_pnl": round(total_unrealized, 4),
             "total_risk_usdt": round(total_risk, 4),
             "total_risk_pct": round(total_risk / PAPER_CAPITAL_USDT * 100.0, 2) if PAPER_CAPITAL_USDT > 0 else 0,
+            "portfolio_leverage": round(total_notional / PAPER_CAPITAL_USDT, 2) if PAPER_CAPITAL_USDT > 0 else 0,
+            "remaining_notional_capacity": round(max(0, PAPER_MAX_PORTFOLIO_NOTIONAL_USDT - total_notional), 2),
+            "remaining_risk_capacity": round(max(0, PAPER_MAX_RISK_PER_TRADE_USDT * PAPER_MAX_ACTIVE_TRADES - total_risk), 2),
         },
     }
 
@@ -553,12 +547,12 @@ def _write_text_report(
         f"  Status: {status}",
         f"  Active Paper Trades: {pf.get('active_count', 0)} / {pf.get('max_allowed', MAX_PAPER_TRADES)}",
         "",
-        "  Paper Config (Hard Capital Caps):",
-        f"    Capital:              {pc.get('capital_usdt', '?')} USDT",
-        f"    Max Risk / Trade:     {pc.get('max_risk_per_trade_usdt', '?')} USDT (3.0%)",
-        f"    Max Portfolio Risk:   {pc.get('max_total_portfolio_risk_usdt', '?')} USDT",
-        f"    Max Notional / Trade: {pc.get('max_notional_per_trade_usdt', '?')} USDT",
-        f"    Max Active Trades:    {pc.get('max_active_trades', '?')}",
+        "  Paper Config (Risk vs Notional Model):",
+        f"    Capital:                   {pc.get('capital_usdt', '?')} USDT",
+        f"    Max Risk / Trade:          {pc.get('max_risk_per_trade_usdt', '?')} USDT (3.0%)",
+        f"    Max Portfolio Notional:    {pc.get('max_portfolio_notional_usdt', '?')} USDT (2x capital)",
+        f"    Max Leverage:              {pc.get('max_leverage', '?')}x",
+        f"    Max Active Trades:         {pc.get('max_active_trades', '?')}",
         "",
         "  Gates:",
     ]
@@ -582,9 +576,12 @@ def _write_text_report(
             ]
         lines += [
             "",
-            f"  Total Notional Exposure: {pf.get('total_notional_exposure', 0):.2f} USDT",
-            f"  Total Open Risk:         {pf.get('total_risk_usdt', 0):.2f} USDT ({pf.get('total_risk_pct', 0)}% of capital)",
-            f"  Total Unrealized P&L:    {pf.get('total_unrealized_pnl', 0):.4f} USDT",
+            f"  Risk USDT:                 {pf.get('total_risk_usdt', 0):.2f}",
+            f"  Notional Exposure USDT:    {pf.get('total_notional_exposure', 0):.2f}",
+            f"  Portfolio Leverage Used:   {pf.get('portfolio_leverage', 0):.2f}x",
+            f"  Remaining Notional Cap:    {pf.get('remaining_notional_capacity', 0):.2f} USDT",
+            f"  Remaining Risk Cap:        {pf.get('remaining_risk_capacity', 0):.2f} USDT",
+            f"  Total Unrealized P&L:      {pf.get('total_unrealized_pnl', 0):.4f} USDT",
         ]
     else:
         lines += ["", "  Active Paper Trades: NONE"]
