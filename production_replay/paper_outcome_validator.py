@@ -21,6 +21,7 @@ TXT_PATH = os.path.join(RESULTS_DIR, "paper_outcome_report.txt")
 JSON_PATH = os.path.join(RESULTS_DIR, "paper_outcome_report.json")
 OUTCOME_LEDGER = os.path.join(STATE_DIR, "paper_outcomes.jsonl")
 PAPER_TRADE_FILE = os.path.join(STATE_DIR, "current_paper_trade.json")
+PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 PAPER_STATUS_PATH = os.path.join(RESULTS_DIR, "paper_execution_status.json")
 
@@ -185,17 +186,25 @@ def run_paper_outcome_validator() -> dict:
         _write_outputs(outcome_report)
         return outcome_report
 
-    # Evaluate current trade
-    current_trade = None
-    if current_trade_data and current_trade_data.get("status") == "PAPER_OPEN":
-        sym = current_trade_data.get("symbol", "")
-        side = current_trade_data.get("side", "")
-        entry = float(current_trade_data.get("entry", 0))
-        stop = float(current_trade_data.get("stop", 0))
-        target = float(current_trade_data.get("target", 0))
-        qty = float(current_trade_data.get("quantity", 0))
-        risk = float(current_trade_data.get("risk", 0))
-        entry_fill_price = current_trade_data.get("entry_fill_price")
+    # Evaluate all active trades from portfolio
+    portfolio = _read_json(PORTFOLIO_PATH)
+    if isinstance(portfolio, list):
+        active_trades_list = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    else:
+        active_trades_list = []
+
+    evaluated_trades = []
+    total_unrealized = 0.0
+    primary_trade = None
+    for t in active_trades_list:
+        sym = t.get("symbol", "")
+        side = t.get("side", "")
+        entry = float(t.get("entry", 0))
+        stop = float(t.get("stop", 0))
+        target = float(t.get("target", 0))
+        qty = float(t.get("quantity", 0))
+        risk = float(t.get("risk", 0))
+        entry_fill_price = t.get("entry_fill_price")
 
         current_price = _get_current_price(sym)
 
@@ -204,12 +213,13 @@ def run_paper_outcome_validator() -> dict:
                 side, entry, stop, target, current_price,
                 entry_fill_price=float(entry_fill_price) if entry_fill_price is not None else None,
             )
-
             exit_entry = float(entry_fill_price) if entry_fill_price is not None and float(entry_fill_price) > 0 else entry
             pnl = _calculate_pnl(side, exit_entry, exit_price, qty) if hit_reason in ("STOP_HIT", "TARGET_HIT") else None
             r_val = _r_multiple(pnl, risk) if pnl is not None else None
+            if pnl is None:
+                total_unrealized += _calculate_pnl(side, exit_entry, current_price, qty)
 
-            current_trade = {
+            evaluated = {
                 "symbol": sym,
                 "side": side,
                 "entry": entry,
@@ -225,13 +235,12 @@ def run_paper_outcome_validator() -> dict:
                 "r_multiple": r_val,
                 "time_open_hours": round(
                     (datetime.now(timezone.utc) - datetime.fromisoformat(
-                        current_trade_data.get("opened_at", datetime.now(timezone.utc).isoformat())
+                        t.get("opened_at", datetime.now(timezone.utc).isoformat())
                     )).total_seconds() / 3600, 2
                 ),
             }
-            reasons.append(f"current trade {sym} {side}: {hit_reason or 'PAPER_OPEN'}")
         else:
-            current_trade = {
+            evaluated = {
                 "symbol": sym,
                 "side": side,
                 "entry": entry,
@@ -246,43 +255,94 @@ def run_paper_outcome_validator() -> dict:
                 "r_multiple": None,
                 "time_open_hours": None,
             }
-            reasons.append(f"cannot fetch price for {sym}")
 
-        outcome_report["current_trade"] = current_trade
+        evaluated_trades.append(evaluated)
+        if primary_trade is None:
+            primary_trade = evaluated
 
-    elif current_trade_data and current_trade_data.get("status") == "PAPER_CLOSED":
-        reasons.append(f"last trade closed: {current_trade_data.get('exit_reason', '?')}")
-        outcome_report["current_trade"] = {
-            "symbol": current_trade_data.get("symbol", ""),
-            "side": current_trade_data.get("side", ""),
-            "entry": current_trade_data.get("entry", 0),
-            "stop": current_trade_data.get("stop", 0),
-            "target": current_trade_data.get("target", 0),
-            "quantity": current_trade_data.get("quantity", 0),
-            "risk_usdt": current_trade_data.get("risk", 0),
-            "current_price": current_trade_data.get("price_at_last_check"),
-            "status": "PAPER_CLOSED",
-            "hit_reason": current_trade_data.get("exit_reason"),
-            "realized_pnl": current_trade_data.get("realized_pnl"),
-            "exit_price": current_trade_data.get("exit_price"),
-            "r_multiple": _r_multiple(
-                float(current_trade_data.get("realized_pnl", 0)),
-                float(current_trade_data.get("risk", 0)),
-            ) if current_trade_data.get("realized_pnl") is not None else None,
-        }
+    if len(evaluated_trades) > 0:
+        reasons.append(f"{len(evaluated_trades)} active paper trade(s) in portfolio")
+        outcome_report["active_trades"] = evaluated_trades
+        outcome_report["total_unrealized_pnl"] = round(total_unrealized, 4)
+        outcome_report["current_trade"] = primary_trade
     else:
-        reasons.append("no current paper trade to evaluate")
+        # Fall back to legacy single-trade check
+        current_trade_data = paper_status.get("current_paper_trade") if paper_status else None
+        if current_trade_data and current_trade_data.get("status") == "PAPER_OPEN":
+            sym = current_trade_data.get("symbol", "")
+            side = current_trade_data.get("side", "")
+            entry = float(current_trade_data.get("entry", 0))
+            stop = float(current_trade_data.get("stop", 0))
+            target = float(current_trade_data.get("target", 0))
+            qty = float(current_trade_data.get("quantity", 0))
+            risk = float(current_trade_data.get("risk", 0))
+            entry_fill_price = current_trade_data.get("entry_fill_price")
+            current_price = _get_current_price(sym) if sym else None
+            if current_price and current_price > 0:
+                new_status, hit_reason, exit_price = _evaluate_trade(
+                    side, entry, stop, target, current_price,
+                    entry_fill_price=float(entry_fill_price) if entry_fill_price is not None else None,
+                )
+                exit_entry = float(entry_fill_price) if entry_fill_price is not None and float(entry_fill_price) > 0 else entry
+                pnl = _calculate_pnl(side, exit_entry, exit_price, qty) if hit_reason in ("STOP_HIT", "TARGET_HIT") else None
+                r_val = _r_multiple(pnl, risk) if pnl is not None else None
+                primary_trade = {
+                    "symbol": sym, "side": side, "entry": entry, "stop": stop,
+                    "target": target, "quantity": qty, "risk_usdt": risk,
+                    "entry_fill_price": float(entry_fill_price) if entry_fill_price is not None else entry,
+                    "current_price": current_price, "status": new_status,
+                    "hit_reason": hit_reason, "realized_pnl": pnl, "r_multiple": r_val,
+                    "time_open_hours": round(
+                        (datetime.now(timezone.utc) - datetime.fromisoformat(
+                            current_trade_data.get("opened_at", datetime.now(timezone.utc).isoformat())
+                        )).total_seconds() / 3600, 2
+                    ),
+                }
+                evaluated_trades.append(primary_trade)
+                outcome_report["active_trades"] = evaluated_trades
+                outcome_report["current_trade"] = primary_trade
+                reasons.append(f"current trade {sym} {side}: {hit_reason or 'PAPER_OPEN'}")
+            else:
+                reasons.append(f"cannot fetch price for {sym}")
+        elif current_trade_data and current_trade_data.get("status") == "PAPER_CLOSED":
+            reasons.append(f"last trade closed: {current_trade_data.get('exit_reason', '?')}")
+            outcome_report["current_trade"] = {
+                "symbol": current_trade_data.get("symbol", ""),
+                "side": current_trade_data.get("side", ""),
+                "entry": current_trade_data.get("entry", 0),
+                "stop": current_trade_data.get("stop", 0),
+                "target": current_trade_data.get("target", 0),
+                "quantity": current_trade_data.get("quantity", 0),
+                "risk_usdt": current_trade_data.get("risk", 0),
+                "current_price": current_trade_data.get("price_at_last_check"),
+                "status": "PAPER_CLOSED",
+                "hit_reason": current_trade_data.get("exit_reason"),
+                "realized_pnl": current_trade_data.get("realized_pnl"),
+                "exit_price": current_trade_data.get("exit_price"),
+                "r_multiple": _r_multiple(
+                    float(current_trade_data.get("realized_pnl", 0)),
+                    float(current_trade_data.get("risk", 0)),
+                ) if current_trade_data.get("realized_pnl") is not None else None,
+            }
+        else:
+            reasons.append("no current paper trade to evaluate")
 
     agg = outcome_report["agg_stats"]
     if agg["total_closed"] > 0:
         reasons.append(f"{agg['wins']}W/{agg['losses']}L ({agg['win_rate']}% win rate), total P&L={agg['total_pnl']}, avg R={agg['average_r']}")
 
     # Determine verdict
-    current_status = current_trade.get("status", "N/A") if current_trade else "NO_PAPER_TRADE"
-    hit_reason = current_trade.get("hit_reason") if current_trade else None
-    verdict = _determine_verdict(agg, current_status, hit_reason=hit_reason)
+    if evaluated_trades:
+        any_open = any(t.get("status") == "PAPER_OPEN" for t in evaluated_trades)
+        current_status = "PAPER_OPEN" if any_open else "PAPER_CLOSED"
+    else:
+        current_status = primary_trade.get("status", "N/A") if primary_trade else "NO_PAPER_TRADE"
+    verdict = _determine_verdict(agg, current_status, hit_reason=(
+        primary_trade.get("hit_reason") if primary_trade else None
+    ))
     outcome_report["verdict"] = verdict
     outcome_report["reasons"] = reasons
+    outcome_report["active_trade_count"] = len(evaluated_trades)
 
     _write_outputs(outcome_report)
     return outcome_report
@@ -315,7 +375,28 @@ def _write_outputs(report: dict):
     ]
 
     ct = report.get("current_trade")
-    if ct:
+    active_trades = report.get("active_trades", [])
+    if active_trades:
+        lines += [
+            f"  Active Trades: {len(active_trades)}",
+        ]
+        for i, t in enumerate(active_trades, 1):
+            hit = t.get("hit_reason") or "PAPER_OPEN"
+            lines += [
+                f"    [{i}] {t.get('symbol','?')} {t.get('side','?')} "
+                f"Entry:{t.get('entry',0)} Stop:{t.get('stop',0)} Target:{t.get('target',0)} "
+                f"Status:{t.get('status','?')} {hit}",
+            ]
+            if t.get("current_price"):
+                lines.append(f"          Price:{t['current_price']} "
+                             f"P&L:{t.get('realized_pnl') or t.get('current_price','?')}"
+                             f" R:{t.get('r_multiple','?')} "
+                             f"Open:{t.get('time_open_hours','?')}h")
+        total_upnl = report.get("total_unrealized_pnl", 0)
+        if total_upnl:
+            lines.append(f"    Total Unrealized P&L: {total_upnl:.4f} USDT")
+        lines.append("")
+    elif ct:
         hit = ct.get("hit_reason") or "PAPER_OPEN"
         lines += [
             "  Current Trade:",

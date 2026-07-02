@@ -397,6 +397,7 @@ def run_hourly_alert() -> dict:
             "status": paper.get("status", "N/A") if paper else "N/A",
             "has_open_trade": bool(paper and paper.get("current_paper_trade") and paper["current_paper_trade"].get("status") == "PAPER_OPEN"),
             "current_paper_trade": paper.get("current_paper_trade") if paper else None,
+            "portfolio": paper.get("portfolio") if paper else None,
         } if paper else None,
         "paper_outcome": {
             "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else "N/A",
@@ -782,6 +783,27 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"Eligible {pcd.get('eligible_candidates',0)}  "
                 f"Fresh {pcd.get('fresh_eligible',0)}"
             )
+        lines += [""]
+
+    # Phase 64: Paper portfolio
+    portfolio = report.get("portfolio")
+    if portfolio:
+        lines += [
+            "  PAPER PORTFOLIO:",
+            f"    Active: {portfolio.get('active_count', 0)} / {portfolio.get('max_allowed', 5)}",
+        ]
+        for t in portfolio.get("active_trades", []):
+            lines.append(
+                f"    {t.get('symbol','?')} {t.get('side','?')} "
+                f"RR:1:{t.get('rr',0)} Entry:{t.get('entry',0)} "
+                f"P&L:{t.get('unrealized_pnl',0):.2f} "
+                f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
+            )
+        lines.append(
+            f"    Exposure: {portfolio.get('total_notional_exposure',0):.2f} USDT  "
+            f"Unrealized: {portfolio.get('total_unrealized_pnl',0):.4f} USDT  "
+            f"Risk: {portfolio.get('total_risk_usdt',0):.4f} USDT"
+        )
         lines += [""]
 
     if best and not bridge_candidate_shown:

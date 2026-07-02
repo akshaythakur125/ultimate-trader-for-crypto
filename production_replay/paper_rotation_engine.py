@@ -18,9 +18,8 @@ STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
 TXT_PATH = os.path.join(RESULTS_DIR, "paper_rotation_report.txt")
 JSON_PATH = os.path.join(RESULTS_DIR, "paper_rotation_report.json")
 LEDGER_PATH = os.path.join(STATE_DIR, "paper_rotation_events.jsonl")
-PAPER_TRADE_FILE = os.path.join(STATE_DIR, "current_paper_trade.json")
+PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
-PAPER_EXECUTION_PATH = os.path.join(RESULTS_DIR, "paper_execution_status.json")
 
 
 def _read_json(path: str) -> dict:
@@ -80,23 +79,21 @@ def run_paper_rotation_engine() -> dict:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
-    current_trade_data = _read_json(PAPER_TRADE_FILE)
+    portfolio = _read_json(PORTFOLIO_PATH)
+    if not isinstance(portfolio, list):
+        portfolio = []
     trigger_watcher = _read_json(RESULTS_DIR + "/trigger_watcher_report.json")
 
     reasons = []
-    active_trade_open = bool(
-        current_trade_data
-        and current_trade_data.get("status") == "PAPER_OPEN"
-    )
-    trade_lock_on = active_trade_open
-    active_symbol = (current_trade_data or {}).get("symbol", "")
-    active_side = (current_trade_data or {}).get("side", "")
-    active_rr = float(current_trade_data.get("rr", 0) or 0) if current_trade_data else 0
+    active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    trade_lock_on = len(active_trades) > 0
+    active_symbols = set(t.get("symbol", "") for t in active_trades)
+    active_entries = [(t.get("symbol", ""), t.get("side", "")) for t in active_trades]
 
     all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
 
     eligible = [c for c in all_candidates if _is_eligible(c)]
-    fresh_eligible = [c for c in eligible if c.get("symbol", "") != active_symbol]
+    fresh_eligible = [c for c in eligible if c.get("symbol", "") not in active_symbols]
 
     filtered_eligible = []
     for c in fresh_eligible:
@@ -125,10 +122,11 @@ def run_paper_rotation_engine() -> dict:
     filtered_eligible.sort(key=_sort_key, reverse=True)
     best_candidate = filtered_eligible[0] if filtered_eligible else None
 
-    if active_trade_open:
+    if trade_lock_on:
         next_action = "ACTIVE_TRADE_MONITORING"
+        syms = ', '.join(t.get('symbol','?') for t in active_trades)
         reasons.append(
-            f"active paper trade {active_symbol} {active_side} open; trade lock ON"
+            f"{len(active_trades)} active paper trade(s): {syms}; trade lock ON"
         )
     elif best_candidate:
         best_rr = float(best_candidate.get("rr", 0) or 0)
@@ -156,12 +154,8 @@ def run_paper_rotation_engine() -> dict:
         "real_order": False,
         "next_action": next_action,
         "active_trade_lock_on": trade_lock_on,
-        "active_trade": {
-            "symbol": active_symbol,
-            "side": active_side,
-            "rr": active_rr,
-            "status": current_trade_data.get("status", "") if current_trade_data else "",
-        } if current_trade_data else None,
+        "active_trades_count": len(active_trades),
+        "active_trades": active_trades,
         "rotation_candidate": {
             "symbol": best_candidate.get("symbol", ""),
             "timeframe": best_candidate.get("timeframe", ""),
@@ -205,16 +199,18 @@ def _write_text_report(report: dict):
         "",
     ]
 
-    at = report.get("active_trade")
-    if at and at.get("symbol"):
+    at = report.get("active_trades")
+    if at:
         lines += [
-            "  Active Paper Trade:",
-            f"    Symbol:   {at.get('symbol', 'N/A')} {at.get('side', 'N/A')}",
-            f"    RR:       1:{at.get('rr', 0)}",
-            f"    Status:   {at.get('status', 'N/A')}",
+            f"  Active Paper Trades: {len(at)}",
         ]
+        for i, t in enumerate(at, 1):
+            lines += [
+                f"    [{i}] {t.get('symbol','?')} {t.get('side','?')} "
+                f"RR:1:{t.get('rr',0)} Status:{t.get('status','?')}",
+            ]
     else:
-        lines += ["  Active Paper Trade: NONE"]
+        lines += ["  Active Paper Trades: 0"]
 
     cd = report.get("candidate_discovery", {})
     lines += [

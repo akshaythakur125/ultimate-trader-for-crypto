@@ -575,6 +575,24 @@ def main():
                 paper_lines.append(f"    Realized P&L:   {ptrade['realized_pnl']:.2f} USDT")
             if ptrade.get("exit_reason"):
                 paper_lines.append(f"    Exit Reason:    {ptrade['exit_reason']}")
+        # Portfolio summary
+        pf = paper.get("portfolio")
+        if pf:
+            paper_lines += [
+                f"    Portfolio:     {pf.get('active_count',0)} / {pf.get('max_allowed',5)} active",
+            ]
+            for t in pf.get("active_trades", []):
+                paper_lines.append(
+                    f"      {t.get('symbol','?')} {t.get('side','?')} "
+                    f"RR:1:{t.get('rr',0)} Entry:{t.get('entry',0)} "
+                    f"P&L:{t.get('unrealized_pnl',0):.2f} "
+                    f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
+                )
+            paper_lines.append(
+                f"    Exposure: {pf.get('total_notional_exposure',0):.2f} USDT  "
+                f"Unrealized: {pf.get('total_unrealized_pnl',0):.4f} USDT  "
+                f"Risk: {pf.get('total_risk_usdt',0):.4f} USDT"
+            )
         paper_lines.append("")
     else:
         paper_lines = ["", "  PAPER EXECUTION: MISSING (no report)", ""]
@@ -971,6 +989,7 @@ def main():
         "paper_execution": {
             "status": paper.get("status", "N/A") if paper else None,
             "current_trade": paper.get("current_paper_trade") if paper else None,
+            "portfolio": paper.get("portfolio") if paper else None,
         } if paper else None,
         "paper_outcome": {
             "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else None,

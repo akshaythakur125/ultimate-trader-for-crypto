@@ -78,13 +78,13 @@ def run_candidate_rotation_report() -> dict:
 
     reasons = []
 
-    # -- Active paper trade --
-    current_trade = paper_status.get("current_paper_trade") if paper_status else None
-    active_trade_open = bool(
-        current_trade
-        and current_trade.get("status") == "PAPER_OPEN"
-    )
-    trade_lock_on = active_trade_open  # Lock is ON if we have an open paper trade
+    # -- Active paper trades from portfolio --
+    portfolio = _read_json(os.path.join(STATE_DIR, "paper_portfolio.json"))
+    if isinstance(portfolio, list):
+        active_trades_list = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    else:
+        active_trades_list = []
+    trade_lock_on = len(active_trades_list) > 0
 
     # -- Total candidates scanned --
     tw_candidates = trigger_watcher.get("candidates", []) if trigger_watcher else []
@@ -103,9 +103,10 @@ def run_candidate_rotation_report() -> dict:
     best_rejected = _get_best_rejected_candidate(trigger_watcher)
 
     # -- Determine next action --
-    if active_trade_open:
+    if trade_lock_on:
+        syms = ', '.join(t.get('symbol','?') for t in active_trades_list)
         next_action = "ACTIVE_TRADE_MONITORING"
-        reasons.append(f"active paper trade {current_trade.get('symbol','?')} {current_trade.get('side','?')} is open; trade lock ON")
+        reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; trade lock ON")
     elif best_eligible:
         next_action = "NEW_CANDIDATE_AVAILABLE"
         reasons.append(
@@ -127,7 +128,8 @@ def run_candidate_rotation_report() -> dict:
         "paper_trading_enabled": False,
         "real_order": False,
         "active_trade_lock_on": trade_lock_on,
-        "active_trade": current_trade,
+        "active_trades": active_trades_list,
+        "active_trades_count": len(active_trades_list),
         "total_candidates_scanned": total_candidates,
         "trigger_confirmed_count": trigger_confirmed,
         "shadow_eligible_count": shadow_eligible,

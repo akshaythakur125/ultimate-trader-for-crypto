@@ -18,6 +18,7 @@ STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
 TXT_PATH = os.path.join(RESULTS_DIR, "paper_candidate_watchlist.txt")
 JSON_PATH = os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json")
 LEDGER_PATH = os.path.join(STATE_DIR, "paper_candidate_watchlist.jsonl")
+PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 
 
 def _read_json(path: str) -> dict:
@@ -54,14 +55,16 @@ def run_paper_candidate_watchlist() -> dict:
 
     reasons = []
 
-    # -- Active paper trade --
-    current_trade = paper_status.get("current_paper_trade") if paper_status else None
-    active_trade_open = bool(
-        current_trade
-        and current_trade.get("status") == "PAPER_OPEN"
-    )
-    trade_lock_on = active_trade_open
-    active_symbol = (current_trade or {}).get("symbol", "")
+    # -- Active paper trades from portfolio --
+    portfolio = _read_json(PORTFOLIO_PATH) if os.path.exists(PORTFOLIO_PATH) else (paper_status.get("portfolio") if paper_status else None)
+    if isinstance(portfolio, dict) and "active_trades" in portfolio:
+        portfolio = portfolio["active_trades"]
+    if isinstance(portfolio, list):
+        active_trades_list = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    else:
+        active_trades_list = []
+    active_symbols = set(t.get("symbol", "") for t in active_trades_list)
+    trade_lock_on = len(active_trades_list) > 0
 
     # -- All candidates from trigger watcher --
     all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
@@ -73,8 +76,8 @@ def run_paper_candidate_watchlist() -> dict:
     review_candidates = [c for c in trigger_confirmed if _eligibility_status(c) == "REVIEW_CANDIDATE"]
     rejected = [c for c in all_candidates if c.get("trigger_status") not in ("TRIGGER_CONFIRMED", "WAITING")]
 
-    # -- Top fresh candidates (excluding active symbol) --
-    fresh_pool = [c for c in all_candidates if c.get("symbol", "") != active_symbol]
+    # -- Top fresh candidates (excluding active symbols) --
+    fresh_pool = [c for c in all_candidates if c.get("symbol", "") not in active_symbols]
     fresh_pool.sort(key=_candidate_score, reverse=True)
     top_fresh = fresh_pool[:10]
 
@@ -87,31 +90,31 @@ def run_paper_candidate_watchlist() -> dict:
             c["rejection_reason_display"] = None
 
     # -- Active trade score --
-    def _trade_score(trade: dict) -> float:
-        if not trade:
-            return 0
-        return float(trade.get("rr", 0) or 0)
+    def _trade_score(t: dict) -> float:
+        return float(t.get("rr", 0) or 0)
 
-    active_score = _trade_score(current_trade)
+    active_scores = [_trade_score(t) for t in active_trades_list]
+    active_max_score = max(active_scores) if active_scores else 0
 
     # -- Best fresh candidate --
     best_fresh = top_fresh[0] if top_fresh else None
     best_fresh_score = _trade_score(best_fresh) if best_fresh else 0
     best_fresh_stronger = bool(
-        best_fresh and active_trade_open and best_fresh_score > active_score
+        best_fresh and trade_lock_on and best_fresh_score > active_max_score
     )
 
     # -- Next action --
-    if active_trade_open:
+    if trade_lock_on:
         if best_fresh_stronger and best_fresh:
             next_action = "WAIT_FOR_CURRENT_TRADE_CLOSE"
             reasons.append(
                 f"stronger candidate {best_fresh['symbol']} {best_fresh['direction']} "
-                f"(RR:{best_fresh.get('rr','?')}) exists but active paper trade lock ON"
+                f"(RR:{best_fresh.get('rr','?')}) exists but {len(active_trades_list)} active paper trade(s) lock ON"
             )
         else:
             next_action = "ACTIVE_TRADE_MONITORING"
-            reasons.append(f"active paper trade {active_symbol} open; trade lock ON")
+            syms = ', '.join(t.get('symbol','?') for t in active_trades_list)
+            reasons.append(f"{len(active_trades_list)} active paper trade(s): {syms}; trade lock ON")
     elif shadow_eligible or best_fresh:
         next_action = "NEW_CANDIDATE_AVAILABLE"
         label = best_fresh.get("symbol", "?") if best_fresh else "?"
@@ -128,7 +131,9 @@ def run_paper_candidate_watchlist() -> dict:
         "paper_trading_enabled": False,
         "real_order": False,
         "active_trade_lock_on": trade_lock_on,
-        "active_trade": current_trade,
+        "active_trades_count": len(active_trades_list),
+        "active_trade_symbols": list(active_symbols),
+        "active_trades": active_trades_list,
         "candidate_discovery": {
             "total_candidates": total_candidates,
             "trigger_confirmed": len(trigger_confirmed),
@@ -138,7 +143,8 @@ def run_paper_candidate_watchlist() -> dict:
         },
         "top_fresh_candidates": top_fresh,
         "candidate_comparison": {
-            "active_trade_score": active_score,
+            "active_trades_max_rr": active_max_score,
+            "active_trades_count": len(active_trades_list),
             "best_fresh_candidate": {
                 "symbol": best_fresh.get("symbol", "") if best_fresh else None,
                 "timeframe": best_fresh.get("timeframe", "") if best_fresh else None,
@@ -174,21 +180,15 @@ def _write_text_report(report: dict):
         "",
     ]
 
-    trade = report.get("active_trade")
+    trade = report.get("active_trades")
     if trade:
-        lines += [
-            "  Active Paper Trade:",
-            f"    Symbol:        {trade.get('symbol', 'N/A')}",
-            f"    Side:          {trade.get('side', 'N/A')}",
-            f"    Entry:         {trade.get('entry', 0)}",
-            f"    Stop:          {trade.get('stop', 0)}",
-            f"    Target:        {trade.get('target', 0)}",
-            f"    Status:        {trade.get('status', 'N/A')}",
-            f"    Current Price: {trade.get('price_at_last_check', 'N/A')}",
-            f"    Unrealized P&L:{trade.get('unrealized_pnl', 'N/A')}",
-        ]
-    else:
-        lines += ["  Active Paper Trade: NONE"]
+        lines += ["  Active Paper Trades:"]
+        for i, t in enumerate(trade, 1):
+            lines += [
+                f"    [{i}] {t.get('symbol','?')} {t.get('side','?')} "
+                f"Entry:{t.get('entry',0)} Stop:{t.get('stop',0)} Target:{t.get('target',0)} "
+                f"Status:{t.get('status','?')} P&L:{t.get('unrealized_pnl','?')}",
+            ]
 
     cd = report.get("candidate_discovery", {})
     lines += [
@@ -211,16 +211,17 @@ def _write_text_report(report: dict):
             f"    RR:       1:{bf.get('rr','?')}",
             f"    Score:    {bf.get('thesis_score','?')}",
             f"    Status:   {bf.get('eligibility_status','?')}",
-            f"    Stronger: {'YES' if cc.get('best_fresh_stronger') else 'NO'} (active RR={cc.get('active_trade_score','?')})",
+            f"    Stronger: {'YES' if cc.get('best_fresh_stronger') else 'NO'} (active trades max RR={cc.get('active_trades_max_rr','?')})",
         ]
     else:
         lines += ["  Best Fresh Candidate: NONE"]
 
     fresh = report.get("top_fresh_candidates", [])
     if fresh:
+        excluded = ', '.join(report.get('active_trade_symbols', [])) or '?'
         lines += [
             "",
-            f"  Top {len(fresh)} Fresh Candidates (excluding {report.get('active_trade',{}).get('symbol','?')}):",
+            f"  Top {len(fresh)} Fresh Candidates (excluding {excluded}):",
             "    {:<12s} {:<6s} {:<7s} {:<6s} {:<6s} {:<16s} {:<20s}".format(
                 "Symbol", "TF", "Side", "RR", "Score", "Status", "Rejection"),
         ]
@@ -269,6 +270,7 @@ def _append_to_ledger(report: dict):
             report.get("candidate_comparison", {}).get("best_fresh_candidate", {}).get("symbol")
         ),
         "best_fresh_stronger": report.get("candidate_comparison", {}).get("best_fresh_stronger", False),
+        "active_trades_count": report.get("active_trades_count", 0),
     }
     with open(LEDGER_PATH, "a") as f:
         f.write(json.dumps(entry) + "\n")

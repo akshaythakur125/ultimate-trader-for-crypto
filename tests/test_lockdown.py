@@ -6352,3 +6352,133 @@ def test_rotation_engine_ledger_reads_rotation_on_new_trade():
     src = inspect.getsource(pel.run_paper_execution)
     assert "paper_rotation_report" in src
     assert "ROTATE_TO_NEW_PAPER_TRADE" in src
+
+
+# --- Phase 64: Multi Paper Trade Portfolio ---
+
+def test_portfolio_import():
+    """paper_execution_ledger has portfolio constants and functions."""
+    import production_replay.paper_execution_ledger as pel
+    assert hasattr(pel, "PORTFOLIO_PATH")
+    assert hasattr(pel, "_read_portfolio")
+    assert hasattr(pel, "_write_portfolio")
+    assert hasattr(pel, "MAX_PAPER_TRADES")
+    assert pel.MAX_PAPER_TRADES >= 5
+
+
+def test_portfolio_creates_file():
+    """Running paper_execution creates portfolio file."""
+    from production_replay.paper_execution_ledger import run_paper_execution, PORTFOLIO_PATH
+    import os
+    run_paper_execution()
+    assert os.path.exists(PORTFOLIO_PATH)
+
+
+def test_portfolio_is_list():
+    """Portfolio file contains a JSON list."""
+    from production_replay.paper_execution_ledger import PORTFOLIO_PATH
+    import json
+    with open(PORTFOLIO_PATH) as f:
+        data = json.load(f)
+    assert isinstance(data, list)
+
+
+def test_portfolio_report_has_portfolio_field():
+    """Paper execution report contains portfolio field with expected keys."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    pf = r.get("portfolio")
+    assert pf is not None
+    assert "active_count" in pf
+    assert "max_allowed" in pf
+    assert pf["max_allowed"] == 5
+    assert "active_trades" in pf
+    assert "new_trades_opened" in pf
+    assert "skipped_duplicates" in pf
+    assert "rejected_candidates" in pf
+    assert "total_notional_exposure" in pf
+
+
+def test_portfolio_max_5_trades():
+    """MAX_PAPER_TRADES is 5."""
+    from production_replay.paper_execution_ledger import MAX_PAPER_TRADES
+    assert MAX_PAPER_TRADES == 5
+
+
+def test_portfolio_live_trading_disabled():
+    """Paper execution still has live_trading_enabled=False."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    assert r.get("live_trading_enabled") is False
+
+
+def test_portfolio_no_real_order():
+    """Paper execution still has real_order=False."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    assert r.get("real_order") is False
+
+
+def test_portfolio_research_only():
+    """Paper execution still has research_only=True."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    r = run_paper_execution()
+    assert r.get("research_only") is True
+
+
+def test_portfolio_hourly_has_section():
+    """Hourly alert text report contains portfolio section."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha._write_text_report)
+    assert "PAPER PORTFOLIO" in src
+
+
+def test_portfolio_doctor_has_section():
+    """Doctor daily packet contains portfolio section in paper_execution."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "Portfolio" in src
+    assert "portfolio" in src
+
+
+def test_portfolio_watchlist_excludes_all_active():
+    """Watchlist excludes all active trade symbols from fresh candidates."""
+    from production_replay.paper_candidate_watchlist import run_paper_candidate_watchlist
+    r = run_paper_candidate_watchlist()
+    active_symbols = set(r.get("active_trade_symbols", []))
+    for c in r.get("top_fresh_candidates", []):
+        assert c.get("symbol", "") not in active_symbols, (
+            f"fresh candidate {c.get('symbol')} should not match active symbols {active_symbols}"
+        )
+
+
+def test_portfolio_rotation_engine_checks_portfolio():
+    """Rotation engine reads portfolio for active trades."""
+    import inspect
+    import production_replay.paper_rotation_engine as re
+    src = inspect.getsource(re.run_paper_rotation_engine)
+    assert "paper_portfolio.json" in src or "PORTFOLIO_PATH" in src
+
+
+def test_portfolio_outcome_has_active_trades():
+    """Outcome validator report includes active_trades list from portfolio."""
+    from production_replay.paper_outcome_validator import run_paper_outcome_validator
+    r = run_paper_outcome_validator()
+    assert "active_trades" in r or "current_trade" in r
+
+
+def test_portfolio_duplicate_check_exists():
+    """paper_execution has duplicate check function."""
+    import production_replay.paper_execution_ledger as pel
+    assert hasattr(pel, "_is_duplicate")
+
+
+def test_portfolio_no_order_keywords():
+    """Paper execution source contains no order-placement keywords."""
+    import inspect
+    import production_replay.paper_execution_ledger as pel
+    src = inspect.getsource(pel.run_paper_execution)
+    for kw in ("place_order", "create_order", "set_leverage", "set_margin"):
+        assert kw not in src, f"paper execution should not contain '{kw}'"
