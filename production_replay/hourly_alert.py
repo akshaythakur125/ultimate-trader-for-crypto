@@ -49,8 +49,14 @@ def _determine_final_action(
     watchlist_count: int = 0,
     near_miss_count: int = 0,
     bridge_shadow_ready: bool = False,
+    preflight_pass: bool = False,
+    live_blocked_by_env: bool = False,
 ) -> tuple[str, str]:
-    # Rule 0: trigger bridge shadow ready (Phase 51)
+    # Rule 0: trigger bridge + preflight pass + only env blocking (Phase 55)
+    if bridge_shadow_ready and preflight_pass and live_blocked_by_env:
+        return "LIVE_ARMABLE", "Trigger bridge preflight passed; ready for live_micro arming (env vars required)"
+
+    # Rule 0b: trigger bridge shadow ready (Phase 51)
     if bridge_shadow_ready:
         return "SHADOW_READY", "Trigger bridge candidate ready for shadow execution"
 
@@ -97,6 +103,7 @@ def run_hourly_alert() -> dict:
     trigger_active = _read_json(os.path.join(STATE_DIR, "trigger_watchlist_active.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
 
     ts = datetime.now().isoformat()
@@ -136,8 +143,24 @@ def run_hourly_alert() -> dict:
     live_decision = live.get("decision", "N/A") if live else "N/A"
     live_armed = live.get("live_armed", False) if live else False
     execution_mode = live.get("execution_mode", "read_only") if live else "read_only"
+    live_blocked_by_env = False
+    if live:
+        gates = live.get("gates", {})
+        env_fail = not gates.get("env_gates", True)
+        all_others_pass = (
+            gates.get("safety_gates", True)
+            and gates.get("strategy_gates", True)
+            and gates.get("shadow_gate", True)
+            and gates.get("risk_gates", True)
+            and gates.get("account_gates", True)
+            and gates.get("kill_switch", True)
+        )
+        if env_fail and all_others_pass:
+            live_blocked_by_env = True
     open_positions = live.get("open_position_count", 0) if live else 0
     kill_active = _kill_switch_active()
+    preflight_decision = preflight.get("decision", "N/A") if preflight else "N/A"
+    preflight_pass = preflight.get("preflight_pass", False) if preflight else False
     creds = load_credentials()
     api_ok = bool(creds.get("api_key") and creds.get("api_secret"))
 
@@ -193,6 +216,8 @@ def run_hourly_alert() -> dict:
         watchlist_count=watchlist_count,
         near_miss_count=near_miss_total,
         bridge_shadow_ready=bridge_shadow_ready,
+        preflight_pass=preflight_pass,
+        live_blocked_by_env=live_blocked_by_env,
     )
 
     report = {
@@ -309,6 +334,9 @@ def run_hourly_alert() -> dict:
             "rr_final": si.get("rr_final", "?"),
             "risk_usdt": si.get("risk_usdt", 0),
         })(shadow.get("shadow_order_intent", {})) if bridge_shadow_ready and shadow and shadow.get("shadow_order_intent") else None,
+        "preflight_decision": preflight_decision,
+        "preflight_pass": preflight_pass,
+        "live_blocked_by_env": live_blocked_by_env,
         "live_armed": live_armed,
         "open_positions": open_positions,
         "api_credentials_found": api_ok,
@@ -525,6 +553,17 @@ def _write_text_report(report: dict, action: str, reason: str):
                 "",
             ]
         bridge_candidate_shown = True
+
+    # Phase 55: Preflight section
+    pf_dec = report.get("preflight_decision", "N/A")
+    pf_pass = report.get("preflight_pass", False)
+    if pf_dec != "N/A":
+        lines += [
+            "  LIVE MICRO PREFLIGHT:",
+            f"    Decision: {pf_dec}",
+            f"    Result:   {'All checks PASS' if pf_pass else 'Checks FAILED'}",
+            "",
+        ]
 
     if best and not bridge_candidate_shown:
         lines += [

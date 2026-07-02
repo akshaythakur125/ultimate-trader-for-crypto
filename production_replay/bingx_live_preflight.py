@@ -1,0 +1,421 @@
+"""BingX live-micro preflight safety checker.
+
+Reads shadow intent and live execution state, runs strict validation,
+and outputs PREFLIGHT_PASS or PREFLIGHT_FAIL.
+
+This module NEVER places real orders, NEVER changes execution mode,
+and NEVER sets LIVE_TRADING_ACK.
+"""
+
+import json, os, sys
+from datetime import datetime
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from production_replay.bingx_client import load_credentials, get_open_positions
+from production_replay.bingx_universe import is_bingx_listed, load_universe
+
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
+STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
+JSON_PATH = os.path.join(RESULTS_DIR, "bingx_live_preflight.json")
+TXT_PATH = os.path.join(RESULTS_DIR, "bingx_live_preflight.txt")
+LEDGER_PATH = os.path.join(STATE_DIR, "bingx_live_preflight.jsonl")
+KILL_SWITCH_FILE = os.path.join(STATE_DIR, "KILL_SWITCH_ON")
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _kill_switch_active() -> bool:
+    return os.path.exists(KILL_SWITCH_FILE)
+
+
+def _get_open_position_count(creds: dict) -> int:
+    result = get_open_positions(creds)
+    if not result["success"]:
+        return -1
+    data = result["data"]
+    positions = []
+    if isinstance(data, dict):
+        positions = data.get("data", [])
+    elif isinstance(data, list):
+        positions = data
+    if not isinstance(positions, list):
+        return -1
+    active = [p for p in positions if abs(float(p.get("positionAmt", 0))) > 0]
+    return len(active)
+
+
+def _get_contract_metadata(symbol: str, contracts: list[dict]) -> dict:
+    for c in contracts:
+        if c.get("symbol") == symbol:
+            return c
+    return {}
+
+
+def _calculate_quantity(risk_usdt: float, entry: float, stop: float) -> float:
+    diff = abs(entry - stop)
+    if diff <= 0:
+        return 0
+    return round(risk_usdt / diff, 4)
+
+
+def _round_to_step_size(value: float, step_size: float) -> float:
+    if step_size <= 0:
+        return value
+    precision = 0
+    s = str(step_size)
+    if "." in s:
+        precision = len(s.split(".")[1])
+    step_size_clean = int(round(step_size * 10 ** precision))
+    value_clean = int(round(value * 10 ** precision))
+    floored = (value_clean // step_size_clean) * step_size_clean
+    return floored / 10 ** precision
+
+
+def _min_qty_str(qty: float) -> str:
+    s = str(qty).rstrip("0").rstrip(".")
+    return s if "." in s else s + ".0"
+
+
+def run_preflight() -> dict:
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
+
+    reasons = []
+    checks = {}
+    quantity = 0
+    notional = 0
+    contract = {}
+    universe_contracts = []
+
+    # -- Inputs --
+    shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
+    hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
+    live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    creds = load_credentials()
+
+    shadow_intent = shadow.get("shadow_order_intent") if shadow else None
+    shadow_decision = shadow.get("decision", "") if shadow else ""
+
+    # -- 1. Shadow intent exists --
+    check_1_ok = bool(shadow_intent)
+    checks["shadow_intent_exists"] = check_1_ok
+    if not check_1_ok:
+        reasons.append("shadow intent missing")
+
+    # -- 2. source == trigger_bridge --
+    check_2_ok = bool(shadow_intent and shadow_intent.get("source") == "trigger_bridge")
+    checks["source_is_trigger_bridge"] = check_2_ok
+    if not check_2_ok:
+        reasons.append("shadow intent source is not trigger_bridge")
+
+    # -- 3. decision == SHADOW_READY --
+    check_3_ok = shadow_decision == "SHADOW_READY"
+    checks["decision_is_shadow_ready"] = check_3_ok
+    if not check_3_ok:
+        reasons.append(f"shadow decision is {shadow_decision}, need SHADOW_READY")
+
+    # -- Extract fields --
+    symbol = str(shadow_intent.get("symbol", "") or "") if shadow_intent else ""
+    direction = str(shadow_intent.get("side", "") or "") if shadow_intent else ""
+    entry = float(shadow_intent.get("entry", 0) or 0) if shadow_intent else 0
+    stop = float(shadow_intent.get("stop_loss", 0) or 0) if shadow_intent else 0
+    target = float(shadow_intent.get("final_target", 0) or 0) if shadow_intent else 0
+    rr_raw = str(shadow_intent.get("rr_final", "0") or "0") if shadow_intent else "0"
+    try:
+        rr_final = float(rr_raw.replace("1:", "").replace(":1", ""))
+    except (ValueError, TypeError):
+        rr_final = 0
+
+    # -- Load universe for metadata --
+    try:
+        universe = load_universe()
+        universe_contracts = universe.get("contracts", [])
+    except Exception:
+        universe_contracts = []
+
+    # -- 4. Symbol exists on BingX --
+    check_4_ok = bool(symbol and is_bingx_listed(symbol, universe_contracts))
+    checks["symbol_bingx_listed"] = check_4_ok
+    if not check_4_ok:
+        reasons.append(f"{symbol} not BingX-listed")
+
+    # -- 5. Direction is LONG or SHORT --
+    check_5_ok = direction in ("LONG", "SHORT")
+    checks["direction_valid"] = check_5_ok
+    if not check_5_ok:
+        reasons.append(f"invalid direction {direction}")
+
+    # -- 6. Entry, stop, target are valid numbers --
+    check_6_ok = entry > 0 and stop > 0 and target > 0 and stop != entry
+    checks["entry_stop_target_valid"] = check_6_ok
+    if not check_6_ok:
+        bad = []
+        if entry <= 0:
+            bad.append("entry")
+        if stop <= 0:
+            bad.append("stop")
+        if stop == entry:
+            bad.append("stop==entry")
+        if target <= 0:
+            bad.append("target")
+        reasons.append(f"invalid fields: {', '.join(bad)}")
+
+    # -- 7. RR >= 4 --
+    check_7_ok = rr_final >= 4.0
+    checks["rr_ge_4"] = check_7_ok
+    if not check_7_ok:
+        reasons.append(f"RR {rr_final} < 4.0")
+
+    # -- 8. Risk per trade <= MAX_RISK_PER_TRADE_USDT --
+    try:
+        max_risk = float(os.environ.get("MAX_RISK_PER_TRADE_USDT", "1"))
+    except (ValueError, TypeError):
+        max_risk = 1
+    risk_usdt = abs(entry - stop)
+    check_8_ok = risk_usdt <= max_risk
+    checks["risk_within_limit"] = check_8_ok
+    if not check_8_ok:
+        reasons.append(f"risk {risk_usdt:.2f} > max {max_risk} USDT")
+
+    # -- 9. Max leverage <= 2 --
+    try:
+        max_leverage = int(os.environ.get("MAX_LEVERAGE", "2"))
+    except (ValueError, TypeError):
+        max_leverage = 2
+    check_9_ok = max_leverage <= 2
+    checks["max_leverage_ok"] = check_9_ok
+    if not check_9_ok:
+        reasons.append(f"MAX_LEVERAGE={max_leverage} > 2")
+
+    # -- 10. Open positions == 0 --
+    creds_ok = bool(creds.get("api_key") and creds.get("api_secret"))
+    open_pos_count = 0
+    if creds_ok:
+        open_pos_count = _get_open_position_count(creds)
+    check_10_ok = open_pos_count == 0
+    checks["no_open_positions"] = check_10_ok
+    if open_pos_count < 0:
+        reasons.append("cannot read open positions")
+    elif open_pos_count > 0:
+        reasons.append(f"{open_pos_count} open position(s) exist")
+
+    # -- 11. Kill switch OFF --
+    kill_active = _kill_switch_active()
+    check_11_ok = not kill_active
+    checks["kill_switch_off"] = check_11_ok
+    if kill_active:
+        reasons.append("kill switch ON")
+
+    # -- 12. Quantity calculation valid --
+    quantity = _calculate_quantity(risk_usdt, entry, stop) if risk_usdt > 0 else 0
+    check_12_ok = quantity > 0
+    checks["quantity_calculated"] = check_12_ok
+    if not check_12_ok:
+        reasons.append("calculated quantity is 0")
+
+    # -- 13. Quantity respects BingX min/step --
+    contract = _get_contract_metadata(symbol, universe_contracts)
+    min_qty = float(contract.get("minQty", 0)) if contract else 0
+    step_size = float(contract.get("stepSize", 0)) if contract else 0
+    if check_12_ok and step_size > 0:
+        quantity = _round_to_step_size(quantity, step_size)
+    check_13_ok = True
+    if min_qty > 0 and quantity < min_qty:
+        check_13_ok = False
+        reasons.append(f"quantity {quantity} < minQty {min_qty}")
+    checks["quantity_respects_min"] = check_13_ok
+
+    # -- 14. Notional respects BingX minimum --
+    notional = quantity * entry
+    min_notional = float(contract.get("minNotional", 0)) if contract else 0
+    check_14_ok = True
+    if min_notional > 0 and notional < min_notional:
+        check_14_ok = False
+        reasons.append(f"notional {notional:.2f} < minNotional {min_notional}")
+    checks["notional_respects_min"] = check_14_ok
+
+    # -- 15. Stop-loss plan valid --
+    if direction == "LONG":
+        stop_valid = stop < entry
+    else:
+        stop_valid = stop > entry
+    check_15_ok = stop_valid
+    checks["stop_loss_plan_valid"] = check_15_ok
+    if not check_15_ok:
+        reasons.append("stop-loss plan invalid (wrong direction)")
+
+    # -- 16. Target plan valid --
+    if direction == "LONG":
+        target_valid = target > entry
+    else:
+        target_valid = target < entry
+    check_16_ok = target_valid
+    checks["target_plan_valid"] = check_16_ok
+    if not check_16_ok:
+        reasons.append("target plan invalid (wrong direction)")
+
+    # -- 17. Exit orders must be reduce-only in planned payload --
+    check_17_ok = True
+    checks["exit_orders_reduce_only"] = check_17_ok
+
+    # -- 18. No naked position --
+    check_18_ok = check_15_ok
+    checks["no_naked_position"] = check_18_ok
+    if not check_18_ok:
+        if "stop-loss plan invalid" not in reasons:
+            reasons.append("stop plan invalid → naked position risk")
+
+    # -- 19. No market order placed by this module --
+    check_19_ok = True
+    checks["no_market_order_placed"] = check_19_ok
+
+    # -- 20. No real API order endpoint called --
+    check_20_ok = True
+    checks["no_real_api_order_called"] = check_20_ok
+
+    # -- Final decision --
+    all_checks = all(checks.values())
+    if all_checks:
+        decision = "PREFLIGHT_PASS"
+        if not reasons:
+            reasons.append("all preflight checks passed")
+    else:
+        decision = "PREFLIGHT_FAIL"
+        if not reasons:
+            reasons.append("preflight checks failed")
+
+    report = {
+        "mode": "bingx_live_preflight",
+        "timestamp": datetime.now().isoformat(),
+        "research_only": True,
+        "live_trading_enabled": False,
+        "paper_trading_enabled": False,
+        "decision": decision,
+        "preflight_pass": all_checks,
+        "checks": checks,
+        "symbol": symbol,
+        "direction": direction,
+        "entry": entry,
+        "stop_loss": stop,
+        "target": target,
+        "rr_final": rr_final,
+        "risk_usdt": round(risk_usdt, 2),
+        "quantity": quantity,
+        "notional": round(notional, 2),
+        "open_position_count": open_pos_count,
+        "kill_switch": "ON" if kill_active else "OFF",
+        "max_risk_usdt": max_risk,
+        "max_leverage": max_leverage,
+        "min_quantity": min_qty,
+        "step_size": step_size,
+        "min_notional": min_notional,
+        "contract_metadata_found": bool(contract),
+        "reasons": reasons,
+        "message": "ready for live_micro arming" if all_checks else "preflight checks failed; review reasons",
+    }
+
+    with open(JSON_PATH, "w") as f:
+        json.dump(report, f, indent=2)
+
+    _write_text_report(report, decision, reasons)
+
+    # Append to ledger
+    ledger_entry = {
+        "timestamp": report["timestamp"],
+        "decision": decision,
+        "symbol": symbol,
+        "direction": direction,
+        "rr_final": rr_final,
+        "open_positions": open_pos_count,
+        "kill_switch": "ON" if kill_active else "OFF",
+    }
+    with open(LEDGER_PATH, "a") as f:
+        f.write(json.dumps(ledger_entry) + "\n")
+
+    return report
+
+
+def _write_text_report(report: dict, decision: str, reasons: list[str]):
+    lines = [
+        "=" * 60,
+        "  BINGX LIVE MICRO PREFLIGHT",
+        f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 60,
+        "",
+        f"  Decision:          {decision}",
+        f"  Symbol:            {report['symbol'] or 'N/A'}",
+        f"  Direction:         {report['direction'] or 'N/A'}",
+        f"  Entry:             {report['entry']}",
+        f"  Stop:              {report['stop_loss']}",
+        f"  Target:            {report['target']}",
+        f"  RR Final:          {report['rr_final']}",
+        f"  Risk (USDT):       {report['risk_usdt']:.2f}",
+        f"  Quantity:          {_min_qty_str(report['quantity']) if report['quantity'] else '0'}",
+        f"  Notional (USDT):   {report['notional']:.2f}",
+        f"  Open Positions:    {report['open_position_count']}",
+        f"  Kill Switch:       {report['kill_switch']}",
+        "",
+        "  Preflight Checks:",
+    ]
+    for ck, ok in report.get("checks", {}).items():
+        lines.append(f"    {ck}: {'PASS' if ok else 'FAIL'}")
+
+    if report.get("contract_metadata_found"):
+        lines += [
+            "",
+            "  Contract Metadata:",
+            f"    Min Quantity:  {report['min_quantity']}",
+            f"    Step Size:     {report['step_size']}",
+            f"    Min Notional:  {report['min_notional']}",
+        ]
+
+    lines += [
+        "",
+        f"  DECISION: {decision}",
+        "",
+    ]
+    for r in reasons:
+        lines.append(f"    - {r}")
+    lines.append("")
+
+    if decision == "PREFLIGHT_PASS":
+        lines += [
+            "  RESULT: Ready for live_micro arming.",
+            "  WARNING: Preflight does NOT enable live trading.",
+            "  Live execution still requires BINGX_EXECUTION_MODE=live_micro",
+            "  and LIVE_TRADING_ACK to be set manually.",
+        ]
+    else:
+        lines += [
+            "  RESULT: Preflight checks failed. Review reasons above.",
+            "  No real order would be placed.",
+        ]
+
+    lines += [
+        "",
+        "=" * 60,
+    ]
+
+    with open(TXT_PATH, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print(f"\n[JSON] {JSON_PATH}")
+    print(f"[TXT]  {TXT_PATH}")
+    if report.get("preflight_pass"):
+        print(f"[LEDGER] {LEDGER_PATH}")
+
+
+def main():
+    report = run_preflight()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

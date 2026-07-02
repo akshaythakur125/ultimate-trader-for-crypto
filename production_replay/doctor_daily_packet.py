@@ -63,6 +63,7 @@ def main():
     _run_module("production_replay.psychology_memory")
     _run_module("production_replay.near_miss_diagnostics")
     _run_module("production_replay.bingx_shadow_executor")
+    _run_module("production_replay.bingx_live_preflight")
     _run_module("production_replay.bingx_live_micro_executor")
     _run_module("production_replay.bingx_position_monitor", "--once")
     _run_module("production_replay.hourly_alert")
@@ -77,6 +78,7 @@ def main():
     near_miss = _read_json(os.path.join(RESULTS_DIR, "near_miss_report.json"))
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
+    preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
     entry = _read_ledger_latest()
@@ -500,6 +502,34 @@ def main():
     else:
         shadow_lines = ["", "  BINGX SHADOW EXECUTION: MISSING (no report)", ""]
 
+    # BingX live micro preflight section
+    preflight_lines = []
+    if preflight:
+        pf_dec = preflight.get("decision", "?")
+        pf_sym = preflight.get("symbol", "N/A")
+        pf_dir = preflight.get("direction", "N/A")
+        pf_rr = preflight.get("rr_final", 0)
+        pf_risk = preflight.get("risk_usdt", 0)
+        pf_qty = preflight.get("quantity", 0)
+        pf_checks = preflight.get("checks", {})
+        passed_ct = sum(1 for v in pf_checks.values() if v)
+        total_ct = len(pf_checks)
+        preflight_lines = [
+            "",
+            "  LIVE MICRO PREFLIGHT:",
+            f"    Decision:    {pf_dec}",
+            f"    Symbol:      {pf_sym}",
+            f"    Direction:   {pf_dir}",
+            f"    RR:          {pf_rr}",
+            f"    Risk:        {pf_risk} USDT",
+            f"    Quantity:    {pf_qty}",
+            f"    Checks:      {passed_ct}/{total_ct} passed",
+            f"    Pass:        {'YES' if preflight.get('preflight_pass', False) else 'NO'}",
+            f"    Message:     {preflight.get('message', 'N/A')}",
+        ]
+    else:
+        preflight_lines = ["", "  LIVE MICRO PREFLIGHT: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -608,6 +638,7 @@ def main():
     lines += trigger_lines
     lines += arbiter_lines
     lines += shadow_lines
+    lines += preflight_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines

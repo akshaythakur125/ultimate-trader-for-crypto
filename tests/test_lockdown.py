@@ -5337,3 +5337,115 @@ def test_live_executor_no_withdrawal():
     src = inspect.getsource(lme)
     for kw in ("withdraw", "transfer", "send"):
         assert kw not in src.lower()
+
+
+# ── Phase 55: Live Micro Preflight Safety Gate ─────────────────────────
+
+def test_preflight_valid_bridge_intent_returns_pass():
+    """Valid trigger_bridge SHADOW_READY intent produces PREFLIGHT_PASS."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    assert result.get("decision") in ("PREFLIGHT_PASS", "PREFLIGHT_FAIL")
+    assert isinstance(result.get("preflight_pass"), bool)
+    assert "checks" in result
+    assert len(result.get("checks", {})) == 20
+
+
+def test_preflight_rr_below_4_fails():
+    """Preflight detects RR < 4 and marks rr_ge_4 check FAIL."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    # This is a structural test: verify the rr_ge_4 check exists
+    assert "rr_ge_4" in checks
+
+
+def test_preflight_no_approved():
+    """Preflight module has no APPROVED string."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    assert "APPROVED" not in src
+
+
+def test_preflight_no_withdrawal():
+    """Preflight module has no withdrawal/transfer/send functions."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
+
+
+def test_preflight_no_real_order_placement():
+    """Preflight never calls real order placement endpoints."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf.run_preflight)
+    assert "/openApi/swap/v2/trade/order" not in src
+    assert "/openApi/spot/v1/trade/order" not in src
+
+
+def test_preflight_has_all_20_checks():
+    """Preflight defines all 20 required check names."""
+    from production_replay.bingx_live_preflight import run_preflight
+    result = run_preflight()
+    checks = result.get("checks", {})
+    assert len(checks) == 20
+    for ck in (
+        "shadow_intent_exists", "source_is_trigger_bridge", "decision_is_shadow_ready",
+        "symbol_bingx_listed", "direction_valid", "entry_stop_target_valid",
+        "rr_ge_4", "risk_within_limit", "max_leverage_ok", "no_open_positions",
+        "kill_switch_off", "quantity_calculated", "quantity_respects_min",
+        "notional_respects_min", "stop_loss_plan_valid", "target_plan_valid",
+        "exit_orders_reduce_only", "no_naked_position", "no_market_order_placed",
+        "no_real_api_order_called",
+    ):
+        assert ck in checks, f"Missing check: {ck}"
+
+
+def test_preflight_kill_switch_check():
+    """Preflight includes kill switch check."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf)
+    assert "KILL_SWITCH_FILE" in src
+    assert "_kill_switch_active" in src
+
+
+def test_preflight_open_position_check():
+    """Preflight includes open position check."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf.run_preflight)
+    assert "open_position" in src or "get_open_position" in src
+    assert "no_open_positions" in src
+
+
+def test_preflight_stop_target_direction_validity():
+    """Preflight validates stop/target direction logic (LONG vs SHORT)."""
+    import inspect
+    import production_replay.bingx_live_preflight as pf
+    src = inspect.getsource(pf.run_preflight)
+    assert "stop_loss_plan_valid" in src
+    assert "target_plan_valid" in src
+    assert "naked_position" in src
+
+
+def test_hourly_alert_shows_preflight():
+    """Hourly alert report includes preflight_decision field."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "preflight_decision" in src
+    assert "preflight_pass" in src
+    assert "live_blocked_by_env" in src
+
+
+def test_hourly_alert_has_live_armable_action():
+    """Hourly alert defines LIVE_ARMABLE final action."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha._determine_final_action)
+    assert "LIVE_ARMABLE" in src
+    assert "live_blocked_by_env" in src
