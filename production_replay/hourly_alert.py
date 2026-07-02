@@ -398,6 +398,7 @@ def run_hourly_alert() -> dict:
             "has_open_trade": bool(paper and paper.get("current_paper_trade") and paper["current_paper_trade"].get("status") == "PAPER_OPEN"),
             "current_paper_trade": paper.get("current_paper_trade") if paper else None,
             "portfolio": paper.get("portfolio") if paper else None,
+            "paper_config": paper.get("paper_config") if paper else None,
         } if paper else None,
         "paper_outcome": {
             "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else "N/A",
@@ -803,10 +804,16 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Active: {portfolio.get('active_count', 0)} / {portfolio.get('max_allowed', 5)}",
         ]
         if paper_cfg:
+            cap_risk = paper_cfg.get("capital_usdt", "?")
+            max_risk_tt = paper_cfg.get("max_risk_per_trade_usdt", "?")
+            max_port_risk = paper_cfg.get("max_total_portfolio_risk_usdt", "?")
+            max_notional = paper_cfg.get("max_notional_per_trade_usdt", "?")
             lines += [
-                f"    Capital: {paper_cfg.get('account_capital_usdt', '?')} USDT  "
-                f"Max Risk/Trade: {paper_cfg.get('max_risk_per_trade_usdt', '?')} USDT  "
-                f"Max Portfolio Risk: {paper_cfg.get('max_portfolio_risk_usdt', '?')} USDT",
+                "  PAPER CAPITAL RISK (Hard Caps):",
+                f"    Capital:         {cap_risk} USDT",
+                f"    Max Risk/Trade:  {max_risk_tt} USDT",
+                f"    Max Portfolio Risk: {max_port_risk} USDT",
+                f"    Max Notional/Trade: {max_notional} USDT",
             ]
         for t in portfolio.get("active_trades", []):
             lines.append(

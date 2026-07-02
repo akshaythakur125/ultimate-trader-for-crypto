@@ -564,10 +564,16 @@ def main():
         ]
         # Config summary
         if pcfg:
+            cap_risk = pcfg.get("capital_usdt", "?")
+            max_risk_tt = pcfg.get("max_risk_per_trade_usdt", "?")
+            max_port_risk = pcfg.get("max_total_portfolio_risk_usdt", "?")
+            max_notional = pcfg.get("max_notional_per_trade_usdt", "?")
             paper_lines += [
-                f"    Capital:   {pcfg.get('account_capital_usdt', '?')} USDT  "
-                f"Risk/Trade: {pcfg.get('max_risk_per_trade_usdt', '?')} USDT  "
-                f"Max Notional: {pcfg.get('max_notional_per_trade_usdt', '?')} USDT",
+                "  PAPER CAPITAL RISK (Hard Caps):",
+                f"    Capital:         {cap_risk} USDT",
+                f"    Max Risk/Trade:  {max_risk_tt} USDT",
+                f"    Max Portfolio Risk: {max_port_risk} USDT",
+                f"    Max Notional/Trade: {max_notional} USDT",
             ]
         if ptrade:
             paper_lines += [
@@ -1016,6 +1022,7 @@ def main():
             "status": paper.get("status", "N/A") if paper else None,
             "current_trade": paper.get("current_paper_trade") if paper else None,
             "portfolio": paper.get("portfolio") if paper else None,
+            "paper_config": paper.get("paper_config") if paper else None,
         } if paper else None,
         "paper_outcome": {
             "verdict": paper_outcome.get("verdict", "N/A") if paper_outcome else None,

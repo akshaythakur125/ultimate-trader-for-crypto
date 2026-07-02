@@ -23,13 +23,12 @@ PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 
 MAX_PAPER_TRADES = 5
 
-# Paper portfolio risk/capital config (mirrored from paper_execution_ledger)
-PAPER_ACCOUNT_CAPITAL_USDT = 400
-PAPER_MAX_RISK_PER_TRADE_PCT = 1.0
-PAPER_MAX_PORTFOLIO_RISK_PCT = 5.0
-PAPER_MAX_OPEN_TRADES = 5
-PAPER_MAX_NOTIONAL_PER_TRADE_PCT = 25.0
-PAPER_MAX_LEVERAGE = 2
+# Paper portfolio risk/capital config (hard flat caps, mirrored from paper_execution_ledger)
+PAPER_CAPITAL_USDT = 400
+PAPER_MAX_RISK_PER_TRADE_USDT = 12
+PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 200
+PAPER_MAX_ACTIVE_TRADES = 5
+PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT = 12
 
 
 def _read_json(path: str) -> dict:
@@ -76,13 +75,41 @@ def _last_closed_trade_same_symbol_direction(symbol: str, direction: str) -> dic
     closed = [t for t in trades if t.get("status") == "PAPER_CLOSED"]
     if not closed:
         return None
-    last_closed = closed[-1]
-    if (
-        last_closed.get("symbol", "") == symbol
-        and last_closed.get("side", "").lower() == direction.lower()
-    ):
-        return last_closed
+    for t in reversed(closed):
+        if t.get("symbol", "") == symbol and t.get("side", "").lower() == direction.lower():
+            return t
     return None
+
+
+def _passes_capital_gate(c: dict, portfolio: list[dict]) -> tuple[bool, str]:
+    """Check if a candidate can pass hard capital notional/risk caps before suggesting rotation."""
+    entry = float(c.get("entry", 0) or 0)
+    stop = float(c.get("stop", 0) or 0)
+    direction = c.get("direction", "")
+    side = "LONG" if direction.upper() == "LONG" else "SHORT"
+    if entry <= 0 or stop <= 0:
+        return False, "missing entry or stop"
+
+    risk_per_unit = abs(entry - stop)
+    if risk_per_unit <= 0:
+        return False, "stop equals entry (zero risk distance)"
+
+    raw_qty = PAPER_MAX_RISK_PER_TRADE_USDT / risk_per_unit
+    estimated_notional = entry * raw_qty
+    estimated_risk = risk_per_unit * raw_qty
+
+    if estimated_notional > PAPER_MAX_NOTIONAL_PER_TRADE_USDT:
+        return False, f"estimated notional {estimated_notional:.2f} > max {PAPER_MAX_NOTIONAL_PER_TRADE_USDT} USDT for capital"
+
+    active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    if len(active_trades) >= PAPER_MAX_ACTIVE_TRADES:
+        return False, f"max {PAPER_MAX_ACTIVE_TRADES} active trades reached"
+
+    total_open_risk = sum(float(t.get("risk", 0) or 0) for t in active_trades)
+    if total_open_risk + estimated_risk > PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT:
+        return False, f"total risk {total_open_risk + estimated_risk:.2f} > max portfolio {PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT} USDT"
+
+    return True, "passes capital gates"
 
 
 def run_paper_rotation_engine() -> dict:
@@ -106,8 +133,16 @@ def run_paper_rotation_engine() -> dict:
     eligible = [c for c in all_candidates if _is_eligible(c)]
     fresh_eligible = [c for c in eligible if c.get("symbol", "") not in active_symbols]
 
-    filtered_eligible = []
+    capital_filtered = []
     for c in fresh_eligible:
+        ok, reason = _passes_capital_gate(c, portfolio)
+        if ok:
+            capital_filtered.append(c)
+        else:
+            reasons.append(f"capital gate blocked: {c.get('symbol','')} {c.get('direction','')} — {reason}")
+
+    filtered_eligible = []
+    for c in capital_filtered:
         last_closed = _last_closed_trade_same_symbol_direction(
             c.get("symbol", ""), c.get("direction", "")
         )
@@ -157,10 +192,11 @@ def run_paper_rotation_engine() -> dict:
         reasons.append("no eligible candidate found for rotation")
 
     risk_config = {
-        "account_capital_usdt": PAPER_ACCOUNT_CAPITAL_USDT,
-        "max_risk_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_RISK_PER_TRADE_PCT / 100.0, 2),
-        "max_portfolio_risk_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_PORTFOLIO_RISK_PCT / 100.0, 2),
-        "max_notional_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_NOTIONAL_PER_TRADE_PCT / 100.0 * PAPER_MAX_LEVERAGE, 2),
+        "capital_usdt": PAPER_CAPITAL_USDT,
+        "max_risk_per_trade_usdt": PAPER_MAX_RISK_PER_TRADE_USDT,
+        "max_total_portfolio_risk_usdt": PAPER_MAX_TOTAL_PORTFOLIO_RISK_USDT,
+        "max_notional_per_trade_usdt": PAPER_MAX_NOTIONAL_PER_TRADE_USDT,
+        "max_active_trades": PAPER_MAX_ACTIVE_TRADES,
     }
 
     report = {
@@ -220,11 +256,12 @@ def _write_text_report(report: dict):
         f"  Portfolio:         {report['active_trades_count']} / {report['max_paper_trades']} active",
         f"  Available Slots:   {report['available_slots']}",
         "",
-        "  Paper Risk Config:",
-        f"    Account Capital:          {report['risk_config']['account_capital_usdt']} USDT",
-        f"    Max Risk / Trade:         {report['risk_config']['max_risk_per_trade_usdt']} USDT",
-        f"    Max Portfolio Risk:       {report['risk_config']['max_portfolio_risk_usdt']} USDT",
-        f"    Max Notional / Trade:     {report['risk_config']['max_notional_per_trade_usdt']} USDT",
+        "  Paper Risk Config (Hard Caps):",
+        f"    Capital:               {report['risk_config']['capital_usdt']} USDT",
+        f"    Max Risk / Trade:      {report['risk_config']['max_risk_per_trade_usdt']} USDT",
+        f"    Max Portfolio Risk:    {report['risk_config']['max_total_portfolio_risk_usdt']} USDT",
+        f"    Max Notional / Trade:  {report['risk_config']['max_notional_per_trade_usdt']} USDT",
+        f"    Max Active Trades:     {report['risk_config']['max_active_trades']}",
         "",
     ]
 
