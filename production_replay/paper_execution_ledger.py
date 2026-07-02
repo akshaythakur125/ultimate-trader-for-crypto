@@ -284,6 +284,56 @@ def run_paper_execution() -> dict:
             reasons.append(f"invalid trade parameters: symbol={symbol} side={side} entry={entry} stop={stop} target={target} qty={quantity}")
             status = "PAPER_SKIPPED"
 
+    # Phase 63: Check rotation report for auto-rotation candidate
+    if not existing and status == "PAPER_SKIPPED":
+        rotation_report = _read_json(os.path.join(RESULTS_DIR, "paper_rotation_report.json"))
+        if rotation_report.get("next_action") == "ROTATE_TO_NEW_PAPER_TRADE":
+            rc = rotation_report.get("rotation_candidate")
+            if rc and rc.get("symbol") and float(rc.get("entry", 0) or 0) > 0 and float(rc.get("stop", 0) or 0) > 0 and float(rc.get("target", 0) or 0) > 0:
+                sym = rc["symbol"]
+                side_raw = rc.get("direction", "")
+                side = "LONG" if side_raw.upper() == "LONG" else "SHORT"
+                entry = float(rc["entry"])
+                stop = float(rc["stop"])
+                target = float(rc["target"])
+                rr = float(rc.get("rr", 0) or 0)
+
+                risk_per_unit = abs(entry - stop)
+                qty = round(10.0 / risk_per_unit, 4) if risk_per_unit > 0 else 0.001
+                notional = entry * qty
+                actual_risk = risk_per_unit * qty
+
+                current_price = _get_current_price(sym)
+                if not current_price or current_price <= 0:
+                    current_price = entry
+
+                paper_trade = {
+                    "symbol": sym,
+                    "side": side,
+                    "entry": entry,
+                    "stop": stop,
+                    "target": target,
+                    "quantity": qty,
+                    "notional": round(notional, 2),
+                    "risk": round(actual_risk, 4),
+                    "rr": rr,
+                    "entry_fill_price": current_price,
+                    "entry_fill_check": True,
+                    "status": "PAPER_OPEN",
+                    "exit_reason": None,
+                    "exit_price": None,
+                    "realized_pnl": None,
+                    "unrealized_pnl": 0.0,
+                    "price_at_last_check": current_price,
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                    "closed_at": None,
+                    "source": "rotation",
+                }
+                _write_current_paper_trade(paper_trade)
+                _append_to_ledger(paper_trade)
+                reasons.append(f"paper trade opened via rotation: {sym} {side}, entry={entry}, RR={rr}")
+                status = "PAPER_OPEN"
+
     report = {
         "mode": "paper_execution_ledger",
         "timestamp": datetime.now(timezone.utc).isoformat(),

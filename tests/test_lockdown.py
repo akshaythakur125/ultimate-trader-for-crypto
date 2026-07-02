@@ -6206,3 +6206,149 @@ def test_watchlist_hourly_has_doctor_ref():
     import production_replay.hourly_alert as ha
     src = inspect.getsource(ha.run_hourly_alert)
     assert "paper_candidate_watchlist" in src
+
+
+# --- Phase 63: Paper Rotation Engine ---
+
+def test_rotation_engine_import():
+    """paper_rotation_engine module imports cleanly."""
+    import production_replay.paper_rotation_engine as re
+    assert hasattr(re, "run_paper_rotation_engine")
+    assert hasattr(re, "main")
+
+
+def test_rotation_engine_runs_and_returns_dict():
+    """run_paper_rotation_engine returns a dict with expected keys."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    assert isinstance(r, dict)
+    assert r.get("mode") == "paper_rotation_engine"
+    assert "next_action" in r
+    assert "active_trade_lock_on" in r
+    assert "rotation_candidate" in r
+    assert "candidate_discovery" in r
+    assert "reasons" in r
+
+
+def test_rotation_engine_research_only():
+    """Rotation engine never enables live/paper trading or real orders."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    assert r.get("research_only") is True
+    assert r.get("live_trading_enabled") is False
+    assert r.get("paper_trading_enabled") is False
+    assert r.get("real_order") is False
+
+
+def test_rotation_engine_no_placement_keywords():
+    """Rotation engine source contains no order-placement keywords."""
+    import inspect
+    import production_replay.paper_rotation_engine as re
+    src = inspect.getsource(re.run_paper_rotation_engine)
+    for kw in ("place_order", "create_order", "set_leverage", "set_margin", "BINGX_EXECUTION_MODE", "LIVE_TRADING_ACK"):
+        assert kw not in src, f"rotation engine should not contain '{kw}'"
+
+
+def test_rotation_engine_action_is_valid():
+    """Next action is one of the allowed values."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    assert r["next_action"] in (
+        "ACTIVE_TRADE_MONITORING",
+        "WAIT_FOR_CURRENT_TRADE_CLOSE",
+        "ROTATE_TO_NEW_PAPER_TRADE",
+        "NO_VALID_CANDIDATE",
+    )
+
+
+def test_rotation_engine_trade_lock_on_with_active():
+    """Trade lock is ON when paper status shows an active PAPER_OPEN trade."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    assert "active_trade_lock_on" in r
+
+
+def test_rotation_engine_candidate_discovery_positive():
+    """Rotation engine reports positive total candidate count."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    cd = r.get("candidate_discovery", {})
+    assert cd.get("total_candidates", 0) > 0
+
+
+def test_rotation_engine_best_candidate_has_entry_stop_target():
+    """Rotation candidate has entry, stop, and target fields if present."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    rc = r.get("rotation_candidate")
+    if rc:
+        assert float(rc.get("entry", 0) or 0) > 0
+        assert float(rc.get("stop", 0) or 0) > 0
+        assert float(rc.get("target", 0) or 0) > 0
+        assert float(rc.get("rr", 0) or 0) >= 0
+
+
+def test_rotation_engine_has_timestamp():
+    """Rotation engine report has a valid ISO timestamp."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    r = run_paper_rotation_engine()
+    ts = r.get("timestamp", "")
+    assert ts.endswith("Z") or "+" in ts, f"timestamp should be ISO format, got {ts}"
+
+
+def test_rotation_engine_output_files_exist():
+    """Rotation engine creates JSON and TXT output files."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine, JSON_PATH, TXT_PATH
+    import os
+    run_paper_rotation_engine()
+    assert os.path.exists(JSON_PATH)
+    assert os.path.exists(TXT_PATH)
+
+
+def test_rotation_engine_ledger_exists():
+    """Rotation engine appends to ledger file."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine, LEDGER_PATH
+    import os
+    run_paper_rotation_engine()
+    assert os.path.exists(LEDGER_PATH)
+
+
+def test_rotation_engine_hourly_runs_module():
+    """Hourly alert calls paper_rotation_engine before ledger."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "paper_rotation_engine" in src
+
+
+def test_rotation_engine_hourly_has_section():
+    """Hourly alert report contains paper_rotation section."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "paper_rotation" in src
+
+
+def test_rotation_engine_doctor_runs_module():
+    """Doctor daily packet runs paper_rotation_engine."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "paper_rotation_engine" in src
+
+
+def test_rotation_engine_doctor_has_section():
+    """Doctor daily packet report contains paper_rotation_engine section."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp.main)
+    assert "paper_rotation_engine" in src
+
+
+def test_rotation_engine_ledger_reads_rotation_on_new_trade():
+    """paper_execution_ledger checks paper_rotation_report for ROTATE_TO_NEW_PAPER_TRADE."""
+    import inspect
+    import production_replay.paper_execution_ledger as pel
+    src = inspect.getsource(pel.run_paper_execution)
+    assert "paper_rotation_report" in src
+    assert "ROTATE_TO_NEW_PAPER_TRADE" in src

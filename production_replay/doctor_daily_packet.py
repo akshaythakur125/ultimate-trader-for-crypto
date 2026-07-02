@@ -68,6 +68,7 @@ def main():
     _run_module("production_replay.bingx_position_monitor", "--once")
     _run_module("production_replay.live_one_shot_guard", "--status")
     _run_module("production_replay.hourly_alert")
+    _run_module("production_replay.paper_rotation_engine")
     _run_module("production_replay.paper_execution_ledger")
     _run_module("production_replay.paper_outcome_validator")
     _run_module("production_replay.candidate_rotation_report")
@@ -89,6 +90,7 @@ def main():
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
+    paper_rotation = _read_json(os.path.join(RESULTS_DIR, "paper_rotation_report.json"))
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
@@ -666,6 +668,32 @@ def main():
     else:
         watchlist_lines = ["", "  PAPER CANDIDATE WATCHLIST: MISSING (no report)", ""]
 
+    # Paper rotation engine section (Phase 63)
+    rotation_engine_lines = []
+    if paper_rotation:
+        pr_next = paper_rotation.get("next_action", "N/A")
+        pr_lock = paper_rotation.get("active_trade_lock_on", False)
+        pr_cd = paper_rotation.get("candidate_discovery", {})
+        rotation_engine_lines = [
+            "",
+            "  PAPER ROTATION ENGINE:",
+            f"    Next Action:   {pr_next}",
+            f"    Trade Lock:    {'ON' if pr_lock else 'OFF'}",
+            f"    Total:         {pr_cd.get('total_candidates',0)}  "
+            f"Eligible: {pr_cd.get('eligible_candidates',0)}  "
+            f"Fresh: {pr_cd.get('fresh_eligible',0)}",
+        ]
+        rc = paper_rotation.get("rotation_candidate")
+        if rc:
+            rotation_engine_lines.append(
+                f"    Rotation:      {rc.get('symbol','?')} {rc.get('direction','?')} "
+                f"RR:{rc.get('rr','?')} Score:{rc.get('thesis_score','?')} "
+                f"Entry:{rc.get('entry','?')} Stop:{rc.get('stop','?')} Target:{rc.get('target','?')}"
+            )
+        rotation_engine_lines.append("")
+    else:
+        rotation_engine_lines = ["", "  PAPER ROTATION ENGINE: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -780,6 +808,7 @@ def main():
     lines += outcome_lines
     lines += rotation_lines
     lines += watchlist_lines
+    lines += rotation_engine_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -965,6 +994,12 @@ def main():
             "best_fresh_candidate": watchlist.get("candidate_comparison", {}).get("best_fresh_candidate") if watchlist else None,
             "best_fresh_stronger": watchlist.get("candidate_comparison", {}).get("best_fresh_stronger", False) if watchlist else False,
         } if watchlist else None,
+        "paper_rotation_engine": {
+            "next_action": paper_rotation.get("next_action", "N/A") if paper_rotation else None,
+            "active_trade_lock_on": paper_rotation.get("active_trade_lock_on", False) if paper_rotation else False,
+            "rotation_candidate": paper_rotation.get("rotation_candidate") if paper_rotation else None,
+            "candidate_discovery": paper_rotation.get("candidate_discovery", {}) if paper_rotation else {},
+        } if paper_rotation else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

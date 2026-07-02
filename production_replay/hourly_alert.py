@@ -93,6 +93,14 @@ def run_hourly_alert() -> dict:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
+    # Run paper rotation engine for fresh data (Phase 63)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_rotation_engine"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
     # Run paper execution ledger for fresh data (Phase 59)
     import subprocess
     try:
@@ -141,6 +149,7 @@ def run_hourly_alert() -> dict:
     paper = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
     paper_outcome = _read_json(os.path.join(RESULTS_DIR, "paper_outcome_report.json"))
     rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
+    paper_rotation = _read_json(os.path.join(RESULTS_DIR, "paper_rotation_report.json"))
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
@@ -412,6 +421,12 @@ def run_hourly_alert() -> dict:
             "best_fresh_candidate": watchlist.get("candidate_comparison", {}).get("best_fresh_candidate") if watchlist else None,
             "best_fresh_stronger": watchlist.get("candidate_comparison", {}).get("best_fresh_stronger", False) if watchlist else False,
         } if watchlist else None,
+        "paper_rotation": {
+            "next_action": paper_rotation.get("next_action", "N/A") if paper_rotation else "N/A",
+            "active_trade_lock_on": paper_rotation.get("active_trade_lock_on", False) if paper_rotation else False,
+            "rotation_candidate": paper_rotation.get("rotation_candidate") if paper_rotation else None,
+            "candidate_discovery": paper_rotation.get("candidate_discovery", {}) if paper_rotation else {},
+        } if paper_rotation else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -743,6 +758,29 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"    Best Fresh:    {bf.get('symbol','?')} {bf.get('direction','?')} "
                 f"RR:{bf.get('rr','?')} Score:{bf.get('thesis_score','?')} "
                 f"{'STRONGER' if wl.get('best_fresh_stronger') else 'weaker'}"
+            )
+        lines += [""]
+
+    # Phase 63: Paper rotation engine
+    pr = report.get("paper_rotation")
+    if pr and pr.get("next_action", "N/A") != "N/A":
+        lines += [
+            "  PAPER ROTATION ENGINE:",
+            f"    Next Action:   {pr['next_action']}",
+            f"    Trade Lock:    {'ON' if pr.get('active_trade_lock_on') else 'OFF'}",
+        ]
+        rc = pr.get("rotation_candidate")
+        if rc:
+            lines.append(
+                f"    Rotation:      {rc.get('symbol','?')} {rc.get('direction','?')} "
+                f"RR:{rc.get('rr','?')} Score:{rc.get('thesis_score','?')}"
+            )
+        pcd = pr.get("candidate_discovery", {})
+        if pcd:
+            lines.append(
+                f"    Candidates:    Total {pcd.get('total_candidates',0)}  "
+                f"Eligible {pcd.get('eligible_candidates',0)}  "
+                f"Fresh {pcd.get('fresh_eligible',0)}"
             )
         lines += [""]
 
