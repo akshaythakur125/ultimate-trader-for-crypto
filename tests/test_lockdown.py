@@ -6883,3 +6883,116 @@ def test_phase67_rotation_config_has_hard_caps():
     assert rcfg["max_portfolio_notional_usdt"] == 800
     assert rcfg["max_leverage"] == 2
     assert rcfg["max_active_trades"] == 5
+
+
+# ──────────────────────────────────────────────
+# Phase 64: Strategy Evidence Lock & Paper Performance Dashboard
+# ──────────────────────────────────────────────
+
+def test_phase64_no_approved_in_evidence_lock():
+    """Strategy evidence lock module contains no APPROVED text."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.strategy_evidence_lock", fromlist=["_"]))
+    assert "APPROVED" not in src
+
+
+def test_phase64_no_live_enablement():
+    """Strategy evidence lock report has live_trading_enabled=False and real_order=False."""
+    from production_replay.strategy_evidence_lock import run_strategy_evidence_lock
+    r = run_strategy_evidence_lock()
+    assert r.get("live_trading_enabled") is False
+    assert r.get("paper_trading_enabled") is False
+    assert r.get("real_order") is False
+    assert r.get("live_allowed") is False
+
+
+def test_phase64_evidence_incomplete_when_few_closed():
+    """Evidence verdict is EVIDENCE_INCOMPLETE when closed trades < 30."""
+    from production_replay.strategy_evidence_lock import run_strategy_evidence_lock, EVIDENCE_INCOMPLETE
+    r = run_strategy_evidence_lock()
+    closed = r.get("closed_trades", 0)
+    if closed < 30:
+        assert r["evidence_verdict"] == EVIDENCE_INCOMPLETE
+    else:
+        # Skip if actual data already has >=30 closed
+        assert r["evidence_verdict"] in (EVIDENCE_INCOMPLETE, "STRATEGY_BLOCKED", "LIVE_REVIEW_READY", "LIVE_REVIEW_STRONG")
+
+
+def test_phase64_evidence_lock_structure():
+    """Strategy evidence report contains all required fields."""
+    from production_replay.strategy_evidence_lock import run_strategy_evidence_lock
+    r = run_strategy_evidence_lock()
+    assert "total_paper_trades" in r
+    assert "open_trades" in r
+    assert "closed_trades" in r
+    assert "wins" in r
+    assert "losses" in r
+    assert "win_rate" in r
+    assert "average_r" in r
+    assert "total_r" in r
+    assert "total_simulated_pnl" in r
+    assert "max_drawdown_usdt" in r
+    assert "max_consecutive_losses" in r
+    assert "average_winner_r" in r
+    assert "average_loser_r" in r
+    assert "long_short" in r
+    assert "symbol_performance" in r
+    assert "anomalies" in r
+    assert "evidence_verdict" in r
+    assert "live_allowed" in r
+    assert "required_before_real_trading" in r
+
+
+def test_phase64_duplicate_warning_works():
+    """Evidence lock can detect duplicate symbol-side patterns."""
+    from production_replay.strategy_evidence_lock import _detect_anomalies
+    trades = []
+    for i in range(20):
+        trades.append({"symbol": "BTC-USDT", "side": "LONG", "status": "PAPER_CLOSED", "realized_pnl": 0.1, "risk": 1.0})
+    for i in range(5):
+        trades.append({"symbol": "ETH-USDT", "side": "SHORT", "status": "PAPER_OPEN"})
+    warnings = _detect_anomalies(trades, {"agg_stats": {"total_closed": 20, "average_r": 0.5}})
+    dup_found = any("duplicate" in w.lower() for w in warnings)
+    assert dup_found
+
+
+def test_phase64_risk_mismatch_warning_works():
+    """Evidence lock detects risk sizing mismatch."""
+    from production_replay.strategy_evidence_lock import _detect_anomalies, PAPER_MAX_RISK_PER_TRADE_USDT
+    trades = [{"symbol": "BTC-USDT", "side": "LONG", "status": "PAPER_CLOSED", "realized_pnl": 0.1, "risk": PAPER_MAX_RISK_PER_TRADE_USDT * 2}]
+    warnings = _detect_anomalies(trades, {"agg_stats": {}})
+    risk_found = any("risk" in w.lower() for w in warnings)
+    assert risk_found
+
+
+def test_phase64_same_symbol_bias_warning_works():
+    """Evidence lock detects same-symbol bias when one symbol dominates closed trades."""
+    from production_replay.strategy_evidence_lock import _detect_anomalies
+    trades = []
+    for i in range(20):
+        trades.append({"symbol": "BTC-USDT", "side": "LONG", "status": "PAPER_CLOSED", "realized_pnl": 0.1, "risk": 1.0})
+    for i in range(3):
+        trades.append({"symbol": "ETH-USDT", "side": "LONG", "status": "PAPER_CLOSED", "realized_pnl": 0.1, "risk": 1.0})
+    warnings = _detect_anomalies(trades, {"agg_stats": {}})
+    bias_found = any("bias" in w.lower() for w in warnings)
+    assert bias_found
+
+
+def test_phase64_hourly_has_strategy_evidence():
+    """Hourly alert report contains strategy_evidence section."""
+    from production_replay.hourly_alert import run_hourly_alert
+    r = run_hourly_alert()
+    se = r.get("strategy_evidence")
+    assert se is not None
+    assert "evidence_verdict" in se
+    assert "closed_trades" in se
+    assert "win_rate" in se
+    assert "average_r" in se
+    assert "live_allowed" in se
+
+
+def test_phase64_doctor_has_strategy_evidence():
+    """Doctor daily packet source contains STRATEGY EVIDENCE LOCK section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.doctor_daily_packet", fromlist=["_"]))
+    assert "STRATEGY EVIDENCE LOCK" in src

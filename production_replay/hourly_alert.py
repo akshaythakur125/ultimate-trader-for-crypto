@@ -134,6 +134,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run strategy evidence lock for fresh data (Phase 64)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.strategy_evidence_lock"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -151,6 +159,7 @@ def run_hourly_alert() -> dict:
     rotation = _read_json(os.path.join(RESULTS_DIR, "candidate_rotation_report.json"))
     paper_rotation = _read_json(os.path.join(RESULTS_DIR, "paper_rotation_report.json"))
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
+    evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -429,6 +438,17 @@ def run_hourly_alert() -> dict:
             "rotation_candidate": paper_rotation.get("rotation_candidate") if paper_rotation else None,
             "candidate_discovery": paper_rotation.get("candidate_discovery", {}) if paper_rotation else {},
         } if paper_rotation else None,
+        "strategy_evidence": {
+            "evidence_verdict": evidence.get("evidence_verdict", "N/A") if evidence else "N/A",
+            "closed_trades": evidence.get("closed_trades", 0) if evidence else 0,
+            "win_rate": evidence.get("win_rate", 0) if evidence else 0,
+            "average_r": evidence.get("average_r", 0) if evidence else 0,
+            "total_r": evidence.get("total_r", 0) if evidence else 0,
+            "max_drawdown_usdt": evidence.get("max_drawdown_usdt", 0) if evidence else 0,
+            "live_allowed": evidence.get("live_allowed", False) if evidence else False,
+            "live_reason": evidence.get("live_reason", "evidence lock not run") if evidence else "evidence lock not run",
+            "has_anomaly": evidence.get("has_anomaly", False) if evidence else False,
+        } if evidence else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -836,6 +856,22 @@ def _write_text_report(report: dict, action: str, reason: str):
             for r in rejected[-5:]:
                 lines.append(f"    - {r}")
         lines += [""]
+
+    # Phase 64: Strategy evidence lock
+    evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
+    if evidence:
+        lines += [
+            "  STRATEGY EVIDENCE LOCK:",
+            f"    Verdict:        {evidence.get('evidence_verdict', '?')}",
+            f"    Closed Trades:  {evidence.get('closed_trades', 0)}",
+            f"    Win Rate:       {evidence.get('win_rate', 0)}%",
+            f"    Average R:      {evidence.get('average_r', 0)}",
+            f"    Total R:        {evidence.get('total_r', 0)}",
+            f"    Max Drawdown:   {evidence.get('max_drawdown_usdt', 0):.2f} USDT",
+            f"    Live Allowed:   {'NO' if not evidence.get('live_allowed') else 'MANUAL REVIEW REQUIRED'}",
+            f"    Reason:         {evidence.get('live_reason', '?')}",
+            "",
+        ]
 
     if best and not bridge_candidate_shown:
         lines += [

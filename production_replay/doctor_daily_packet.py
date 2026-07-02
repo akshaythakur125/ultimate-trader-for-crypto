@@ -73,6 +73,7 @@ def main():
     _run_module("production_replay.paper_outcome_validator")
     _run_module("production_replay.candidate_rotation_report")
     _run_module("production_replay.paper_candidate_watchlist")
+    _run_module("production_replay.strategy_evidence_lock")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -746,6 +747,34 @@ def main():
     else:
         rotation_engine_lines = ["", "  PAPER ROTATION ENGINE: MISSING (no report)", ""]
 
+    # Strategy evidence lock section (Phase 64)
+    evidence_lines = []
+    evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
+    if evidence:
+        ev = evidence.get("evidence_verdict", "N/A")
+        ct = evidence.get("closed_trades", 0)
+        wr = evidence.get("win_rate", 0)
+        ar = evidence.get("average_r", 0)
+        tr = evidence.get("total_r", 0)
+        md = evidence.get("max_drawdown_usdt", 0)
+        la = evidence.get("live_allowed", False)
+        lr = evidence.get("live_reason", "N/A")
+        evidence_lines = [
+            "",
+            "  STRATEGY EVIDENCE LOCK:",
+            f"    Verdict:        {ev}",
+            f"    Closed Trades:  {ct}",
+            f"    Win Rate:       {wr}%",
+            f"    Average R:      {ar}",
+            f"    Total R:        {tr}",
+            f"    Max Drawdown:   {md:.2f} USDT",
+            f"    Live Allowed:   {'NO' if not la else 'MANUAL REVIEW REQUIRED'}",
+            f"    Reason:         {lr}",
+            "",
+        ]
+    else:
+        evidence_lines = ["", "  STRATEGY EVIDENCE LOCK: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -861,6 +890,7 @@ def main():
     lines += rotation_lines
     lines += watchlist_lines
     lines += rotation_engine_lines
+    lines += evidence_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1054,6 +1084,17 @@ def main():
             "rotation_candidate": paper_rotation.get("rotation_candidate") if paper_rotation else None,
             "candidate_discovery": paper_rotation.get("candidate_discovery", {}) if paper_rotation else {},
         } if paper_rotation else None,
+        "strategy_evidence": {
+            "evidence_verdict": evidence.get("evidence_verdict", "N/A") if evidence else "N/A",
+            "closed_trades": evidence.get("closed_trades", 0) if evidence else 0,
+            "win_rate": evidence.get("win_rate", 0) if evidence else 0,
+            "average_r": evidence.get("average_r", 0) if evidence else 0,
+            "total_r": evidence.get("total_r", 0) if evidence else 0,
+            "max_drawdown_usdt": evidence.get("max_drawdown_usdt", 0) if evidence else 0,
+            "live_allowed": evidence.get("live_allowed", False) if evidence else False,
+            "live_reason": evidence.get("live_reason", "evidence lock not run") if evidence else "evidence lock not run",
+            "has_anomaly": evidence.get("has_anomaly", False) if evidence else False,
+        } if evidence else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,
