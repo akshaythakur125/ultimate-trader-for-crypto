@@ -556,11 +556,19 @@ def main():
     if paper:
         pstatus = paper.get("status", "N/A")
         ptrade = paper.get("current_paper_trade")
+        pcfg = paper.get("paper_config", {})
         paper_lines = [
             "",
             "  PAPER EXECUTION:",
             f"    Status:    {pstatus}",
         ]
+        # Config summary
+        if pcfg:
+            paper_lines += [
+                f"    Capital:   {pcfg.get('account_capital_usdt', '?')} USDT  "
+                f"Risk/Trade: {pcfg.get('max_risk_per_trade_usdt', '?')} USDT  "
+                f"Max Notional: {pcfg.get('max_notional_per_trade_usdt', '?')} USDT",
+            ]
         if ptrade:
             paper_lines += [
                 f"    Symbol:    {ptrade.get('symbol', 'N/A')} {ptrade.get('side', 'N/A')}",
@@ -579,21 +587,30 @@ def main():
         pf = paper.get("portfolio")
         if pf:
             paper_lines += [
-                f"    Portfolio:     {pf.get('active_count',0)} / {pf.get('max_allowed',5)} active",
+                f"    Portfolio:     {pf.get('active_count',0)} / {pf.get('max_allowed',5)} active, "
+                f"Risk: {pf.get('total_risk_usdt',0):.2f} USDT ({pf.get('total_risk_pct',0)}%)",
             ]
             for t in pf.get("active_trades", []):
                 paper_lines.append(
                     f"      {t.get('symbol','?')} {t.get('side','?')} "
                     f"RR:1:{t.get('rr',0)} Entry:{t.get('entry',0)} "
+                    f"Risk:{t.get('risk',0):.2f} "
                     f"P&L:{t.get('unrealized_pnl',0):.2f} "
                     f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
                 )
             paper_lines.append(
                 f"    Exposure: {pf.get('total_notional_exposure',0):.2f} USDT  "
-                f"Unrealized: {pf.get('total_unrealized_pnl',0):.4f} USDT  "
-                f"Risk: {pf.get('total_risk_usdt',0):.4f} USDT"
+                f"Total Risk: {pf.get('total_risk_usdt',0):.2f} USDT  "
+                f"Unrealized: {pf.get('total_unrealized_pnl',0):.4f} USDT"
             )
-        paper_lines.append("")
+            rejected = pf.get("rejected_candidates", [])
+            if rejected:
+                paper_lines += ["", "    Rejected Paper Candidates:"]
+                for r in rejected[-5:]:
+                    paper_lines.append(f"      - {r}")
+            paper_lines.append("")
+        else:
+            paper_lines.append("")
     else:
         paper_lines = ["", "  PAPER EXECUTION: MISSING (no report)", ""]
 
@@ -692,12 +709,21 @@ def main():
         pr_next = paper_rotation.get("next_action", "N/A")
         pr_lock = paper_rotation.get("active_trade_lock_on", False)
         pr_cd = paper_rotation.get("candidate_discovery", {})
+        rcfg = paper_rotation.get("risk_config", {})
         rotation_engine_lines = [
             "",
             "  PAPER ROTATION ENGINE:",
             f"    Next Action:   {pr_next}",
             f"    Trade Lock:    {'ON' if pr_lock else 'OFF'}",
-            f"    Total:         {pr_cd.get('total_candidates',0)}  "
+            f"    Portfolio:     {paper_rotation.get('active_trades_count',0)} / {paper_rotation.get('max_paper_trades',5)}",
+        ]
+        if rcfg:
+            rotation_engine_lines.append(
+                f"    Risk Budget:   Capital {rcfg.get('account_capital_usdt','?')} USDT  "
+                f"Max/Trade {rcfg.get('max_risk_per_trade_usdt','?')} USDT"
+            )
+        rotation_engine_lines += [
+            f"    Candidates:    Total {pr_cd.get('total_candidates',0)}  "
             f"Eligible: {pr_cd.get('eligible_candidates',0)}  "
             f"Fresh: {pr_cd.get('fresh_eligible',0)}",
         ]

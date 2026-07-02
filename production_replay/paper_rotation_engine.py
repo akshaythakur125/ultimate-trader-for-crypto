@@ -23,6 +23,14 @@ PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 
 MAX_PAPER_TRADES = 5
 
+# Paper portfolio risk/capital config (mirrored from paper_execution_ledger)
+PAPER_ACCOUNT_CAPITAL_USDT = 400
+PAPER_MAX_RISK_PER_TRADE_PCT = 1.0
+PAPER_MAX_PORTFOLIO_RISK_PCT = 5.0
+PAPER_MAX_OPEN_TRADES = 5
+PAPER_MAX_NOTIONAL_PER_TRADE_PCT = 25.0
+PAPER_MAX_LEVERAGE = 2
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -148,6 +156,13 @@ def run_paper_rotation_engine() -> dict:
         next_action = "NO_VALID_CANDIDATE"
         reasons.append("no eligible candidate found for rotation")
 
+    risk_config = {
+        "account_capital_usdt": PAPER_ACCOUNT_CAPITAL_USDT,
+        "max_risk_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_RISK_PER_TRADE_PCT / 100.0, 2),
+        "max_portfolio_risk_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_PORTFOLIO_RISK_PCT / 100.0, 2),
+        "max_notional_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_NOTIONAL_PER_TRADE_PCT / 100.0 * PAPER_MAX_LEVERAGE, 2),
+    }
+
     report = {
         "mode": "paper_rotation_engine",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -160,6 +175,7 @@ def run_paper_rotation_engine() -> dict:
         "active_trades_count": len(active_trades),
         "available_slots": available_slots,
         "max_paper_trades": MAX_PAPER_TRADES,
+        "risk_config": risk_config,
         "active_trades": active_trades,
         "rotation_candidate": {
             "symbol": best_candidate.get("symbol", ""),
@@ -203,6 +219,12 @@ def _write_text_report(report: dict):
         f"  Trade Lock:        {'ON' if report['active_trade_lock_on'] else 'OFF'}",
         f"  Portfolio:         {report['active_trades_count']} / {report['max_paper_trades']} active",
         f"  Available Slots:   {report['available_slots']}",
+        "",
+        "  Paper Risk Config:",
+        f"    Account Capital:          {report['risk_config']['account_capital_usdt']} USDT",
+        f"    Max Risk / Trade:         {report['risk_config']['max_risk_per_trade_usdt']} USDT",
+        f"    Max Portfolio Risk:       {report['risk_config']['max_portfolio_risk_usdt']} USDT",
+        f"    Max Notional / Trade:     {report['risk_config']['max_notional_per_trade_usdt']} USDT",
         "",
     ]
 

@@ -1,19 +1,22 @@
 """Paper-trade execution ledger for live-micro rehearsal.
 
-Manages a portfolio of up to 5 simultaneous paper trades. Reads shadow intent
-and preflight output, creates virtual paper positions, and monitors simulated
+Manages a portfolio of up to 5 simultaneous paper trades with configurable
+capital and risk limits. Reads shadow intent and rotation output, creates
+virtual paper positions with exchange-compliant sizing, and monitors simulated
 fills, stops, and targets using read-only market API.
 
 This module NEVER places real orders, NEVER sets BINGX_EXECUTION_MODE=live_micro,
 and NEVER sets LIVE_TRADING_ACK.
 """
 
-import json, os, sys
+import json, math, os, sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from production_replay.bingx_client import get_swap_ticker
+import requests
+
+from production_replay.bingx_client import get_swap_ticker, load_credentials
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
@@ -24,6 +27,22 @@ PAPER_TRADE_FILE = os.path.join(STATE_DIR, "current_paper_trade.json")
 PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 
 MAX_PAPER_TRADES = 5
+
+# Paper portfolio risk/capital config
+PAPER_ACCOUNT_CAPITAL_USDT = 400
+PAPER_MAX_RISK_PER_TRADE_PCT = 1.0
+PAPER_MAX_PORTFOLIO_RISK_PCT = 5.0
+PAPER_MAX_OPEN_TRADES = 5
+PAPER_MAX_NOTIONAL_PER_TRADE_PCT = 25.0
+PAPER_MAX_LEVERAGE = 2
+
+# Rejection reason codes
+REASON_PORTFOLIO_FULL = "PAPER_MAX_OPEN_TRADES_REACHED"
+REASON_DUPLICATE = "PAPER_DUPLICATE_SYMBOL_SIDE"
+REASON_RISK_TOO_HIGH = "PAPER_RISK_TOO_HIGH"
+REASON_PORTFOLIO_RISK_TOO_HIGH = "PAPER_PORTFOLIO_RISK_TOO_HIGH"
+REASON_NOTIONAL_TOO_HIGH = "PAPER_NOTIONAL_TOO_HIGH"
+REASON_EXCHANGE_MIN_SIZE = "PAPER_EXCHANGE_MIN_SIZE_TOO_LARGE"
 
 
 def _read_json(path: str) -> dict:
@@ -95,8 +114,142 @@ def _calculate_pnl(side: str, entry: float, exit_price: float, quantity: float) 
     return round(diff * quantity, 4)
 
 
+def _round_to_step_size(value: float, step_size: float, ceil: bool = True) -> float:
+    if step_size <= 0:
+        return value
+    precision = 0
+    s = str(step_size)
+    if "." in s:
+        precision = len(s.split(".")[1])
+    mult = 10 ** precision
+    step_clean = int(round(step_size * mult))
+    scaled = value * mult
+    if ceil:
+        result = math.ceil(scaled - 1e-9)
+        result = ((result + step_clean - 1) // step_clean) * step_clean
+    else:
+        result = int(scaled // step_clean) * step_clean
+    return result / mult
+
+
+def _calculate_exchange_quantity(
+    requested_qty: float, min_qty: float, step_size: float,
+    entry: float, stop: float, min_notional: float, max_risk: float,
+) -> tuple[float, float, float, bool, str]:
+    qty = requested_qty
+    if qty <= 0:
+        return 0, 0, 0, False, "requested quantity is 0"
+    if step_size > 0:
+        qty = _round_to_step_size(qty, step_size, ceil=True)
+    if min_qty > 0 and qty < min_qty:
+        qty = min_qty
+        if step_size > 0:
+            qty = _round_to_step_size(qty, step_size, ceil=True)
+    notional = qty * entry
+    diff = abs(entry - stop)
+    actual_risk = qty * diff if diff > 0 else 0
+    if min_notional > 0 and notional < min_notional:
+        needed_qty = _round_to_step_size(min_notional / entry, step_size, ceil=True) if step_size > 0 else min_notional / entry
+        qty = max(qty, needed_qty)
+        notional = qty * entry
+        actual_risk = qty * diff if diff > 0 else 0
+    if step_size > 0:
+        qty = _round_to_step_size(qty, step_size, ceil=True)
+        notional = qty * entry
+        actual_risk = qty * diff if diff > 0 else 0
+    if min_qty > 0 and qty < min_qty:
+        return 0, 0, 0, False, f"cannot reach minQty {min_qty}"
+    if min_notional > 0 and notional < min_notional:
+        return 0, 0, 0, False, f"cannot reach minNotional {min_notional}"
+    if actual_risk > max_risk:
+        return qty, notional, actual_risk, False, f"actual risk {actual_risk:.2f} > max {max_risk} USDT"
+    return qty, notional, actual_risk, True, "valid"
+
+
+def _fetch_paper_contract_metadata(symbol: str) -> dict:
+    creds = load_credentials()
+    base_url = creds.get("base_url", "https://api.bingx.com")
+    try:
+        resp = requests.get(f"{base_url}/openApi/swap/v2/quote/contracts", timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") == 0:
+            for c in data.get("data", []):
+                if c.get("symbol") == symbol:
+                    return c
+    except Exception:
+        pass
+    return {}
+
+
+def _paper_exchange_sizing(symbol: str, entry: float, stop: float) -> dict:
+    """Calculate exchange-compliant size for a paper trade using paper risk budget."""
+    risk_per_unit = abs(entry - stop)
+    target_risk = PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_RISK_PER_TRADE_PCT / 100.0
+    if risk_per_unit <= 0:
+        return {"quantity": 0, "notional": 0, "risk": 0, "ok": False, "reason": "stop equals entry"}
+    raw_qty = target_risk / risk_per_unit
+
+    raw_contract = _fetch_paper_contract_metadata(symbol)
+    if raw_contract:
+        min_qty = float(raw_contract.get("tradeMinQuantity", 0) or 0)
+        qty_precision = int(raw_contract.get("quantityPrecision", 4))
+        step_size = 1 / (10 ** qty_precision) if qty_precision > 0 else 0
+        min_notional = float(raw_contract.get("tradeMinUSDT", 0) or 0)
+    else:
+        min_qty = 0
+        step_size = 0
+        min_notional = 0
+
+    final_qty, final_notional, actual_risk, sizing_ok, sizing_reason = _calculate_exchange_quantity(
+        raw_qty, min_qty, step_size, entry, stop, min_notional, target_risk,
+    )
+
+    return {
+        "quantity": final_qty,
+        "notional": final_notional,
+        "risk": actual_risk,
+        "ok": sizing_ok,
+        "reason": sizing_reason,
+        "min_qty": min_qty,
+        "step_size": step_size,
+        "min_notional": min_notional,
+    }
+
+
+def _paper_risk_check(symbol: str, side: str, entry: float, stop: float, target: float, portfolio: list[dict]) -> dict:
+    """Run all paper risk/capital checks. Returns result dict with ok + reason_code."""
+    active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    sizing = _paper_exchange_sizing(symbol, entry, stop)
+
+    if not sizing["ok"]:
+        return {"ok": False, "reason_code": REASON_EXCHANGE_MIN_SIZE, "reason": f"exchange sizing failed: {sizing['reason']}", "sizing": sizing}
+
+    final_risk = sizing["risk"]
+    final_notional = sizing["notional"]
+    final_qty = sizing["quantity"]
+
+    max_risk_per_trade = PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_RISK_PER_TRADE_PCT / 100.0
+    max_portfolio_risk = PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_PORTFOLIO_RISK_PCT / 100.0
+    max_notional_per_trade = PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_NOTIONAL_PER_TRADE_PCT / 100.0 * PAPER_MAX_LEVERAGE
+
+    if len(active_trades) >= PAPER_MAX_OPEN_TRADES:
+        return {"ok": False, "reason_code": REASON_PORTFOLIO_FULL, "reason": f"max {PAPER_MAX_OPEN_TRADES} open trades reached", "sizing": sizing}
+
+    if final_risk > max_risk_per_trade:
+        return {"ok": False, "reason_code": REASON_RISK_TOO_HIGH, "reason": f"risk {final_risk:.2f} > max per trade {max_risk_per_trade:.2f} USDT", "sizing": sizing}
+
+    total_open_risk = sum(float(t.get("risk", 0) or 0) for t in active_trades)
+    if total_open_risk + final_risk > max_portfolio_risk:
+        return {"ok": False, "reason_code": REASON_PORTFOLIO_RISK_TOO_HIGH, "reason": f"total risk {total_open_risk + final_risk:.2f} > max portfolio {max_portfolio_risk:.2f} USDT", "sizing": sizing}
+
+    if final_notional > max_notional_per_trade:
+        return {"ok": False, "reason_code": REASON_NOTIONAL_TOO_HIGH, "reason": f"notional {final_notional:.2f} > max {max_notional_per_trade:.2f} USDT", "sizing": sizing}
+
+    return {"ok": True, "reason_code": None, "reason": None, "sizing": sizing}
+
+
 def _monitor_trade(trade: dict) -> dict:
-    """Monitor a single open trade and return updated trade dict."""
     sym = trade.get("symbol", "")
     eside = trade.get("side", "")
     eentry = float(trade.get("entry", 0))
@@ -214,7 +367,6 @@ def run_paper_execution() -> dict:
     skipped_duplicates = []
     rejected_candidates = []
 
-    # -- Gates --
     gate_shadow_ready = shadow_decision == "SHADOW_READY"
     gate_preflight_pass = preflight_decision == "PREFLIGHT_PASS"
     gate_safe_mode = not execution_mode or execution_mode in ("read_only", "shadow_only")
@@ -230,7 +382,6 @@ def run_paper_execution() -> dict:
     if not gate_no_real_order:
         reasons.append("real order was already placed; paper rehearsal skipped")
 
-    # -- Extract data from shadow intent --
     shadow_intent = shadow.get("shadow_order_intent") if shadow else None
     symbol = str(shadow_intent.get("symbol", "")) if shadow_intent else ""
     side = str(shadow_intent.get("side", "") or shadow_intent.get("direction", "")) if shadow_intent else ""
@@ -242,7 +393,6 @@ def run_paper_execution() -> dict:
     risk = float(preflight.get("actual_risk_usdt", 0)) if preflight else 0
     rr = float(shadow_intent.get("rr_final", 0)) if shadow_intent else 0
 
-    # -- Read existing portfolio --
     portfolio = _read_portfolio()
     active_before = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
 
@@ -263,21 +413,39 @@ def run_paper_execution() -> dict:
         else:
             updated_portfolio.append(trade)
 
+    # -- Helper to attempt adding a trade with risk checks --
+    def _attempt_add_trade(sym: str, sd: str, en: float, st: float, tg: float, src: str, rr_val: float):
+        nonlocal status
+        if _is_duplicate(sym, sd, updated_portfolio):
+            skipped_duplicates.append(f"{sym} {sd} already active ({src})")
+            reasons.append(f"duplicate skipped ({src}): {sym} {sd} already in portfolio")
+            return
+
+        risk_result = _paper_risk_check(sym, sd, en, st, tg, updated_portfolio)
+        sizin = risk_result.get("sizing", {})
+        if not risk_result["ok"]:
+            rc = risk_result["reason_code"]
+            entry_str = f"entry={en} stop={st} qty={sizin.get('quantity',0)} notional={sizin.get('notional',0)} risk={sizin.get('risk',0)}"
+            rejected_candidates.append(f"[{rc}] {sym} {sd} {entry_str} — {risk_result['reason']}")
+            reasons.append(f"risk check failed ({rc}): {sym} {sd} — {risk_result['reason']}")
+            return
+
+        final_qty = sizin["quantity"]
+        final_notional = sizin["notional"]
+        final_risk = sizin["risk"]
+
+        new_trade = _create_trade_from_data(
+            sym, sd, en, st, tg, final_qty, final_notional, final_risk, rr_val, source=src,
+        )
+        updated_portfolio.append(new_trade)
+        new_trades_opened.append({"symbol": sym, "side": sd, "source": src, "quantity": final_qty, "notional": final_notional, "risk": final_risk})
+        _append_to_ledger(new_trade)
+        reasons.append(f"paper trade opened: {sym} {sd}, entry={en}, RR={rr_val}, qty={final_qty}, notional={final_notional:.2f}, risk={final_risk:.2f}")
+        status = "PAPER_OPEN"
+
     # -- Try to add new trade from shadow intent --
     if all_gates and symbol and side and entry > 0 and stop > 0 and target > 0 and quantity > 0:
-        if len([t for t in updated_portfolio if t.get("status") == "PAPER_OPEN"]) >= MAX_PAPER_TRADES:
-            rejected_candidates.append(f"max {MAX_PAPER_TRADES} paper trades reached, cannot add {symbol} {side}")
-            reasons.append(f"portfolio full: {symbol} {side} rejected (max {MAX_PAPER_TRADES})")
-        elif _is_duplicate(symbol, side, updated_portfolio):
-            skipped_duplicates.append(f"{symbol} {side} already active")
-            reasons.append(f"duplicate skipped: {symbol} {side} already in portfolio")
-        else:
-            new_trade = _create_trade_from_data(symbol, side, entry, stop, target, quantity, notional, risk, rr, source="shadow")
-            updated_portfolio.append(new_trade)
-            new_trades_opened.append(new_trade)
-            _append_to_ledger(new_trade)
-            reasons.append(f"paper trade opened: {symbol} {side}, entry={entry}, RR={rr}")
-            status = "PAPER_OPEN"
+        _attempt_add_trade(symbol, side, entry, stop, target, "shadow", rr)
 
     # -- Try to add trade from rotation report --
     rot_candidate = None
@@ -294,28 +462,7 @@ def run_paper_execution() -> dict:
         rot_stop = float(rot_candidate["stop"])
         rot_target = float(rot_candidate["target"])
         rot_rr = float(rot_candidate.get("rr", 0) or 0)
-
-        if len([t for t in updated_portfolio if t.get("status") == "PAPER_OPEN"]) >= MAX_PAPER_TRADES:
-            rejected_candidates.append(f"max {MAX_PAPER_TRADES} paper trades reached, cannot add {rot_sym} {rot_side} (rotation)")
-            reasons.append(f"portfolio full: {rot_sym} {rot_side} rotation rejected (max {MAX_PAPER_TRADES})")
-        elif _is_duplicate(rot_sym, rot_side, updated_portfolio):
-            skipped_duplicates.append(f"{rot_sym} {rot_side} already active (rotation)")
-            reasons.append(f"duplicate skipped (rotation): {rot_sym} {rot_side} already in portfolio")
-        else:
-            risk_per_unit = abs(rot_entry - rot_stop)
-            rot_qty = round(10.0 / risk_per_unit, 4) if risk_per_unit > 0 else 0.001
-            rot_notional = rot_entry * rot_qty
-            rot_risk = risk_per_unit * rot_qty
-
-            new_trade = _create_trade_from_data(
-                rot_sym, rot_side, rot_entry, rot_stop, rot_target,
-                rot_qty, rot_notional, rot_risk, rot_rr, source="rotation",
-            )
-            updated_portfolio.append(new_trade)
-            new_trades_opened.append(new_trade)
-            _append_to_ledger(new_trade)
-            reasons.append(f"paper trade opened via rotation: {rot_sym} {rot_side}, entry={rot_entry}, RR={rot_rr}")
-            status = "PAPER_OPEN"
+        _attempt_add_trade(rot_sym, rot_side, rot_entry, rot_stop, rot_target, "rotation", rot_rr)
 
     # -- Determine overall status --
     active_trades = [t for t in updated_portfolio if t.get("status") == "PAPER_OPEN"]
@@ -338,6 +485,18 @@ def run_paper_execution() -> dict:
     total_unrealized = sum(float(t.get("unrealized_pnl", 0) or 0) for t in active_trades)
     total_risk = sum(float(t.get("risk", 0) or 0) for t in active_trades)
 
+    paper_config = {
+        "account_capital_usdt": PAPER_ACCOUNT_CAPITAL_USDT,
+        "max_risk_per_trade_pct": PAPER_MAX_RISK_PER_TRADE_PCT,
+        "max_portfolio_risk_pct": PAPER_MAX_PORTFOLIO_RISK_PCT,
+        "max_open_trades": PAPER_MAX_OPEN_TRADES,
+        "max_notional_per_trade_pct": PAPER_MAX_NOTIONAL_PER_TRADE_PCT,
+        "max_leverage": PAPER_MAX_LEVERAGE,
+        "max_risk_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_RISK_PER_TRADE_PCT / 100.0, 2),
+        "max_portfolio_risk_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_PORTFOLIO_RISK_PCT / 100.0, 2),
+        "max_notional_per_trade_usdt": round(PAPER_ACCOUNT_CAPITAL_USDT * PAPER_MAX_NOTIONAL_PER_TRADE_PCT / 100.0 * PAPER_MAX_LEVERAGE, 2),
+    }
+
     report = {
         "mode": "paper_execution_ledger",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -354,6 +513,7 @@ def run_paper_execution() -> dict:
             "no_real_order": gate_no_real_order,
             "all_pass": all_gates,
         },
+        "paper_config": paper_config,
         "current_paper_trade": primary,
         "portfolio": {
             "active_count": len(active_trades),
@@ -366,6 +526,7 @@ def run_paper_execution() -> dict:
             "total_notional_exposure": round(total_notional, 2),
             "total_unrealized_pnl": round(total_unrealized, 4),
             "total_risk_usdt": round(total_risk, 4),
+            "total_risk_pct": round(total_risk / PAPER_ACCOUNT_CAPITAL_USDT * 100.0, 2) if PAPER_ACCOUNT_CAPITAL_USDT > 0 else 0,
         },
     }
 
@@ -383,6 +544,7 @@ def _write_text_report(
 ):
     current = report.get("current_paper_trade")
     pf = report.get("portfolio", {})
+    pc = report.get("paper_config", {})
     lines = [
         "=" * 60,
         "  PAPER EXECUTION LEDGER",
@@ -391,6 +553,13 @@ def _write_text_report(
         "",
         f"  Status: {status}",
         f"  Active Paper Trades: {pf.get('active_count', 0)} / {pf.get('max_allowed', MAX_PAPER_TRADES)}",
+        "",
+        "  Paper Config:",
+        f"    Account Capital:          {pc.get('account_capital_usdt', '?')} USDT",
+        f"    Max Risk / Trade:         {pc.get('max_risk_per_trade_usdt', '?')} USDT ({pc.get('max_risk_per_trade_pct', '?')}%)",
+        f"    Max Portfolio Risk:       {pc.get('max_portfolio_risk_usdt', '?')} USDT ({pc.get('max_portfolio_risk_pct', '?')}%)",
+        f"    Max Notional / Trade:     {pc.get('max_notional_per_trade_usdt', '?')} USDT",
+        f"    Max Leverage:             {pc.get('max_leverage', '?')}x",
         "",
         "  Gates:",
     ]
@@ -408,14 +577,15 @@ def _write_text_report(
                 f"    [{i}] {t.get('symbol','?')} {t.get('side','?')}",
                 f"        Entry: {t.get('entry',0)}  Stop: {t.get('stop',0)}  Target: {t.get('target',0)}",
                 f"        Qty: {t.get('quantity',0)}  Notional: {t.get('notional',0)}  RR: 1:{t.get('rr',0)}",
+                f"        Risk: {t.get('risk',0):.2f} USDT",
                 f"        Entry Fill: {'YES' if t.get('entry_fill_check') else 'NO'}  "
                 f"Unrealized P&L: {t.get('unrealized_pnl',0):.2f}",
             ]
         lines += [
             "",
             f"  Total Notional Exposure: {pf.get('total_notional_exposure', 0):.2f} USDT",
+            f"  Total Open Risk:         {pf.get('total_risk_usdt', 0):.2f} USDT ({pf.get('total_risk_pct', 0)}% of capital)",
             f"  Total Unrealized P&L:    {pf.get('total_unrealized_pnl', 0):.4f} USDT",
-            f"  Total Risk:              {pf.get('total_risk_usdt', 0):.4f} USDT",
         ]
     else:
         lines += ["", "  Active Paper Trades: NONE"]
@@ -423,7 +593,7 @@ def _write_text_report(
     if new_trades:
         lines += ["", "  New Paper Trades This Run:"]
         for t in new_trades:
-            lines.append(f"    + {t.get('symbol','?')} {t.get('side','?')} source={t.get('source','?')}")
+            lines.append(f"    + {t.get('symbol','?')} {t.get('side','?')} source={t.get('source','?')} qty={t.get('quantity',0)} notional={t.get('notional',0):.2f} risk={t.get('risk',0):.2f}")
     if skipped:
         lines += ["", "  Skipped Duplicates:"]
         for s in skipped:

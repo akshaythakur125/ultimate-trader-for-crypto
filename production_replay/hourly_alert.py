@@ -769,6 +769,8 @@ def _write_text_report(report: dict, action: str, reason: str):
             "  PAPER ROTATION ENGINE:",
             f"    Next Action:   {pr['next_action']}",
             f"    Trade Lock:    {'ON' if pr.get('active_trade_lock_on') else 'OFF'}",
+            f"    Portfolio:     {pr.get('active_trades_count',0)} / {pr.get('max_paper_trades',5)} active, "
+            f"{pr.get('available_slots',0)} slots free",
         ]
         rc = pr.get("rotation_candidate")
         if rc:
@@ -783,27 +785,47 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"Eligible {pcd.get('eligible_candidates',0)}  "
                 f"Fresh {pcd.get('fresh_eligible',0)}"
             )
+        rcfg = pr.get("risk_config", {})
+        if rcfg:
+            lines.append(
+                f"    Risk Budget:   Capital {rcfg.get('account_capital_usdt','?')} USDT, "
+                f"Max/Trade {rcfg.get('max_risk_per_trade_usdt','?')} USDT"
+            )
         lines += [""]
 
-    # Phase 64: Paper portfolio
-    portfolio = report.get("portfolio")
+    # Phase 64/66: Paper portfolio & risk config
+    paper_exec = report.get("paper_execution")
+    portfolio = (paper_exec or {}).get("portfolio")
+    paper_cfg = (paper_exec or {}).get("paper_config")
     if portfolio:
         lines += [
             "  PAPER PORTFOLIO:",
             f"    Active: {portfolio.get('active_count', 0)} / {portfolio.get('max_allowed', 5)}",
         ]
+        if paper_cfg:
+            lines += [
+                f"    Capital: {paper_cfg.get('account_capital_usdt', '?')} USDT  "
+                f"Max Risk/Trade: {paper_cfg.get('max_risk_per_trade_usdt', '?')} USDT  "
+                f"Max Portfolio Risk: {paper_cfg.get('max_portfolio_risk_usdt', '?')} USDT",
+            ]
         for t in portfolio.get("active_trades", []):
             lines.append(
                 f"    {t.get('symbol','?')} {t.get('side','?')} "
                 f"RR:1:{t.get('rr',0)} Entry:{t.get('entry',0)} "
+                f"Risk:{t.get('risk',0):.2f} "
                 f"P&L:{t.get('unrealized_pnl',0):.2f} "
                 f"{'FILLED' if t.get('entry_fill_check') else 'WAITING'}"
             )
         lines.append(
             f"    Exposure: {portfolio.get('total_notional_exposure',0):.2f} USDT  "
-            f"Unrealized: {portfolio.get('total_unrealized_pnl',0):.4f} USDT  "
-            f"Risk: {portfolio.get('total_risk_usdt',0):.4f} USDT"
+            f"Total Risk: {portfolio.get('total_risk_usdt',0):.2f} USDT ({portfolio.get('total_risk_pct',0)}%)  "
+            f"Unrealized: {portfolio.get('total_unrealized_pnl',0):.4f} USDT"
         )
+        rejected = portfolio.get("rejected_candidates", [])
+        if rejected:
+            lines += ["", "  Rejected Paper Candidates:"]
+            for r in rejected[-5:]:
+                lines.append(f"    - {r}")
         lines += [""]
 
     if best and not bridge_candidate_shown:
