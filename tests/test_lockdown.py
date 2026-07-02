@@ -5449,3 +5449,112 @@ def test_hourly_alert_has_live_armable_action():
     src = inspect.getsource(ha._determine_final_action)
     assert "LIVE_ARMABLE" in src
     assert "live_blocked_by_env" in src
+
+
+# ── Phase 56: One-Shot Live Micro Guard ───────────────────────────────
+
+def test_one_shot_guard_initial_state_disarmed():
+    """One-shot guard starts DISARMED."""
+    import production_replay.live_one_shot_guard as g
+    g.write_state("DISARMED")
+    assert g.read_state() == "DISARMED"
+
+
+def test_one_shot_guard_arm_disarm():
+    """One-shot guard transitions correctly between states."""
+    import production_replay.live_one_shot_guard as g
+    g.write_state("DISARMED")
+    g.set_armed()
+    assert g.read_state() == "ARMED_ONCE"
+    g.set_used()
+    assert g.read_state() == "USED"
+    g.set_disarmed()
+    assert g.read_state() == "DISARMED"
+    g.set_blocked()
+    assert g.read_state() == "BLOCKED"
+
+
+def test_one_shot_guard_live_executor_read_only_blocks():
+    """read_only still blocks even when guard is ARMED_ONCE."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "BINGX_EXECUTION_MODE" in src
+    assert "LIVE_TRADING_ACK" in src
+
+
+def test_one_shot_guard_ack_missing_blocks():
+    """Missing LIVE_TRADING_ACK still blocks execution."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "LIVE_TRADING_ACK" in src
+
+
+def test_one_shot_guard_disarmed_blocks():
+    """DISARMED state blocks live execution."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "one_shot_state" in src
+    assert "ARMED_ONCE" in src
+
+
+def test_one_shot_guard_used_blocks():
+    """USED state blocks repeat execution."""
+    from production_replay.live_one_shot_guard import read_state, set_used
+    set_used()
+    state = read_state()
+    assert state != "ARMED_ONCE"
+    assert state == "USED"
+
+
+def test_one_shot_guard_no_approved():
+    """One-shot guard has no APPROVED string."""
+    import inspect
+    import production_replay.live_one_shot_guard as g
+    src = inspect.getsource(g)
+    assert "APPROVED" not in src
+
+
+def test_one_shot_guard_no_withdrawal():
+    """One-shot guard has no withdrawal/transfer/send."""
+    import inspect
+    import production_replay.live_one_shot_guard as g
+    src = inspect.getsource(g)
+    for kw in ("withdraw", "transfer", "send"):
+        assert kw not in src.lower()
+
+
+def test_one_shot_guard_no_real_order():
+    """One-shot guard never places real orders."""
+    import inspect
+    import production_replay.live_one_shot_guard as g
+    src = inspect.getsource(g)
+    assert "order" not in src.lower() or "read_state" in src
+
+
+def test_one_shot_guard_hourly_alert_shows_state():
+    """Hourly alert report includes one_shot_state."""
+    import inspect
+    import production_replay.hourly_alert as ha
+    src = inspect.getsource(ha.run_hourly_alert)
+    assert "one_shot_state" in src
+
+
+def test_one_shot_guard_doctor_shows_state():
+    """Doctor packet includes one_shot_state."""
+    import inspect
+    import production_replay.doctor_daily_packet as ddp
+    src = inspect.getsource(ddp)
+    assert "one_shot_state" in src
+    assert "ONE SHOT LIVE GUARD" in src
+
+
+def test_one_shot_guard_live_executor_shows_gate():
+    """Live executor report includes one_shot_gate."""
+    import inspect
+    import production_replay.bingx_live_micro_executor as lme
+    src = inspect.getsource(lme.run_live_micro_executor)
+    assert "one_shot_gate" in src
+    assert "one_shot_state" in src

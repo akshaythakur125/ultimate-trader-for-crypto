@@ -66,6 +66,7 @@ def main():
     _run_module("production_replay.bingx_live_preflight")
     _run_module("production_replay.bingx_live_micro_executor")
     _run_module("production_replay.bingx_position_monitor", "--once")
+    _run_module("production_replay.live_one_shot_guard", "--status")
     _run_module("production_replay.hourly_alert")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
@@ -81,6 +82,8 @@ def main():
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
     pos_mon = _read_json(os.path.join(RESULTS_DIR, "position_monitor_status.json"))
     hourly = _read_json(os.path.join(RESULTS_DIR, "hourly_status.json"))
+    from production_replay.live_one_shot_guard import read_state as _read_one_shot
+    one_shot_state = _read_one_shot()
     entry = _read_ledger_latest()
 
     if entry:
@@ -530,6 +533,14 @@ def main():
     else:
         preflight_lines = ["", "  LIVE MICRO PREFLIGHT: MISSING (no report)", ""]
 
+    # One-shot live guard section
+    guard_lines = [
+        "",
+        "  ONE SHOT LIVE GUARD:",
+        f"    State:    {one_shot_state}",
+        "",
+    ]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -639,6 +650,7 @@ def main():
     lines += arbiter_lines
     lines += shadow_lines
     lines += preflight_lines
+    lines += guard_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines

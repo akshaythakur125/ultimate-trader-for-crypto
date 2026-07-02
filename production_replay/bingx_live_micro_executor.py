@@ -18,6 +18,7 @@ import requests
 
 from production_replay.bingx_client import load_credentials, credentials_found
 from production_replay.bingx_universe import is_bingx_listed, load_universe
+from production_replay.live_one_shot_guard import read_state, set_used, write_state
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
@@ -337,12 +338,21 @@ def run_live_micro_executor() -> dict:
     if kill_active:
         reasons.append("kill switch ON")
 
+    # -- 8. One-shot guard --
+    one_shot_state = read_state()
+    one_shot_ok = one_shot_state == "ARMED_ONCE"
+    if not one_shot_ok:
+        reasons.append(f"one-shot guard state is {one_shot_state}, need ARMED_ONCE")
+
     # -- Final decision --
-    all_gates = env_ok and safety_ok and strategy_ok and shadow_ok and risk_ok and account_ok and not kill_active
+    all_gates = env_ok and safety_ok and strategy_ok and shadow_ok and risk_ok and account_ok and not kill_active and one_shot_ok
 
     if all_gates and candidate:
         bingx_side = "BUY" if direction == "LONG" else "SELL"
         qty = 1  # micro quantity placeholder
+
+        # -- Mark one-shot USED before any order attempt --
+        set_used()
 
         # Step 1: place market entry
         entry_result = _signed_post(
@@ -438,7 +448,9 @@ def run_live_micro_executor() -> dict:
             "risk_gates": risk_ok,
             "account_gates": account_ok,
             "kill_switch": not kill_active,
+            "one_shot_gate": one_shot_ok,
         },
+        "one_shot_state": one_shot_state,
         "bridge_active": bridge_active,
         "dux_decision": dux_decision,
         "psychology_score": psych_score if not bridge_active else None,
@@ -467,6 +479,7 @@ def run_live_micro_executor() -> dict:
             "timestamp": report["timestamp"],
             "mode": "live_micro",
             "real_order": True,
+            "one_shot_state": "USED",
             "symbol": symbol,
             "side": bingx_side,
             "entry": entry,
@@ -477,6 +490,9 @@ def run_live_micro_executor() -> dict:
         }
         with open(LIVE_LEDGER, "a") as f:
             f.write(json.dumps(ledger_entry) + "\n")
+    # Also transition to USED if all gates passed but order failed (attempt was made)
+    elif all_gates and candidate and decision != "EXECUTED":
+        set_used()
 
     return report
 
@@ -491,6 +507,7 @@ def _write_text_report(report: dict, decision: str, reasons: list[str],
         "",
         f"  Execution Mode:     {report['execution_mode']}",
         f"  Live Armed:         {'YES' if report['live_armed'] else 'NO'}",
+        f"  One Shot State:     {report.get('one_shot_state', 'N/A')}",
         f"  Kill Switch:        {report['kill_switch']}",
         "",
         f"  Source:             {'trigger_bridge' if report.get('bridge_active') else 'dux'}",
@@ -513,6 +530,7 @@ def _write_text_report(report: dict, decision: str, reasons: list[str],
         f"    Risk:     {'PASS' if report['gates']['risk_gates'] else 'FAIL'}",
         f"    Account:  {'PASS' if report['gates']['account_gates'] else 'FAIL'}",
         f"    Kill Sw:  {'PASS' if report['gates']['kill_switch'] else 'FAIL'}",
+        f"    One-Shot: {'PASS' if report['gates']['one_shot_gate'] else 'FAIL'}",
         "",
     ]
 

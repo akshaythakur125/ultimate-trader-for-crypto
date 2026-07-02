@@ -104,6 +104,8 @@ def run_hourly_alert() -> dict:
     shadow = _read_json(os.path.join(RESULTS_DIR, "bingx_order_intent.json"))
     live = _read_json(os.path.join(RESULTS_DIR, "bingx_live_execution.json"))
     preflight = _read_json(os.path.join(RESULTS_DIR, "bingx_live_preflight.json"))
+    from production_replay.live_one_shot_guard import read_state as _read_one_shot
+    one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
 
     ts = datetime.now().isoformat()
@@ -341,6 +343,7 @@ def run_hourly_alert() -> dict:
         "open_positions": open_positions,
         "api_credentials_found": api_ok,
         "kill_switch": "ON" if kill_active else "OFF",
+        "one_shot_state": one_shot_state,
         "position_open": position_open,
         "emergency": emergency,
         "final_action": final_action,
@@ -564,6 +567,14 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Result:   {'All checks PASS' if pf_pass else 'Checks FAILED'}",
             "",
         ]
+
+    # Phase 56: One-shot live guard
+    os_state = report.get("one_shot_state", "N/A")
+    lines += [
+        "  ONE SHOT LIVE GUARD:",
+        f"    State:    {os_state}",
+        "",
+    ]
 
     if best and not bridge_candidate_shown:
         lines += [
