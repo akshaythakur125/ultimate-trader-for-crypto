@@ -207,6 +207,30 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run derivatives data collector for fresh data (Phase 79)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.derivatives_data_collector"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        pass
+    # Run breadwinner watchtower for fresh data (Phase 79)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.breadwinner_watchtower"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        pass
+    # Run paper signal outcome tracker for fresh data (Phase 79)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_signal_outcome_tracker"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -233,6 +257,9 @@ def run_hourly_alert() -> dict:
     breadwinner_strategy = _read_json(os.path.join(RESULTS_DIR, "breadwinner_strategy_report.json"))
     breadwinner_tournament = _read_json(os.path.join(RESULTS_DIR, "breadwinner_fast_tournament_report.json"))
     derivatives_edge = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
+    derivatives_collector = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
+    watchtower = _read_json(os.path.join(RESULTS_DIR, "breadwinner_watchtower_report.json"))
+    signal_tracker = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -554,6 +581,8 @@ def run_hourly_alert() -> dict:
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
         "strategy_promotion_arbiter": _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json")),
+        "breadwinner_watchtower": watchtower if watchtower else None,
+        "paper_signal_outcomes": signal_tracker if signal_tracker else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -1090,6 +1119,30 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Eligible Best:       {arb.get('eligible_best_family') or 'NONE'}",
             f"    Paper Candidate:     {arb.get('paper_candidate_family') or 'NONE'}",
             f"    Live allowed:        NO",
+            "",
+        ]
+
+    # Phase 79: Breadwinner watchtower
+    wt = report.get("breadwinner_watchtower")
+    if wt and wt.get("top_candidates"):
+        lines += [
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {wt.get('final_mode', 'N/A')}",
+            f"    Candidates Scored:   {wt.get('total_candidates_scored', 0)}",
+            f"    Top Candidates:      {len(wt.get('top_candidates', []))}",
+        ]
+        for i, c in enumerate(wt.get("top_candidates", [])[:3], 1):
+            lines.append(
+                f"    {i}. {c.get('symbol','?')} {c.get('direction','?')} "
+                f"RR:{c.get('rr',0):.1f} Score:{c.get('score',0):.1f} "
+                f"{c.get('setup_type','?')}"
+            )
+        lines += [""]
+    elif wt:
+        lines += [
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {wt.get('final_mode', 'KEEP_WATCHING')}",
+            f"    Top Candidates:      NONE",
             "",
         ]
 

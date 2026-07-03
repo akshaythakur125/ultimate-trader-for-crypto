@@ -8991,3 +8991,130 @@ def test_phase78_doctor_includes_derivatives():
         "production_replay.doctor_daily_packet", fromlist=["_"]
     ))
     assert "derivatives_edge_layer" in src
+
+
+# ============================================================
+# Phase 79: Hands-Off Breadwinner Watchtower
+# ============================================================
+
+def test_phase79_collector_writes_observations():
+    """Derivatives data collector writes observations to JSONL."""
+    import tempfile, json, os
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        obs_file = os.path.join(tmpdir, "test_obs.jsonl")
+        with patch("production_replay.derivatives_data_collector.OBS_FILE", obs_file):
+            from production_replay.derivatives_data_collector import collect_derivatives_data
+            # Mock the ticker fetch to avoid API call
+            with patch("production_replay.derivatives_data_collector.get_all_swap_tickers") as mock_tickers:
+                mock_tickers.return_value = [
+                    {"symbol": "BTC-USDT", "lastPrice": "65000", "volume": "1000000",
+                     "highPrice": "66000", "lowPrice": "64000", "priceChangePercent": "1.5"}
+                ]
+                with patch("production_replay.derivatives_data_collector.fetch_funding_rate") as mock_fr:
+                    mock_fr.return_value = None
+                    with patch("production_replay.derivatives_data_collector.fetch_open_interest") as mock_oi:
+                        mock_oi.return_value = None
+                        obs = collect_derivatives_data(max_symbols=1)
+            assert len(obs) >= 1
+            assert obs[0]["symbol"] == "BTC-USDT"
+            assert obs[0]["price"] == 65000
+            assert obs[0]["funding_available"] is False
+            assert obs[0]["oi_available"] is False
+            assert os.path.exists(obs_file)
+
+
+def test_phase79_watchtower_rejects_unsafe_trades():
+    """Watchtower rejects unsafe trades (low RR, missing stop/target)."""
+    from production_replay.breadwinner_watchtower import _score_candidate
+    from unittest.mock import MagicMock
+    portfolio = {"trades": []}
+    tiers = {"liquidity_sweep": "PAPER_PRIORITY"}
+    # Low RR - should reject
+    c = {"symbol": "BTC-USDT", "direction": "LONG", "setup_type": "LIQUIDATION_PROXY_SWEEP",
+         "rr": 1.0, "entry": 65000, "stop": 64000, "target": 66000, "volume_24h": 200000}
+    score, reasons = _score_candidate(c, tiers, portfolio, {})
+    assert score is None
+    assert any("RR" in r for r in reasons)
+
+
+def test_phase79_watchtower_accepts_promoted_paper_families():
+    """Watchtower accepts only PAPER_CANDIDATE or PAPER_PRIORITY families."""
+    from production_replay.breadwinner_watchtower import _score_candidate
+    portfolio = {"trades": []}
+    # Promoted family
+    tiers = {"liquidity_sweep": "PAPER_PRIORITY"}
+    c = {"symbol": "PEPE-USDT", "direction": "LONG", "setup_type": "LIQUIDATION_PROXY_SWEEP",
+         "rr": 3.0, "entry": 0.001, "stop": 0.0009, "target": 0.0013, "volume_24h": 200000}
+    score, reasons = _score_candidate(c, tiers, portfolio, {})
+    assert score is not None
+    assert score > 0
+    # Rejected family
+    tiers2 = {"liquidity_sweep": "REJECTED"}
+    score2, reasons2 = _score_candidate(c, tiers2, portfolio, {})
+    assert score2 is None
+
+
+def test_phase79_outcome_tracker_records_target_stop_expired():
+    """Outcome tracker records TARGET_HIT, STOP_HIT, and EXPIRED statuses."""
+    import tempfile, json, os
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outcomes_file = os.path.join(tmpdir, "test_outcomes.jsonl")
+        with patch("production_replay.paper_signal_outcome_tracker.OUTCOMES_FILE", outcomes_file):
+            from production_replay.paper_signal_outcome_tracker import (
+                register_paper_signal, update_signal_outcome
+            )
+            # Register a signal
+            sid = register_paper_signal("BTC-USDT", "LONG", 65000, 64000, 68000,
+                                         "LIQUIDATION_PROXY_SWEEP", "liquidity_sweep", 3.0)
+            assert sid is not None
+            # Update to TARGET_HIT
+            updated = update_signal_outcome("BTC-USDT", "LONG", "TARGET_HIT")
+            assert updated is not None
+            assert updated["status"] == "TARGET_HIT"
+            assert updated["r_multiple"] > 0
+
+
+def test_phase79_no_real_order_code():
+    """Phase 79 modules contain no real order code."""
+    import inspect
+    from production_replay import derivatives_data_collector
+    from production_replay import breadwinner_watchtower
+    from production_replay import paper_signal_outcome_tracker
+    src1 = inspect.getsource(derivatives_data_collector)
+    src2 = inspect.getsource(breadwinner_watchtower)
+    src3 = inspect.getsource(paper_signal_outcome_tracker)
+    for src in [src1, src2, src3]:
+        assert "place_order" not in src
+        assert "create_order" not in src
+        assert "submit_order" not in src
+        assert "BINGX_EXECUTION_MODE" not in src
+        assert "LIVE_TRADING_ACK" not in src
+
+
+def test_phase79_doctor_includes_watchtower():
+    """Doctor packet includes watchtower summary."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "watchtower" in src.lower() or "breadwinner_watchtower" in src
+
+
+def test_phase79_hourly_includes_watchtower():
+    """Hourly alert includes watchtower report."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "breadwinner_watchtower" in src
+
+
+def test_phase79_breadwinner_daily_includes_watchtower():
+    """Breadwinner daily report includes watchtower section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.breadwinner_daily_report", fromlist=["_"]
+    ))
+    assert "watchtower" in src.lower()

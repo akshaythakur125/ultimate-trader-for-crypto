@@ -64,20 +64,28 @@ def run_breadwinner_daily() -> dict:
     # Read derivatives edge layer
     derivatives_report = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
 
+    # Read breadwinner watchtower (Phase 79)
+    watchtower_report = _read_json(os.path.join(RESULTS_DIR, "breadwinner_watchtower_report.json"))
+
+    # Read paper signal outcome tracker (Phase 79)
+    signal_report = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
+
     # Determine final decision
     edge_decision = edge_report.get("final_decision", "NO_EDGE_FOUND")
     strategy_verdict = strategy_report.get("final_verdict", "NO_EDGE_FOUND")
     tournament_verdict = tournament_report.get("final_decision", "NO_EDGE_FOUND")
     derivatives_verdict = derivatives_report.get("final_decision", "NO_EDGE_FOUND")
+    watchtower_verdict = watchtower_report.get("final_mode", "KEEP_WATCHING") if watchtower_report else "KEEP_WATCHING"
     cleanup_invalidated = cleanup_report.get("invalidated_count", 0)
 
     # Use best verdict across all sources
     verdict_priority = {"PAPER_PRIORITY_FOUND": 4, "PAPER_PRIORITY": 4,
                         "BACKTESTABLE_EDGE_FOUND": 3, "PAPER_CANDIDATE_FOUND": 3, "PAPER_CANDIDATE": 3,
                         "PAPER_WATCHLIST_ONLY": 2,
-                        "NO_EDGE_FOUND": 0}
+                        "PAPER_SIGNAL_READY": 5, "LIVE_REVIEW_READY": 6,
+                        "NO_EDGE_FOUND": 0, "KEEP_WATCHING": 1}
     best_verdict = "NO_EDGE_FOUND"
-    for v in [edge_decision, strategy_verdict, tournament_verdict, derivatives_verdict]:
+    for v in [edge_decision, strategy_verdict, tournament_verdict, derivatives_verdict, watchtower_verdict]:
         if verdict_priority.get(v, 0) > verdict_priority.get(best_verdict, 0):
             best_verdict = v
 
@@ -141,6 +149,20 @@ def run_breadwinner_daily() -> dict:
             "final_decision": derivatives_verdict,
             "best_backtest": derivatives_report.get("best_backtest"),
             "live_observation": derivatives_report.get("live_observation", {}),
+        },
+        "watchtower": {
+            "final_mode": watchtower_verdict,
+            "candidates_scored": watchtower_report.get("total_candidates_scored", 0) if watchtower_report else 0,
+            "top_candidates": watchtower_report.get("top_candidates", []) if watchtower_report else [],
+            "live_review_ready": watchtower_report.get("live_review_ready", False) if watchtower_report else False,
+        },
+        "signal_outcomes": {
+            "closed_signals": signal_report.get("closed_signals", 0) if signal_report else 0,
+            "win_rate": signal_report.get("win_rate", 0) if signal_report else 0,
+            "avg_r": signal_report.get("avg_r", 0) if signal_report else 0,
+            "profit_factor": signal_report.get("profit_factor", 0) if signal_report else 0,
+            "max_consecutive_losses": signal_report.get("max_consecutive_losses", 0) if signal_report else 0,
+            "live_review_ready": signal_report.get("live_review_ready", False) if signal_report else False,
         },
         "legacy_cleanup": {
             "invalidated_count": cleanup_invalidated,
@@ -225,6 +247,47 @@ def _write_text_report(report: dict):
         f"    Total Notional:{report['portfolio_summary']['total_notional']:.2f} USDT",
         f"    Total Risk:   {report['portfolio_summary']['total_risk']:.2f} USDT",
         "",
+    ]
+
+    # Phase 79: Watchtower section
+    wt = report.get("watchtower", {})
+    if wt.get("top_candidates"):
+        lines += [
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {wt.get('final_mode', 'N/A')}",
+            f"    Candidates Scored:   {wt.get('candidates_scored', 0)}",
+            f"    Top Candidates:      {len(wt.get('top_candidates', []))}",
+        ]
+        for i, c in enumerate(wt.get("top_candidates", [])[:3], 1):
+            lines.append(
+                f"    {i}. {c.get('symbol','?')} {c.get('direction','?')} "
+                f"RR:{c.get('rr',0):.1f} Score:{c.get('score',0):.1f} "
+                f"{c.get('setup_type','?')}"
+            )
+        lines += [""]
+    else:
+        lines += [
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {wt.get('final_mode', 'KEEP_WATCHING')}",
+            f"    Top Candidates:      NONE",
+            "",
+        ]
+
+    # Phase 79: Signal outcomes section
+    so = report.get("signal_outcomes", {})
+    if so.get("closed_signals", 0) > 0:
+        lines += [
+            "  PAPER SIGNAL OUTCOMES:",
+            f"    Closed Signals:      {so.get('closed_signals', 0)}",
+            f"    Win Rate:            {so.get('win_rate', 0):.1%}",
+            f"    Average R:           {so.get('avg_r', 0):.4f}",
+            f"    Profit Factor:       {so.get('profit_factor', 0):.2f}",
+            f"    Max Consec Losses:   {so.get('max_consecutive_losses', 0)}",
+            f"    Live Review Ready:   {'YES' if so.get('live_review_ready') else 'NO'}",
+            "",
+        ]
+
+    lines += [
         f"  Live Trading: {report['live_trading']['reason']}",
         "",
         "  WARNING: Paper execution only. No real orders placed.",

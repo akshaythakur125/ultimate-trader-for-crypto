@@ -111,6 +111,8 @@ def main():
     breadwinner_strategy = _read_json(os.path.join(RESULTS_DIR, "breadwinner_strategy_report.json"))
     breadwinner_tournament = _read_json(os.path.join(RESULTS_DIR, "breadwinner_fast_tournament_report.json"))
     derivatives_edge = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
+    watchtower = _read_json(os.path.join(RESULTS_DIR, "breadwinner_watchtower_report.json"))
+    signal_tracker = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -919,6 +921,48 @@ def main():
             "",
         ]
 
+    # Phase 79: Breadwinner watchtower
+    wt_lines = []
+    if watchtower and watchtower.get("top_candidates"):
+        wt_lines = [
+            "",
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {watchtower.get('final_mode', 'N/A')}",
+            f"    Candidates Scored:   {watchtower.get('total_candidates_scored', 0)}",
+            f"    Top Candidates:      {len(watchtower.get('top_candidates', []))}",
+        ]
+        for i, c in enumerate(watchtower.get("top_candidates", [])[:3], 1):
+            wt_lines.append(
+                f"    {i}. {c.get('symbol','?')} {c.get('direction','?')} "
+                f"RR:{c.get('rr',0):.1f} Score:{c.get('score',0):.1f} "
+                f"{c.get('setup_type','?')}"
+            )
+        wt_lines.append("")
+    elif watchtower:
+        wt_lines = [
+            "",
+            "  BREADWINNER WATCHTOWER:",
+            f"    Final Mode:          {watchtower.get('final_mode', 'KEEP_WATCHING')}",
+            f"    Top Candidates:      NONE",
+            "",
+        ]
+
+    # Phase 79: Paper signal outcome tracker
+    st_lines = []
+    if signal_tracker:
+        st_lines = [
+            "",
+            "  PAPER SIGNAL OUTCOME TRACKER:",
+            f"    Closed Signals:      {signal_tracker.get('closed_signals', 0)}",
+            f"    Win Rate:            {signal_tracker.get('win_rate', 0):.1%}",
+            f"    Average R:           {signal_tracker.get('avg_r', 0):.4f}",
+            f"    Profit Factor:       {signal_tracker.get('profit_factor', 0):.2f}",
+            f"    Max Consec Losses:   {signal_tracker.get('max_consecutive_losses', 0)}",
+            f"    Live Review Ready:   {'YES' if signal_tracker.get('live_review_ready') else 'NO'}",
+            f"    Live Trading:        NO",
+            "",
+        ]
+
     live_lines = []
     if live:
         lmode = live.get("execution_mode", "?")
@@ -1052,6 +1096,8 @@ def main():
     lines += em_lines
     lines += tourn_lines
     lines += arb_lines
+    lines += wt_lines
+    lines += st_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
