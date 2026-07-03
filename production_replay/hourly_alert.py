@@ -499,6 +499,7 @@ def run_hourly_alert() -> dict:
         } if historical_brain else None,
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
+        "strategy_promotion_arbiter": _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json")),
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -1023,6 +1024,18 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Sample size:          {t_best_fam.get('total_trades', 0)}",
             f"    Verdict:              {tourn.get('overall_verdict', 'N/A')}",
             f"    Live allowed:         NO",
+            "",
+        ]
+
+    # Phase 73: Strategy promotion arbiter
+    arb = _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json"))
+    if arb and arb.get("families"):
+        lines += [
+            "  STRATEGY PROMOTION ARBITER:",
+            f"    Raw Best OOS:        {arb.get('raw_best_oos_family') or 'NONE'}",
+            f"    Eligible Best:       {arb.get('eligible_best_family') or 'NONE'}",
+            f"    Paper Candidate:     {arb.get('paper_candidate_family') or 'NONE'}",
+            f"    Live allowed:        NO",
             "",
         ]
 

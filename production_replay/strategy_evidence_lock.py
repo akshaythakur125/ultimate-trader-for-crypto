@@ -356,6 +356,7 @@ def run_strategy_evidence_lock() -> dict:
         ],
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
+        "strategy_promotion_arbiter": _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json")),
     }
 
     with open(JSON_PATH, "w") as f:
@@ -473,6 +474,18 @@ def _write_text_report(report: dict):
             f"  OOS win rate:              {t_best_fam.get('oos_win_rate', 'N/A')}%",
             f"  Sample size:               {t_best_fam.get('total_trades', 0)}",
             f"  Verdict:                   {tourn.get('overall_verdict', 'N/A')}",
+            f"  Live allowed:              NO",
+            "",
+        ]
+
+    arb = report.get("strategy_promotion_arbiter", {})
+    if arb and arb.get("families"):
+        lines += [
+            "",
+            "  === STRATEGY PROMOTION ARBITER ===",
+            f"  Raw Best OOS:              {arb.get('raw_best_oos_family') or 'NONE'}",
+            f"  Eligible Best:             {arb.get('eligible_best_family') or 'NONE'}",
+            f"  Paper Candidate:           {arb.get('paper_candidate_family') or 'NONE'}",
             f"  Live allowed:              NO",
             "",
         ]

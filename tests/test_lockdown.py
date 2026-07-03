@@ -8309,3 +8309,105 @@ def test_phase72_evidence_lock_includes_tournament():
         "production_replay.strategy_evidence_lock", fromlist=["_"]
     ))
     assert "strategy_family_tournament" in src
+
+
+# -------------------------------------------------------------------
+# Phase 73 — Strategy Promotion Arbiter
+# -------------------------------------------------------------------
+
+def test_phase73_compression_breakout_rejected():
+    """compression_breakout with 0 trades is rejected even if OOS Avg R is high."""
+    from production_replay.strategy_promotion_arbiter import _classify_family
+    fam = {"total_trades": 0, "oos_trades": 0, "is_avg_r": 5.0, "oos_avg_r": 5.0,
+           "oos_win_rate": 100.0, "profit_factor": 99.0, "max_dd": 0.0,
+           "max_consec_losses": 0, "unique_symbols": 0, "leakage_guard": "PASS"}
+    tier, reasons = _classify_family(fam)
+    assert tier == "REJECTED"
+    assert any("total trades" in r for r in reasons)
+
+
+def test_phase73_negative_is_not_candidate():
+    """Family with negative IS Avg R cannot become PAPER_CANDIDATE."""
+    from production_replay.strategy_promotion_arbiter import _classify_family
+    fam = {"total_trades": 500, "oos_trades": 150, "is_avg_r": -0.1, "oos_avg_r": 0.5,
+           "oos_win_rate": 40.0, "profit_factor": 1.5, "max_dd": 10.0,
+           "max_consec_losses": 10, "unique_symbols": 100, "leakage_guard": "PASS"}
+    tier, reasons = _classify_family(fam)
+    assert tier == "OBSERVE_ONLY"
+    assert any("IS avg R" in r for r in reasons)
+
+
+def test_phase73_positive_is_oos_can_be_candidate():
+    """Family with positive IS and OOS can become PAPER_CANDIDATE."""
+    from production_replay.strategy_promotion_arbiter import _classify_family
+    fam = {"total_trades": 500, "oos_trades": 150, "is_avg_r": 0.05, "oos_avg_r": 0.05,
+           "oos_win_rate": 35.0, "profit_factor": 1.2, "max_dd": 20.0,
+           "max_consec_losses": 15, "unique_symbols": 80, "leakage_guard": "PASS"}
+    tier, reasons = _classify_family(fam)
+    assert tier == "PAPER_CANDIDATE"
+
+
+def test_phase73_live_blocked():
+    """Arbiter does not enable live trading."""
+    from production_replay.strategy_promotion_arbiter import run_arbiter
+    report = run_arbiter()
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_phase73_no_real_orders():
+    """Arbiter does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.strategy_promotion_arbiter", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower()
+    assert "create_order" not in src.lower()
+    assert "APPROVED" not in src
+
+
+def test_phase73_report_separates_raw_from_eligible():
+    """Report separates raw best OOS from eligible best."""
+    from production_replay.strategy_promotion_arbiter import run_arbiter
+    report = run_arbiter()
+    assert "raw_best_oos_family" in report
+    assert "eligible_best_family" in report
+    assert "paper_candidate_family" in report
+
+
+def test_phase73_hourly_includes_arbiter():
+    """Hourly alert includes promotion arbiter section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "strategy_promotion_arbiter" in src
+
+
+def test_phase73_doctor_includes_arbiter():
+    """Doctor daily packet includes promotion arbiter section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "strategy_promotion_arbiter" in src
+
+
+def test_phase73_evidence_lock_includes_arbiter():
+    """Strategy evidence lock includes promotion arbiter section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.strategy_evidence_lock", fromlist=["_"]
+    ))
+    assert "strategy_promotion_arbiter" in src
+
+
+def test_phase73_evidence_lock_remains_blocked():
+    """Evidence lock remains blocked without forward paper trades."""
+    from production_replay.strategy_promotion_arbiter import run_arbiter
+    report = run_arbiter()
+    # Even if there are PAPER_CANDIDATE families, live is still blocked
+    assert report.get("live_trading_enabled") is False
+    # Final action should be EVIDENCE_BLOCKED
+    for c in report.get("families", {}).values():
+        assert c["tier"] != "LIVE_ELIGIBLE"

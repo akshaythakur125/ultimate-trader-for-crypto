@@ -893,6 +893,20 @@ def main():
             "",
         ]
 
+    # Phase 73: Strategy promotion arbiter
+    arb_data = _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json"))
+    arb_lines = []
+    if arb_data and arb_data.get("families"):
+        arb_lines = [
+            "",
+            "  STRATEGY PROMOTION ARBITER:",
+            f"    Raw Best OOS:        {arb_data.get('raw_best_oos_family') or 'NONE'}",
+            f"    Eligible Best:       {arb_data.get('eligible_best_family') or 'NONE'}",
+            f"    Paper Candidate:     {arb_data.get('paper_candidate_family') or 'NONE'}",
+            f"    Live allowed:        NO",
+            "",
+        ]
+
     live_lines = []
     if live:
         lmode = live.get("execution_mode", "?")
@@ -1025,6 +1039,7 @@ def main():
     lines += historical_lines
     lines += em_lines
     lines += tourn_lines
+    lines += arb_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1251,6 +1266,7 @@ def main():
         } if historical_brain else None,
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
+        "strategy_promotion_arbiter": _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json")),
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,
