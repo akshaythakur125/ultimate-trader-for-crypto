@@ -779,7 +779,7 @@ def main():
 
     # Phase 69: Trader brain / pattern memory
     pattern_memory_lines = []
-    if pattern_memory and pattern_memory.get("total_analyzed", 0) > 0:
+    if pattern_memory:
         pm = pattern_memory
         pattern_memory_lines = [
             "",
@@ -794,24 +794,32 @@ def main():
                 f"    Best Pattern:            {bp['pattern']} ({bp['trades']} trades, "
                 f"avg R {bp['avg_r']}, WR {bp['win_rate']}%)"
             )
+        else:
+            pattern_memory_lines.append("    Best Pattern:            N/A")
         wp = pm.get("worst_pattern")
         if wp:
             pattern_memory_lines.append(
                 f"    Worst Pattern:           {wp['pattern']} ({wp['trades']} trades, "
                 f"avg R {wp['avg_r']}, WR {wp['win_rate']}%)"
             )
+        else:
+            pattern_memory_lines.append("    Worst Pattern:           N/A")
         bs = pm.get("best_symbol")
         if bs:
             pattern_memory_lines.append(
                 f"    Best Symbol:             {bs['symbol']} ({bs['trades']} trades, "
                 f"avg R {bs['avg_r']}, WR {bs['win_rate']}%)"
             )
+        else:
+            pattern_memory_lines.append("    Best Symbol:            N/A")
         ws = pm.get("worst_symbol")
         if ws:
             pattern_memory_lines.append(
                 f"    Worst Symbol:            {ws['symbol']} ({ws['trades']} trades, "
                 f"avg R {ws['avg_r']}, WR {ws['win_rate']}%)"
             )
+        else:
+            pattern_memory_lines.append("    Worst Symbol:           N/A")
         ls = pm.get("long_short_summary", {})
         pattern_memory_lines.append(
             f"    Long vs Short Edge:      LONG: {ls.get('long_trades', 0)} trades, "

@@ -918,24 +918,32 @@ def _write_text_report(report: dict, action: str, reason: str):
                 f"    Best Pattern:            {bp['pattern']} ({bp['trades']} trades, "
                 f"avg R {bp['avg_r']}, WR {bp['win_rate']}%)"
             )
+        else:
+            lines.append("    Best Pattern:            N/A")
         wp = pm.get("worst_pattern")
         if wp:
             lines.append(
                 f"    Worst Pattern:           {wp['pattern']} ({wp['trades']} trades, "
                 f"avg R {wp['avg_r']}, WR {wp['win_rate']}%)"
             )
+        else:
+            lines.append("    Worst Pattern:           N/A")
         bs = pm.get("best_symbol")
         if bs:
             lines.append(
                 f"    Best Symbol:             {bs['symbol']} ({bs['trades']} trades, "
                 f"avg R {bs['avg_r']}, WR {bs['win_rate']}%)"
             )
+        else:
+            lines.append("    Best Symbol:            N/A")
         ws = pm.get("worst_symbol")
         if ws:
             lines.append(
                 f"    Worst Symbol:            {ws['symbol']} ({ws['trades']} trades, "
                 f"avg R {ws['avg_r']}, WR {ws['win_rate']}%)"
             )
+        else:
+            lines.append("    Worst Symbol:           N/A")
         ls = pm.get("long_short_summary", {})
         lines.append(
             f"    Long vs Short Edge:      LONG: {ls.get('long_trades', 0)} trades, "
