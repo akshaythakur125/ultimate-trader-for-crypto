@@ -33,6 +33,12 @@ MIN_SYMBOLS_PER_GROUP = 3
 MIN_WIN_RATE = 20.0
 MIN_AVG_R = 0.0
 
+BANNED_GROUPING_FIELDS = {
+    "r_result", "r_after_fees", "is_win", "outcome", "exit_reason",
+    "exit_price", "max_favorable_excursion_pct", "max_adverse_excursion_pct",
+    "holding_candles",
+}
+
 V_EDGE_NOT_FOUND = "EDGE_NOT_FOUND"
 V_EDGE_FRAGILE = "EDGE_FRAGILE"
 V_EDGE_PROMISING = "EDGE_PROMISING_REVIEW"
@@ -198,6 +204,27 @@ def _check_overfit(grp: dict) -> dict:
     return verdict, recommendation, issues
 
 
+def _check_leakage(groups: list[dict]) -> dict:
+    """Verify no grouping uses outcome-derived fields."""
+    used_fields = set()
+    for grp in groups:
+        label = grp.get("group", "")
+        field = label.split(":")[0] if ":" in label else ""
+        if "+" in field:
+            for part in field.split("+"):
+                used_fields.add(part)
+        else:
+            used_fields.add(field)
+
+    leaked = used_fields & BANNED_GROUPING_FIELDS
+    return {
+        "leakage_guard": "PASS" if not leaked else "FAIL",
+        "banned_fields_removed": len(leaked) == 0,
+        "banned_fields_found": sorted(leaked),
+        "allowed_fields": sorted(used_fields - BANNED_GROUPING_FIELDS),
+    }
+
+
 def run_edge_miner() -> dict:
     trades = _read_trades()
     if not trades:
@@ -262,21 +289,6 @@ def run_edge_miner() -> dict:
     for sd, st in by_sd.items():
         groups.append(analyze_group(st, f"symbol+direction:{sd}"))
 
-    # 9. RR bucket
-    by_rr = defaultdict(list)
-    for t in trades:
-        rr = abs(t.get("r_result", 0))
-        if rr < 1:
-            by_rr["0-1"].append(t)
-        elif rr < 2:
-            by_rr["1-2"].append(t)
-        elif rr < 4:
-            by_rr["2-4"].append(t)
-        else:
-            by_rr["4+"].append(t)
-    for rr_b, st in by_rr.items():
-        groups.append(analyze_group(st, f"rr_bucket:{rr_b}"))
-
     # Run overfit check on each group
     accepted = []
     rejected = []
@@ -334,6 +346,7 @@ def run_edge_miner() -> dict:
         "top_accepted": [g for g in accepted[:20]],
         "top_rejected": [g for g in rejected[:20]],
         "overfit_groups": [g for g in overfit_groups[:20]],
+        "leakage_guard": _check_leakage(groups),
         "warnings": [],
     }
 
@@ -398,6 +411,18 @@ def _write_text_report(report: dict):
         f"  Recommendation:         {report['recommendation']}",
         "",
     ]
+
+    lg = report.get("leakage_guard", {})
+    if lg:
+        lines += [
+            "  === LEAKAGE GUARD ===",
+            f"  Status:                 {lg.get('leakage_guard', '?')}",
+            f"  Banned fields removed:  {'yes' if lg.get('banned_fields_removed') else 'no'}",
+            f"  Allowed fields:         {', '.join(lg.get('allowed_fields', []))}",
+        ]
+        if lg.get("banned_fields_found"):
+            lines.append(f"  BANNED FOUND:           {', '.join(lg['banned_fields_found'])}")
+        lines.append("")
 
     if report["top_accepted"]:
         lines += ["", "  TOP 20 POSITIVE GROUPS (by OOS avg R):", ""]

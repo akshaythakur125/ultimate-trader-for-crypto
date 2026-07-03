@@ -8132,3 +8132,57 @@ def test_phase71_evidence_lock_includes_edge_miner():
         "production_replay.strategy_evidence_lock", fromlist=["_"]
     ))
     assert "historical_edge_miner" in src, "evidence lock does not reference edge miner"
+
+
+# -------------------------------------------------------------------
+# Phase 71B — leakage guard
+# -------------------------------------------------------------------
+
+def test_phase71b_leakage_guard_passes():
+    """Leakage guard passes with no banned fields."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    lg = report.get("leakage_guard", {})
+    assert lg.get("leakage_guard") == "PASS"
+    assert lg.get("banned_fields_removed") is True
+
+
+def test_phase71b_no_rr_bucket_grouping():
+    """No group label should contain 'rr_bucket'."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    all_groups = report.get("top_accepted", []) + report.get("top_rejected", [])
+    for g in all_groups:
+        assert "rr_bucket" not in g.get("group", ""), f"leaked rr_bucket in {g['group']}"
+
+
+def test_phase71b_no_outcome_grouping():
+    """No group label should contain banned outcome fields."""
+    from production_replay.historical_edge_miner import run_edge_miner, BANNED_GROUPING_FIELDS
+    report = run_edge_miner()
+    all_groups = report.get("top_accepted", []) + report.get("top_rejected", [])
+    for g in all_groups:
+        label = g.get("group", "")
+        for banned in BANNED_GROUPING_FIELDS:
+            assert banned not in label, f"leaked {banned} in {label}"
+
+
+def test_phase71b_report_has_leakage_guard_field():
+    """Report JSON includes leakage_guard dict."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    assert "leakage_guard" in report
+    lg = report["leakage_guard"]
+    assert "leakage_guard" in lg
+    assert "banned_fields_removed" in lg
+    assert "allowed_fields" in lg
+
+
+def test_phase71b_allowed_fields_are_entry_time_only():
+    """Allowed fields should only be entry-time features."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    lg = report.get("leakage_guard", {})
+    allowed = set(lg.get("allowed_fields", []))
+    entry_time_fields = {"symbol", "timeframe", "direction", "pattern"}
+    assert allowed <= entry_time_fields, f"unexpected allowed fields: {allowed - entry_time_fields}"
