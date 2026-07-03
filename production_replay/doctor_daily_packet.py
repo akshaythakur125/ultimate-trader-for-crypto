@@ -81,6 +81,7 @@ def main():
     _run_module("production_replay.breadwinner_daily_report")
     _run_module("production_replay.breadwinner_backtest")
     _run_module("production_replay.breadwinner_fast_tournament")
+    _run_module("production_replay.derivatives_edge_layer")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -109,6 +110,7 @@ def main():
     breadwinner = _read_json(os.path.join(RESULTS_DIR, "breadwinner_daily_report.json"))
     breadwinner_strategy = _read_json(os.path.join(RESULTS_DIR, "breadwinner_strategy_report.json"))
     breadwinner_tournament = _read_json(os.path.join(RESULTS_DIR, "breadwinner_fast_tournament_report.json"))
+    derivatives_edge = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
     entry = _read_ledger_latest()
 
     if entry:

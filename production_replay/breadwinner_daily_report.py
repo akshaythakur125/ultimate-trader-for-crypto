@@ -61,18 +61,23 @@ def run_breadwinner_daily() -> dict:
     # Read breadwinner fast tournament
     tournament_report = _read_json(os.path.join(RESULTS_DIR, "breadwinner_fast_tournament_report.json"))
 
+    # Read derivatives edge layer
+    derivatives_report = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
+
     # Determine final decision
     edge_decision = edge_report.get("final_decision", "NO_EDGE_FOUND")
     strategy_verdict = strategy_report.get("final_verdict", "NO_EDGE_FOUND")
     tournament_verdict = tournament_report.get("final_decision", "NO_EDGE_FOUND")
+    derivatives_verdict = derivatives_report.get("final_decision", "NO_EDGE_FOUND")
     cleanup_invalidated = cleanup_report.get("invalidated_count", 0)
 
     # Use best verdict across all sources
-    verdict_priority = {"PAPER_PRIORITY_FOUND": 3, "PAPER_PRIORITY": 3,
-                        "PAPER_CANDIDATE_FOUND": 2, "PAPER_CANDIDATE": 2,
+    verdict_priority = {"PAPER_PRIORITY_FOUND": 4, "PAPER_PRIORITY": 4,
+                        "BACKTESTABLE_EDGE_FOUND": 3, "PAPER_CANDIDATE_FOUND": 3, "PAPER_CANDIDATE": 3,
+                        "PAPER_WATCHLIST_ONLY": 2,
                         "NO_EDGE_FOUND": 0}
     best_verdict = "NO_EDGE_FOUND"
-    for v in [edge_decision, strategy_verdict, tournament_verdict]:
+    for v in [edge_decision, strategy_verdict, tournament_verdict, derivatives_verdict]:
         if verdict_priority.get(v, 0) > verdict_priority.get(best_verdict, 0):
             best_verdict = v
 
@@ -131,6 +136,11 @@ def run_breadwinner_daily() -> dict:
             "best_timeframe": tournament_report.get("best_timeframe"),
             "variants_tested": tournament_report.get("variants_tested", 0),
             "variants_passed": tournament_report.get("variants_passed", 0),
+        },
+        "derivatives_edge": {
+            "final_decision": derivatives_verdict,
+            "best_backtest": derivatives_report.get("best_backtest"),
+            "live_observation": derivatives_report.get("live_observation", {}),
         },
         "legacy_cleanup": {
             "invalidated_count": cleanup_invalidated,

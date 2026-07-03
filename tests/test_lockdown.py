@@ -8904,3 +8904,90 @@ def test_phase77_hourly_includes_tournament():
         "production_replay.hourly_alert", fromlist=["_"]
     ))
     assert "breadwinner_fast_tournament" in src
+
+
+# -------------------------------------------------------------------
+# Phase 78 — Derivatives Edge Layer
+# -------------------------------------------------------------------
+
+def test_phase78_detects_oi_compression_mock():
+    """Detects OI build compression setup."""
+    from production_replay.derivatives_edge_layer import detect_oi_build_compression
+    candles = [
+        {"open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 1000}
+        for _ in range(25)
+    ]
+    for i in range(5, 20):
+        candles[i] = {"open": 100, "high": 100.5, "low": 99.5, "close": 100.1, "volume": 1000}
+    candles[20] = {"open": 100, "high": 100.3, "low": 99.7, "close": 100.1, "volume": 2500}
+    candles[21] = {"open": 100, "high": 100.2, "low": 99.8, "close": 100.0, "volume": 2800}
+    result = detect_oi_build_compression(candles, 21)
+    if result:
+        assert result["setup_type"] == "OI_BUILD_COMPRESSION"
+        assert result["category"] == "PRE_BREAKOUT_OBSERVE"
+
+
+def test_phase78_detects_funding_trap_mock():
+    """Detects funding trap reversal setup."""
+    from production_replay.derivatives_edge_layer import detect_funding_trap_reversal
+    candles = [
+        {"open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 1000}
+        for _ in range(25)
+    ]
+    candles[20] = {"open": 95, "high": 102, "low": 94.5, "close": 96, "volume": 1500}
+    result = detect_funding_trap_reversal(candles, 20)
+    if result:
+        assert result["setup_type"] == "FUNDING_TRAP_REVERSAL"
+        assert result["category"] == "LIVE_OBSERVATION_ONLY"
+
+
+def test_phase78_rejects_fake_historical_oi():
+    """Rejects fake historical OI data."""
+    from production_replay.derivatives_edge_layer import run_derivatives_edge_layer
+    report = run_derivatives_edge_layer()
+    assert "No historical OI" in report["live_observation"]["note"]
+
+
+def test_phase78_separates_backtestable_vs_live():
+    """Separates backtestable vs live-observation-only."""
+    from production_replay.derivatives_edge_layer import run_derivatives_edge_layer
+    report = run_derivatives_edge_layer()
+    assert "backtestable_results" in report
+    assert "live_observation" in report
+    assert "oi_compression_count" in report["live_observation"]
+    assert "funding_trap_count" in report["live_observation"]
+
+
+def test_phase78_no_live_order_code():
+    """Derivatives edge layer has no live order code."""
+    import inspect
+    from production_replay.derivatives_edge_layer import run_derivatives_edge_layer
+    src = inspect.getsource(run_derivatives_edge_layer)
+    assert "place_order" not in src.lower()
+    assert "create_order" not in src.lower()
+    assert "APPROVED" not in src
+
+
+def test_phase78_report_generated():
+    """Report is generated."""
+    import os
+    from production_replay.derivatives_edge_layer import run_derivatives_edge_layer
+    report = run_derivatives_edge_layer()
+    assert "final_decision" in report
+    assert "backtestable_results" in report
+    assert "live_observation" in report
+    assert report["live_trading_enabled"] is False
+    assert report["real_order"] is False
+    json_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "derivatives_edge_report.json")
+    txt_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "derivatives_edge_report.txt")
+    assert os.path.exists(json_path), "derivatives_edge_report.json not found"
+    assert os.path.exists(txt_path), "derivatives_edge_report.txt not found"
+
+
+def test_phase78_doctor_includes_derivatives():
+    """Doctor packet includes derivatives edge section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "derivatives_edge_layer" in src
