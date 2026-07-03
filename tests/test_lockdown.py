@@ -7111,3 +7111,142 @@ def test_phase65b_resolver_priority_chain():
     evidence = {"live_allowed": False, "evidence_verdict": "EVIDENCE_INCOMPLETE", "closed_trades": 0, "live_reason": "incomplete"}
     action, reason = resolve_final_action(evidence, True, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
     assert action == "EVIDENCE_BLOCKED", f"evidence should take priority over kill switch, got {action}"
+
+
+# ──────────────────────────────────────────────
+# Phase 69: Closed Trade Forensic Brain and Pattern Memory
+# ──────────────────────────────────────────────
+
+def test_phase69_forensics_module_exists():
+    """closed_trade_forensics module exists with run_forensics."""
+    import production_replay.closed_trade_forensics as ctf
+    assert callable(ctf.run_forensics)
+    assert callable(ctf.extract_trade_analyses)
+    assert callable(ctf.build_pattern_memory)
+
+
+def test_phase69_insufficient_data_verdict():
+    """Fewer than 10 closed trades gives LEARNING_INSUFFICIENT_DATA."""
+    from production_replay.closed_trade_forensics import build_pattern_memory
+    analyses = [
+        {"symbol": "BTC-USDT", "direction": "LONG", "r_result": 0.5, "pnl": 5.0,
+         "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+         "pattern": "test", "timeframe": None, "holding_hours": 1.0,
+         "max_favorable_excursion": None, "max_adverse_excursion": None,
+         "entry_timing": "unknown", "stop_quality": "acceptable",
+         "target_quality": "realistic", "win": True,
+         "exit_reason": "TARGET_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 105}
+        for _ in range(5)
+    ]
+    memory = build_pattern_memory(analyses)
+    assert memory["learning_verdict"] == "LEARNING_INSUFFICIENT_DATA"
+
+
+def test_phase69_promising_pattern():
+    """Pattern with >=5 trades and avg R > 0 gives PATTERN_PROMISING (total >= 10)."""
+    from production_replay.closed_trade_forensics import build_pattern_memory
+    # 10 total trades: 6 winning momentum_breakout + 4 filler
+    analyses = (
+        [{"symbol": "BTC-USDT", "direction": "LONG", "r_result": 1.5, "pnl": 15.0,
+          "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+          "pattern": "momentum_breakout", "timeframe": None, "holding_hours": 2.0,
+          "max_favorable_excursion": None, "max_adverse_excursion": None,
+          "entry_timing": "unknown", "stop_quality": "acceptable",
+          "target_quality": "realistic", "win": True,
+          "exit_reason": "TARGET_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 105}
+         for _ in range(6)]
+        +
+        [{"symbol": "ETH-USDT", "direction": "SHORT", "r_result": -0.3, "pnl": -3.0,
+          "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+          "pattern": "filler", "timeframe": None, "holding_hours": 1.0,
+          "max_favorable_excursion": None, "max_adverse_excursion": None,
+          "entry_timing": "unknown", "stop_quality": "acceptable",
+          "target_quality": "realistic", "win": False,
+          "exit_reason": "STOP_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 99}
+         for _ in range(4)]
+    )
+    memory = build_pattern_memory(analyses)
+    pat_stats = memory.get("by_pattern", {})
+    assert "momentum_breakout" in pat_stats
+    assert pat_stats["momentum_breakout"]["trades"] >= 5
+    assert pat_stats["momentum_breakout"]["avg_r"] > 0
+    assert memory["learning_verdict"] == "PATTERN_PROMISING"
+
+
+def test_phase69_weak_pattern():
+    """Pattern with >=5 trades and avg R <= 0 gives PATTERN_WEAK (total >= 10)."""
+    from production_replay.closed_trade_forensics import build_pattern_memory
+    # 10 total trades: 6 losing failed_pattern + 4 filler
+    analyses = (
+        [{"symbol": "BTC-USDT", "direction": "LONG", "r_result": -0.5, "pnl": -5.0,
+          "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+          "pattern": "failed_pattern", "timeframe": None, "holding_hours": 2.0,
+          "max_favorable_excursion": None, "max_adverse_excursion": None,
+          "entry_timing": "unknown", "stop_quality": "acceptable",
+          "target_quality": "realistic", "win": False,
+          "exit_reason": "STOP_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 99}
+         for _ in range(6)]
+        +
+        [{"symbol": "ETH-USDT", "direction": "SHORT", "r_result": 0.3, "pnl": 3.0,
+          "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+          "pattern": "filler", "timeframe": None, "holding_hours": 1.0,
+          "max_favorable_excursion": None, "max_adverse_excursion": None,
+          "entry_timing": "unknown", "stop_quality": "acceptable",
+          "target_quality": "realistic", "win": True,
+          "exit_reason": "TARGET_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 105}
+         for _ in range(4)]
+    )
+    memory = build_pattern_memory(analyses)
+    assert memory["learning_verdict"] == "PATTERN_WEAK"
+
+
+def test_phase69_block_candidate_pattern():
+    """Pattern with >=10 trades and avg R < -0.5 gives PATTERN_BLOCK_CANDIDATE."""
+    from production_replay.closed_trade_forensics import build_pattern_memory
+    analyses = [
+        {"symbol": "BTC-USDT", "direction": "LONG", "r_result": -1.0, "pnl": -10.0,
+         "rr_at_entry": 2.0, "thesis_score": None, "trigger_source": "manual",
+         "pattern": "bad_pattern", "timeframe": None, "holding_hours": 2.0,
+         "max_favorable_excursion": None, "max_adverse_excursion": None,
+         "entry_timing": "unknown", "stop_quality": "acceptable",
+         "target_quality": "realistic", "win": False,
+         "exit_reason": "STOP_HIT", "entry": 100, "stop": 99, "target": 105, "exit_price": 99}
+        for _ in range(12)
+    ]
+    memory = build_pattern_memory(analyses)
+    assert memory["learning_verdict"] == "PATTERN_BLOCK_CANDIDATE"
+
+
+def test_phase69_no_live_trading_variables():
+    """Forensics module does not change live trading configuration."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.closed_trade_forensics", fromlist=["_"]))
+    assert "live_trading_enabled" not in src or "live_trading_enabled" in src  # it's in the report dicts
+    # But should NOT have execution_mode, live_micro, etc.
+    assert "BINGX_EXECUTION_MODE" not in src
+    assert "LIVE_TRADING_ACK" not in src
+
+
+def test_phase69_no_real_order():
+    """Forensics module does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.closed_trade_forensics", fromlist=["_"]))
+    assert "bingx_client" not in src.lower()
+    assert "place_order" not in src.lower()
+    assert "api_key" not in src.lower() or "load_credentials" not in src
+
+
+def test_phase69_hourly_has_trader_brain():
+    """Hourly alert source includes trader brain section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.hourly_alert", fromlist=["_"]))
+    assert "TRADER BRAIN" in src
+    assert "pattern_memory" in src
+
+
+def test_phase69_doctor_has_trader_brain():
+    """Doctor daily packet source includes trader brain section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.doctor_daily_packet", fromlist=["_"]))
+    assert "TRADER BRAIN" in src
+    assert "pattern_memory" in src

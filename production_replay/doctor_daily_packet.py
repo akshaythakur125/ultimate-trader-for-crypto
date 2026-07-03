@@ -74,6 +74,7 @@ def main():
     _run_module("production_replay.candidate_rotation_report")
     _run_module("production_replay.paper_candidate_watchlist")
     _run_module("production_replay.strategy_evidence_lock")
+    _run_module("production_replay.closed_trade_forensics")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -95,6 +96,7 @@ def main():
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
+    pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -775,6 +777,55 @@ def main():
     else:
         evidence_lines = ["", "  STRATEGY EVIDENCE LOCK: MISSING (no report)", ""]
 
+    # Phase 69: Trader brain / pattern memory
+    pattern_memory_lines = []
+    if pattern_memory and pattern_memory.get("total_analyzed", 0) > 0:
+        pm = pattern_memory
+        pattern_memory_lines = [
+            "",
+            "  TRADER BRAIN / PATTERN MEMORY:",
+            f"    Closed Trades Analyzed:  {pm.get('total_analyzed', 0)}",
+            f"    Learning Verdict:        {pm.get('learning_verdict', 'N/A')}",
+            f"    Recommendation:          {pm.get('recommendation', 'N/A')}",
+        ]
+        bp = pm.get("best_pattern")
+        if bp:
+            pattern_memory_lines.append(
+                f"    Best Pattern:            {bp['pattern']} ({bp['trades']} trades, "
+                f"avg R {bp['avg_r']}, WR {bp['win_rate']}%)"
+            )
+        wp = pm.get("worst_pattern")
+        if wp:
+            pattern_memory_lines.append(
+                f"    Worst Pattern:           {wp['pattern']} ({wp['trades']} trades, "
+                f"avg R {wp['avg_r']}, WR {wp['win_rate']}%)"
+            )
+        bs = pm.get("best_symbol")
+        if bs:
+            pattern_memory_lines.append(
+                f"    Best Symbol:             {bs['symbol']} ({bs['trades']} trades, "
+                f"avg R {bs['avg_r']}, WR {bs['win_rate']}%)"
+            )
+        ws = pm.get("worst_symbol")
+        if ws:
+            pattern_memory_lines.append(
+                f"    Worst Symbol:            {ws['symbol']} ({ws['trades']} trades, "
+                f"avg R {ws['avg_r']}, WR {ws['win_rate']}%)"
+            )
+        ls = pm.get("long_short_summary", {})
+        pattern_memory_lines.append(
+            f"    Long vs Short Edge:      LONG: {ls.get('long_trades', 0)} trades, "
+            f"avg R {ls.get('long_avg_r', 0)}  |  SHORT: {ls.get('short_trades', 0)} trades, "
+            f"avg R {ls.get('short_avg_r', 0)}"
+        )
+        pm_warnings = pm.get("warnings", [])
+        if pm_warnings:
+            for w in pm_warnings[:2]:
+                pattern_memory_lines.append(f"    Warning:                 {w}")
+        pattern_memory_lines += [""]
+    else:
+        pattern_memory_lines = ["", "  TRADER BRAIN / PATTERN MEMORY: MISSING (no report)", ""]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -904,6 +955,7 @@ def main():
     lines += watchlist_lines
     lines += rotation_engine_lines
     lines += evidence_lines
+    lines += pattern_memory_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1108,6 +1160,17 @@ def main():
             "live_reason": evidence.get("live_reason", "evidence lock not run") if evidence else "evidence lock not run",
             "has_anomaly": evidence.get("has_anomaly", False) if evidence else False,
         } if evidence else None,
+        "pattern_memory": {
+            "total_analyzed": pattern_memory.get("total_analyzed", 0) if pattern_memory else 0,
+            "learning_verdict": pattern_memory.get("learning_verdict", "N/A") if pattern_memory else "N/A",
+            "recommendation": pattern_memory.get("recommendation", "N/A") if pattern_memory else "N/A",
+            "best_pattern": pattern_memory.get("best_pattern") if pattern_memory else None,
+            "worst_pattern": pattern_memory.get("worst_pattern") if pattern_memory else None,
+            "best_symbol": pattern_memory.get("best_symbol") if pattern_memory else None,
+            "worst_symbol": pattern_memory.get("worst_symbol") if pattern_memory else None,
+            "long_short_summary": pattern_memory.get("long_short_summary", {}) if pattern_memory else {},
+            "warnings": pattern_memory.get("warnings", []) if pattern_memory else [],
+        } if pattern_memory else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

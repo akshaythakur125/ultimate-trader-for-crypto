@@ -143,6 +143,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run closed trade forensics for fresh data (Phase 69)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.closed_trade_forensics"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -161,6 +169,7 @@ def run_hourly_alert() -> dict:
     paper_rotation = _read_json(os.path.join(RESULTS_DIR, "paper_rotation_report.json"))
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
+    pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -459,6 +468,17 @@ def run_hourly_alert() -> dict:
             "live_reason": evidence.get("live_reason", "evidence lock not run") if evidence else "evidence lock not run",
             "has_anomaly": evidence.get("has_anomaly", False) if evidence else False,
         } if evidence else None,
+        "pattern_memory": {
+            "total_analyzed": pattern_memory.get("total_analyzed", 0) if pattern_memory else 0,
+            "learning_verdict": pattern_memory.get("learning_verdict", "N/A") if pattern_memory else "N/A",
+            "recommendation": pattern_memory.get("recommendation", "N/A") if pattern_memory else "N/A",
+            "best_pattern": pattern_memory.get("best_pattern") if pattern_memory else None,
+            "worst_pattern": pattern_memory.get("worst_pattern") if pattern_memory else None,
+            "best_symbol": pattern_memory.get("best_symbol") if pattern_memory else None,
+            "worst_symbol": pattern_memory.get("worst_symbol") if pattern_memory else None,
+            "long_short_summary": pattern_memory.get("long_short_summary", {}) if pattern_memory else {},
+            "warnings": pattern_memory.get("warnings", []) if pattern_memory else [],
+        } if pattern_memory else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -882,6 +902,51 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Reason:         {evidence.get('live_reason', '?')}",
             "",
         ]
+
+    # Phase 69: Trader brain / pattern memory
+    pm = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
+    if pm:
+        lines += [
+            "  TRADER BRAIN / PATTERN MEMORY:",
+            f"    Closed Trades Analyzed:  {pm.get('total_analyzed', 0)}",
+            f"    Learning Verdict:        {pm.get('learning_verdict', 'N/A')}",
+            f"    Recommendation:          {pm.get('recommendation', 'N/A')}",
+        ]
+        bp = pm.get("best_pattern")
+        if bp:
+            lines.append(
+                f"    Best Pattern:            {bp['pattern']} ({bp['trades']} trades, "
+                f"avg R {bp['avg_r']}, WR {bp['win_rate']}%)"
+            )
+        wp = pm.get("worst_pattern")
+        if wp:
+            lines.append(
+                f"    Worst Pattern:           {wp['pattern']} ({wp['trades']} trades, "
+                f"avg R {wp['avg_r']}, WR {wp['win_rate']}%)"
+            )
+        bs = pm.get("best_symbol")
+        if bs:
+            lines.append(
+                f"    Best Symbol:             {bs['symbol']} ({bs['trades']} trades, "
+                f"avg R {bs['avg_r']}, WR {bs['win_rate']}%)"
+            )
+        ws = pm.get("worst_symbol")
+        if ws:
+            lines.append(
+                f"    Worst Symbol:            {ws['symbol']} ({ws['trades']} trades, "
+                f"avg R {ws['avg_r']}, WR {ws['win_rate']}%)"
+            )
+        ls = pm.get("long_short_summary", {})
+        lines.append(
+            f"    Long vs Short Edge:      LONG: {ls.get('long_trades', 0)} trades, "
+            f"avg R {ls.get('long_avg_r', 0)}  |  SHORT: {ls.get('short_trades', 0)} trades, "
+            f"avg R {ls.get('short_avg_r', 0)}"
+        )
+        pm_warnings = pm.get("warnings", [])
+        if pm_warnings:
+            for w in pm_warnings[:2]:
+                lines.append(f"    Warning:                 {w}")
+        lines += [""]
 
     if best and not bridge_candidate_shown:
         lines += [
