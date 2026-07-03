@@ -1674,16 +1674,20 @@ def test_tournament_no_live_paper_trading():
 
 def test_tournament_produces_structured_results():
     import json
-    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_tournament_report.json")
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "strategy_family_tournament_report.json")
     with open(path) as f:
         report = json.load(f)
-    assert report["total_results"] >= 30
-    for r in report["strategies"]:
-        assert "trades" in r
-        assert "win_rate" in r
-        assert "ev_r" in r
-        assert "profit_factor" in r
-        assert "verdict" in r
+    families = report.get("families", {})
+    expected = {"liquidity_sweep_reversal", "compression_breakout",
+                "trend_pullback", "mean_reversion", "short_weakness"}
+    assert set(families.keys()) == expected
+    for fname, fam in families.items():
+        assert "total_trades" in fam
+        assert "oos_avg_r" in fam
+        assert "win_rate" in fam
+        assert "max_dd" in fam
+        assert "max_consec_losses" in fam
+        assert "verdict" in fam
 
 
 def test_tournament_verdicts_valid():
@@ -8233,18 +8237,22 @@ def test_phase72_too_few_trades_is_fragile():
 
 def test_phase72_positive_subgroup_is_promising():
     """Family with positive IS and OOS and enough trades becomes PROMISING_REVIEW."""
-    from production_replay.strategy_family_tournament import run_tournament
-    report = run_tournament()
-    has_promising = any(
-        fam["verdict"] in ("FAMILY_PROMISING_REVIEW", "FAMILY_STRONG_REVIEW")
-        for fam in report.get("families", {}).values()
-    )
-    # liquidity_sweep_reversal should be promising based on earlier run
-    fams = report.get("families", {})
-    if "liquidity_sweep_reversal" in fams:
-        fam = fams["liquidity_sweep_reversal"]
-        if fam.get("total_trades", 0) >= 300 and fam.get("oos_avg_r", 0) > 0:
-            assert fam["verdict"] in ("FAMILY_PROMISING_REVIEW", "FAMILY_STRONG_REVIEW")
+    from production_replay.strategy_family_tournament import _check_promotion
+    # Mock a family with positive IS and OOS
+    all_s = {"trades": 500, "wins": 200, "losses": 250, "expired": 50,
+             "win_rate": 40.0, "avg_r": 0.1, "median_r": 0.05, "total_r": 50.0,
+             "max_dd": 10.0, "max_consec": 8, "profit_factor": 1.6,
+             "symbols": set(), "timeframes": set()}
+    is_s = {"trades": 350, "avg_r": 0.15, "win_rate": 42.0}
+    oos_s = {"trades": 150, "avg_r": 0.05, "win_rate": 38.0}
+    verdict, rec = _check_promotion(all_s, is_s, oos_s, 5)
+    assert verdict == "FAMILY_PROMISING_REVIEW"
+
+    # Mock a family with negative IS but positive OOS - should NOT be promoted
+    is_s2 = {"trades": 350, "avg_r": -0.05, "win_rate": 35.0}
+    oos_s2 = {"trades": 150, "avg_r": 0.1, "win_rate": 40.0}
+    verdict2, rec2 = _check_promotion(all_s, is_s2, oos_s2, 5)
+    assert verdict2 in ("FAMILY_EDGE_FRAGILE", "FAMILY_EDGE_NOT_FOUND")
 
 
 def test_phase72_live_blocked():
