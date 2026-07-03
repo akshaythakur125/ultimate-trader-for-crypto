@@ -191,6 +191,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run breadwinner fast tournament for fresh data (Phase 77)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.breadwinner_fast_tournament"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -215,6 +223,7 @@ def run_hourly_alert() -> dict:
     auto_edge = _read_json(os.path.join(RESULTS_DIR, "auto_edge_miner_report.json"))
     breadwinner = _read_json(os.path.join(RESULTS_DIR, "breadwinner_daily_report.json"))
     breadwinner_strategy = _read_json(os.path.join(RESULTS_DIR, "breadwinner_strategy_report.json"))
+    breadwinner_tournament = _read_json(os.path.join(RESULTS_DIR, "breadwinner_fast_tournament_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))

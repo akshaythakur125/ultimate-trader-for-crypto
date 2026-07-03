@@ -8798,3 +8798,109 @@ def test_phase76_no_leakage_fields():
               "exit_reason", "exit_price", "max_favorable_excursion_pct",
               "max_adverse_excursion_pct", "holding_candles"}
     assert banned == BANNED_FIELDS
+
+
+# -------------------------------------------------------------------
+# Phase 77 — Breadwinner Fast Tournament Engine
+# -------------------------------------------------------------------
+
+def test_phase77_tournament_runs():
+    """Fast tournament runs and produces report."""
+    import os
+    from production_replay.breadwinner_fast_tournament import run_breadwinner_fast_tournament
+    report = run_breadwinner_fast_tournament()
+    assert "final_decision" in report
+    assert "variants_tested" in report
+    assert "variants_passed" in report
+    assert "best_variant" in report
+    assert "best_family" in report
+    assert "best_timeframe" in report
+    assert "best_rr" in report
+    assert report["live_trading_enabled"] is False
+    assert report["real_order"] is False
+    # Check files exist
+    json_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_fast_tournament_report.json")
+    txt_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_fast_tournament_report.txt")
+    cands_path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "breadwinner_fast_tournament_candidates.jsonl")
+    assert os.path.exists(json_path), "breadwinner_fast_tournament_report.json not found"
+    assert os.path.exists(txt_path), "breadwinner_fast_tournament_report.txt not found"
+    assert os.path.exists(cands_path), "breadwinner_fast_tournament_candidates.jsonl not found"
+
+
+def test_phase77_no_live_order_code():
+    """Tournament does not contain live order code."""
+    import inspect
+    from production_replay.breadwinner_fast_tournament import run_breadwinner_fast_tournament
+    src = inspect.getsource(run_breadwinner_fast_tournament)
+    assert "place_order" not in src.lower()
+    assert "create_order" not in src.lower()
+    assert "APPROVED" not in src
+
+
+def test_phase77_no_future_leakage():
+    """Tournament detectors do not use future data."""
+    import inspect
+    from production_replay.breadwinner_fast_tournament import (
+        detect_liquidity_sweep, detect_mean_reversion_extreme,
+        detect_breakout_retest, detect_trend_pullback, detect_funding_trap_proxy
+    )
+    for det in [detect_liquidity_sweep, detect_mean_reversion_extreme,
+                detect_breakout_retest, detect_trend_pullback, detect_funding_trap_proxy]:
+        src = inspect.getsource(det)
+        assert "candles[idx+1]" not in src, f"{det.__name__} uses future data"
+        assert "candles[i+1]" not in src, f"{det.__name__} uses future data"
+
+
+def test_phase77_rejected_weak_variants():
+    """Weak variants get rejected."""
+    from production_replay.breadwinner_fast_tournament import _check_promotion
+    all_stats = {"trades": 100, "wins": 40, "losses": 60, "win_rate": 40.0,
+                 "avg_r": 0.05, "total_r": 5.0, "max_dd": 15.0, "max_consec": 10,
+                 "profit_factor": 1.05, "symbols": set([f"S{i}" for i in range(60)]),
+                 "timeframes": set()}
+    is_stats = {"trades": 70, "avg_r": 0.1, "win_rate": 45.0}
+    oos_stats = {"trades": 30, "avg_r": -0.05, "win_rate": 35.0}
+    verdict, reasons = _check_promotion(all_stats, is_stats, oos_stats)
+    assert verdict in ("REJECTED", "OBSERVE_ONLY")
+
+
+def test_phase77_promotes_good_variant():
+    """Good variant gets promoted to PAPER_PRIORITY."""
+    from production_replay.breadwinner_fast_tournament import _check_promotion
+    all_stats = {"trades": 500, "wins": 200, "losses": 300, "win_rate": 40.0,
+                 "avg_r": 0.15, "total_r": 75.0, "max_dd": 10.0, "max_consec": 8,
+                 "profit_factor": 1.25, "symbols": set([f"S{i}" for i in range(60)]),
+                 "timeframes": set()}
+    is_stats = {"trades": 350, "avg_r": 0.18, "win_rate": 42.0}
+    oos_stats = {"trades": 150, "avg_r": 0.12, "win_rate": 38.0}
+    verdict, reasons = _check_promotion(all_stats, is_stats, oos_stats)
+    assert verdict == "PAPER_PRIORITY"
+
+
+def test_phase77_report_contains_final_decision():
+    """Report contains final decision."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_fast_tournament_report.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            report = json.load(f)
+        assert "final_decision" in report
+        assert report["final_decision"] in ("NO_EDGE_FOUND", "PAPER_CANDIDATE_FOUND", "PAPER_PRIORITY_FOUND")
+
+
+def test_phase77_doctor_includes_tournament():
+    """Doctor packet includes tournament result."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "breadwinner_fast_tournament" in src
+
+
+def test_phase77_hourly_includes_tournament():
+    """Hourly alert includes tournament."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "breadwinner_fast_tournament" in src
