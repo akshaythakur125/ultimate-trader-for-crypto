@@ -7836,3 +7836,175 @@ def test_phase70d_no_real_orders():
     ))
     assert "place_order" not in src.lower(), "resolver contains place_order"
     assert "create_order" not in src.lower(), "resolver contains create_order"
+
+
+# -------------------------------------------------------------------
+# Phase 70E — historical replay live-parity
+# -------------------------------------------------------------------
+
+def test_phase70e_live_parity_replay_returns_trades():
+    """live-parity replay mode produces trades with appropriate diagnostics."""
+    from production_replay.historical_replay_engine import (
+        run_live_parity_replay, load_cached_data, make_cache_diagnostics
+    )
+    cache_diag = make_cache_diagnostics()
+    cached = load_cached_data()
+    if not cached:
+        pytest.skip("no cached data available for live-parity test")
+    trades, diag = run_live_parity_replay(cached)
+    assert diag.get("replay_mode") == "live_parity"
+    assert diag.get("replay_success") is not None
+    assert isinstance(trades, list)
+
+
+def test_phase70e_live_parity_diagnostics_has_split_success():
+    """Diagnostics include split success fields."""
+    from production_replay.historical_replay_engine import (
+        run_live_parity_replay, load_cached_data, make_cache_diagnostics
+    )
+    cache_diag = make_cache_diagnostics()
+    cached = load_cached_data()
+    if not cached:
+        pytest.skip("no cached data available")
+    _, diag = run_live_parity_replay(cached)
+    assert "cache_read_success" in diag
+    assert "replay_success" in diag
+    assert "replay_mode" in diag
+    assert diag["replay_mode"] == "live_parity"
+    assert "data_fetch_successful" in diag
+    assert "total_duration_ms" in diag
+
+
+def test_phase70e_proxy_thesis_score():
+    """_proxy_thesis_score returns expected values."""
+    from production_replay.historical_replay_engine import _proxy_thesis_score
+    assert _proxy_thesis_score("sweep") == 80
+    assert _proxy_thesis_score("wick_rejection") == 70
+    assert _proxy_thesis_score("compression_breakout") == 65
+    assert _proxy_thesis_score("volume_spike") == 60
+    assert _proxy_thesis_score("unknown") == 50
+
+
+def test_phase70e_run_both_modes_returns_both():
+    """run_both_modes returns raw and parity results."""
+    from production_replay.historical_replay_engine import run_both_modes
+    raw_trades, raw_diag, parity_trades, parity_diag = run_both_modes()
+    assert isinstance(raw_trades, list)
+    assert isinstance(parity_trades, list)
+    assert raw_diag.get("replay_mode") == "raw"
+    assert parity_diag.get("replay_mode") == "live_parity"
+
+
+def test_phase70e_full_pipeline_respects_replay_mode():
+    """run_full_pipeline returns live_parity diagnostics when mode=live_parity."""
+    import os
+    prior = os.environ.get("HISTORICAL_REPLAY_MODE", "")
+    os.environ["HISTORICAL_REPLAY_MODE"] = "live_parity"
+    try:
+        import importlib
+        import production_replay.historical_replay_engine as eng
+        importlib.reload(eng)
+        from production_replay.historical_replay_engine import run_full_pipeline
+        cached = eng.load_cached_data()
+        if not cached:
+            pytest.skip("no cached data available")
+        trades, diag = run_full_pipeline()
+        assert diag.get("replay_mode") == "live_parity"
+    finally:
+        os.environ["HISTORICAL_REPLAY_MODE"] = prior
+        importlib.reload(eng)
+
+
+def test_phase70e_no_real_orders():
+    """Historical replay engine live_parity does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.historical_replay_engine", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower(), "engine contains place_order"
+    assert "create_order" not in src.lower(), "engine contains create_order"
+
+
+def test_phase70e_no_live_trading():
+    """Historical replay engine does not enable live trading."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.historical_replay_engine", fromlist=["_"]
+    ))
+    assert "BINGX_EXECUTION_MODE" not in src, "engine sets execution mode"
+    assert "LIVE_TRADING_ACK" not in src, "engine has live trading ack"
+    assert "APPROVED" not in src, "engine contains APPROVED"
+
+
+def test_phase70e_sweep_uses_trigger_confirmation():
+    """Live-parity should register at least one trigger_confirmed or explain why not."""
+    from production_replay.historical_replay_engine import (
+        run_live_parity_replay, load_cached_data
+    )
+    cached = load_cached_data()
+    if not cached:
+        pytest.skip("no cached data available")
+    _, diag = run_live_parity_replay(cached)
+    # Either we confirmed some triggers, or rejection_reasons tell us why
+    if diag.get("trigger_confirmed", 0) == 0:
+        reasons = dict(diag.get("rejection_reasons", {}))
+        assert len(reasons) > 0, (
+            "zero triggers should have rejection reasons explaining why"
+        )
+
+
+def test_phase70e_brain_has_replay_mode():
+    """Strategy brain report includes replay_mode field."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    fake = [{"r_result": 1.0, "is_win": True, "symbol": "X", "direction": "LONG",
+             "timeframe": "1h", "pattern": "sweep", "entry_time": 1}]
+    report = analyze_trades(fake, replay_mode="live_parity")
+    assert report.get("replay_mode") == "live_parity"
+
+
+def test_phase70e_brain_dual_mode_comparison():
+    """When parity_report is provided, analyze_trades includes parity_comparison."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    raw_trades = [
+        {"r_result": -0.5, "is_win": False, "symbol": "X", "direction": "LONG",
+         "timeframe": "1h", "pattern": "sweep", "entry_time": 1},
+    ]
+    parity_report = {
+        "total_trades": 2,
+        "average_r": 0.75,
+        "win_rate": 50.0,
+    }
+    report = analyze_trades(raw_trades, replay_mode="raw", parity_report=parity_report)
+    comp = report.get("parity_comparison")
+    assert comp is not None
+    assert comp["raw"]["avg_r"] == -0.5
+    assert comp["live_parity"]["avg_r"] == 0.75
+
+
+def test_phase70e_brain_verdict_live_parity_needs_review():
+    """When raw avg_r <= 0 but parity avg_r > 0, verdict changes to NEEDS_REVIEW."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    raw_trades = []
+    for i in range(150):
+        raw_trades.append({
+            "r_result": -0.3, "is_win": False, "symbol": "X", "direction": "LONG",
+            "timeframe": "1h", "pattern": "sweep", "entry_time": i,
+        })
+    parity_report = {
+        "total_trades": 50,
+        "average_r": 0.5,
+        "win_rate": 50.0,
+    }
+    report = analyze_trades(raw_trades, replay_mode="raw", parity_report=parity_report)
+    assert report["verdict"] == "RAW_BAD_LIVE_PARITY_NEEDS_REVIEW"
+    assert len(report["warnings"]) >= 1
+
+
+def test_phase70e_brain_no_real_orders():
+    """Strategy brain does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.historical_strategy_brain", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower(), "brain contains place_order"
+    assert "create_order" not in src.lower(), "brain contains create_order"

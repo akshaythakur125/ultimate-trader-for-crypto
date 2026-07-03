@@ -21,6 +21,7 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "deploy_results")
 STATE_DIR = os.path.join(PROJECT_ROOT, "runtime_state")
 
 TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
+PARITY_TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_parity_trades.jsonl")
 PATTERN_MEMORY_LEDGER = os.path.join(STATE_DIR, "historical_pattern_memory.jsonl")
 JSON_PATH = os.path.join(RESULTS_DIR, "historical_replay_report.json")
 TXT_PATH = os.path.join(RESULTS_DIR, "historical_replay_report.txt")
@@ -31,6 +32,7 @@ VVERDICT_NOT_FOUND = "HISTORICAL_EDGE_NOT_FOUND"
 VVERDICT_WEAK = "HISTORICAL_EDGE_WEAK"
 VVERDICT_PROMISING = "HISTORICAL_EDGE_PROMISING"
 VVERDICT_STRONG = "HISTORICAL_EDGE_STRONG_REVIEW"
+VVERDICT_LIVE_PARITY_NEEDS_REVIEW = "RAW_BAD_LIVE_PARITY_NEEDS_REVIEW"
 
 
 def _read_ledger(path: str) -> list[dict]:
@@ -95,8 +97,14 @@ def _compute_max_consecutive_losses(trades: list[dict]) -> int:
     return max_streak
 
 
-def analyze_trades(trades: list[dict]) -> dict:
-    """Analyze historical replay trades and produce full report."""
+def analyze_trades(trades: list[dict], replay_mode: str = "raw", parity_report: dict | None = None) -> dict:
+    """Analyze historical replay trades and produce full report.
+
+    Args:
+        trades: List of trade dicts from the engine.
+        replay_mode: Which mode produced these trades ("raw" or "live_parity").
+        parity_report: Optional analysis of parity-mode trades for comparison.
+    """
     total = len(trades)
     wins = [t for t in trades if t.get("is_win")]
     losses = [t for t in trades if not t.get("is_win")]
@@ -193,6 +201,7 @@ def analyze_trades(trades: list[dict]) -> dict:
     report = {
         "mode": "historical_replay_brain",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "replay_mode": replay_mode,
         "research_only": True,
         "live_trading_enabled": False,
         "paper_trading_enabled": False,
@@ -233,6 +242,35 @@ def analyze_trades(trades: list[dict]) -> dict:
         "live_trigger_parity": None,
         "diagnostics": None,
     }
+
+    # Dual-mode comparison: if raw mode is bad but parity shows promise, flag for review
+    if parity_report:
+        report["parity_comparison"] = {
+            "raw": {
+                "trades": total,
+                "avg_r": avg_r,
+                "win_rate": win_rate,
+            },
+            "live_parity": {
+                "trades": parity_report["total_trades"],
+                "avg_r": parity_report["average_r"],
+                "win_rate": parity_report["win_rate"],
+            },
+        }
+        if avg_r <= 0 and parity_report.get("average_r", 0) > 0:
+            report["warnings"].append(
+                f"Raw mode negative (avg R {avg_r}) but live_parity positive "
+                f"(avg R {parity_report['average_r']}) — review parity trades"
+            )
+            if verdict not in (VVERDICT_INSUFFICIENT, VVERDICT_STRONG):
+                verdict = VVERDICT_LIVE_PARITY_NEEDS_REVIEW
+                recommendation = (
+                    f"Raw mode shows no edge (avg R {avg_r}) but live_parity "
+                    f"shows potential (avg R {parity_report['average_r']}, "
+                    f"WR {parity_report['win_rate']}%) — manual review needed"
+                )
+                report["verdict"] = verdict
+                report["recommendation"] = recommendation
 
     if oos_avg_r <= 0 and is_avg_r > 0:
         report["warnings"].append(
@@ -291,6 +329,9 @@ def run_historical_brain(trades: list[dict] | None = None) -> dict:
 
     If trades is None, tries to read from ledger. If ledger is empty,
     automatically orchestrates cache load -> replay engine -> analysis.
+
+    Also loads parity-mode trades (if available) and produces dual-mode
+    comparison for the report.
     """
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -306,10 +347,20 @@ def run_historical_brain(trades: list[dict] | None = None) -> dict:
 
     live_parity = _compute_live_trigger_parity()
 
-    report = analyze_trades(trades)
+    # Load parity trades for dual-mode comparison
+    parity_trades = _read_ledger(PARITY_TRADES_LEDGER)
+    parity_report = None
+    if parity_trades:
+        parity_report = analyze_trades(parity_trades, replay_mode="live_parity")
+
+    replay_mode = "live_parity" if parity_report else "raw"
+
+    report = analyze_trades(trades, replay_mode=replay_mode, parity_report=parity_report)
 
     report["live_trigger_parity"] = live_parity
     report["diagnostics"] = replay_diagnostics
+    if parity_report:
+        report["live_parity_report"] = parity_report
 
     with open(JSON_PATH, "w") as f:
         json.dump(report, f, indent=2)
@@ -335,12 +386,14 @@ def _run_replay_pipeline() -> tuple[list[dict], dict]:
 
 
 def _write_text_report(report: dict):
+    mode_label = report.get("replay_mode", "raw").upper()
     lines = [
         "=" * 60,
-        "  HISTORICAL REPLAY BRAIN",
+        f"  HISTORICAL REPLAY BRAIN [{mode_label}]",
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
+        f"  Replay Mode:              {report.get('replay_mode', 'raw')}",
         f"  Total Historical Trades:  {report['total_trades']}",
         f"  Wins:                     {report['wins']}",
         f"  Losses:                   {report['losses']}",
@@ -439,6 +492,26 @@ def _write_text_report(report: dict):
         lines += ["", "  PERFORMANCE BY PATTERN:"]
         for p, s in sorted(report["by_pattern"].items()):
             lines.append(f"    {p}: {s['trades']} trades, avg R {s['avg_r']}, WR {s['win_rate']}%")
+
+    # Dual-mode comparison
+    parity_comp = report.get("parity_comparison")
+    if parity_comp:
+        lines += [
+            "",
+            "  === DUAL-MODE COMPARISON ===",
+            f"  Raw:        {parity_comp['raw']['trades']} trades, "
+            f"avg R {parity_comp['raw']['avg_r']}, WR {parity_comp['raw']['win_rate']}%",
+            f"  Live-parity: {parity_comp['live_parity']['trades']} trades, "
+            f"avg R {parity_comp['live_parity']['avg_r']}, WR {parity_comp['live_parity']['win_rate']}%",
+        ]
+        raw_r = parity_comp['raw']['avg_r']
+        par_r = parity_comp['live_parity']['avg_r']
+        if raw_r <= 0 and par_r > 0:
+            lines.append(
+                f"  -> Parity mode recovers from negative raw edge "
+                f"(raw {raw_r} vs parity {par_r})"
+            )
+        lines.append("")
 
     # Live-trigger parity section
     parity = report.get("live_trigger_parity", {})

@@ -2,6 +2,7 @@
 
 Downloads OHLCV, funding rate, and open interest data from BingX (primary)
 or Binance (fallback) via CCXT. Caches results locally to avoid re-downloading.
+If CCXT is not installed, gracefully degrades to cache-only operation.
 
 Offline research only — never enables live trading.
 """
@@ -10,8 +11,6 @@ import json, os, sys, time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import ccxt
 
 from production_replay.historical_cache_resolver import find_project_root, resolve_cache_dir
 
@@ -22,6 +21,14 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "deploy_results")
 SUPPORTED_TIMEFRAMES = ["15m", "30m", "1h", "4h"]
 DEFAULT_LOOKBACK_DAYS = 90
 MAX_CANDLES_PER_REQUEST = 1000
+
+CCXT_AVAILABLE = False
+CCXT_MISSING_REASON = ""
+try:
+    import ccxt
+    CCXT_AVAILABLE = True
+except ImportError as e:
+    CCXT_MISSING_REASON = f"CCXT_MISSING: {e}"
 
 
 def _ensure_cache_dir():
@@ -51,7 +58,8 @@ def _write_cache(symbol: str, timeframe: str, data: list):
 
 
 def create_exchange(prefer_bingx: bool = True):
-    """Create a CCXT exchange instance. Primary: BingX. Fallback: Binance."""
+    if not CCXT_AVAILABLE:
+        return None, None
     if prefer_bingx:
         try:
             ex = ccxt.bingx()
@@ -79,6 +87,9 @@ def fetch_ohlcv(
         if cached and len(cached) > 100:
             return cached
 
+    if not CCXT_AVAILABLE:
+        return []
+
     _ensure_cache_dir()
     exchange, exchange_name = create_exchange()
     if exchange is None:
@@ -101,7 +112,6 @@ def fetch_ohlcv(
     except Exception:
         pass
 
-    # Deduplicate by timestamp
     seen = set()
     deduped = []
     for c in all_candles:
@@ -122,7 +132,6 @@ def fetch_multiple_symbols(
     timeframe: str = "1h",
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
 ) -> dict[str, list]:
-    """Fetch OHLCV for multiple symbols. Returns dict of symbol -> candles."""
     result = {}
     for sym in symbols:
         candles = fetch_ohclv(sym, timeframe, lookback_days)
@@ -132,7 +141,8 @@ def fetch_multiple_symbols(
 
 
 def fetch_funding_rate_history(symbol: str, lookback_days: int = 90) -> list:
-    """Fetch funding rate history for a symbol."""
+    if not CCXT_AVAILABLE:
+        return []
     exchange, _ = create_exchange()
     if exchange is None:
         return []
@@ -147,7 +157,8 @@ def fetch_funding_rate_history(symbol: str, lookback_days: int = 90) -> list:
 
 
 def get_top_usdt_perps(limit: int = 20) -> list[str]:
-    """Get a list of top USDT perpetual symbols from BingX."""
+    if not CCXT_AVAILABLE:
+        return []
     exchange, _ = create_exchange()
     if exchange is None:
         return []
@@ -165,6 +176,9 @@ def get_top_usdt_perps(limit: int = 20) -> list[str]:
 def main():
     print("Historical Data Fetcher (offline research)")
     print(f"Cache: {CACHE_DIR}")
+    print(f"CCXT available: {CCXT_AVAILABLE}")
+    if CCXT_MISSING_REASON:
+        print(f"  {CCXT_MISSING_REASON}")
     return 0
 
 

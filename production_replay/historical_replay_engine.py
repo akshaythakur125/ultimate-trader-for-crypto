@@ -39,8 +39,14 @@ MAX_HOLDING_CANDLES = {
 }
 
 DIAGNOSTIC_MODE = os.environ.get("HISTORICAL_DIAGNOSTIC_MODE") == "1"
+REPLAY_MODE = os.environ.get("HISTORICAL_REPLAY_MODE", "raw")
 
 SUPPORTED_TIMEFRAMES = ["15m", "30m", "1h", "4h"]
+
+# Live-parity constants (matching trigger_watcher)
+LIVE_PARITY_CONFIRM_WINDOW = 3       # candles to wait for trigger confirmation
+LIVE_PARITY_EXPIRY_WINDOW = 12       # candles before candidate expires
+LIVE_PARITY_THESIS_SCORE_MIN = 60    # proxy thesis score minimum
 
 
 def _atr(candles: list, period: int = 14) -> float:
@@ -406,6 +412,9 @@ def _make_diagnostics() -> dict:
         "near_misses": [],
         "data_fetch_successful": False,
         "data_fetch_error": "",
+        "cache_read_success": False,
+        "replay_success": False,
+        "replay_mode": REPLAY_MODE,
         "cache_files_found": 0,
         "cache_file_count": cache_diag.get("cache_file_count", 0),
         "project_root": cache_diag.get("project_root", ""),
@@ -467,7 +476,10 @@ def _write_diagnostics_txt(diag: dict):
         f"  Candles loaded:               {diag['candles_loaded']}",
         f"  Candles evaluated:            {diag['candles_evaluated']}",
         f"  Cache files found (10 max):   {min(diag.get('cache_files_found', 0), 10)}",
+        f"  Replay mode:                  {diag.get('replay_mode', '?')}",
+        f"  Cache read successful:        {diag.get('cache_read_success', '?')}",
         f"  Data fetch successful:        {diag['data_fetch_successful']}",
+        f"  Replay successful:            {diag.get('replay_success', '?')}",
         "",
         "  === DETECTOR COUNTS ===",
         f"  Sweep detections:             {diag['sweep_detected']}",
@@ -781,6 +793,11 @@ def run_and_save(ohlcv_data: dict[str, list], timeframes: list[str] | None = Non
 def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dict]:
     """Run the full pipeline: load cache -> replay -> diagnose -> save.
 
+    Respects HISTORICAL_REPLAY_MODE env var:
+      - "live_parity" -> use watchlist-based simulation
+      - "both"       -> run both modes, return raw trades
+      - default/raw  -> original one-shot detection
+
     If no cached data exists, returns empty trades with diagnostics showing
     cache_missing status.
     """
@@ -793,6 +810,7 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
     # Build cache metadata to pass into replay diagnostics
     cache_meta = dict(cache_resolver_diag)
     cache_meta["cache_files_found"] = entries_loaded
+    cache_meta["cache_read_success"] = entries_loaded > 0
 
     if not cached:
         diag["data_fetch_successful"] = False
@@ -804,9 +822,24 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
         return [], diag
 
     cache_meta["data_fetch_successful"] = True
-    trades, replay_diag = run_replay_with_diagnostics(
-        cached, cache_metadata=cache_meta
-    )
+
+    mode = REPLAY_MODE
+
+    if mode == "live_parity":
+        trades, replay_diag = run_live_parity_replay(
+            cached, cache_metadata=cache_meta
+        )
+    elif mode == "both":
+        raw_trades, _, _, parity_diag = run_both_modes(symbols)
+        raw_path = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
+        with open(raw_path, "w") as f:
+            for t in raw_trades:
+                f.write(json.dumps(t) + "\n")
+        return raw_trades, parity_diag
+    else:
+        trades, replay_diag = run_replay_with_diagnostics(
+            cached, cache_metadata=cache_meta
+        )
 
     # Save trades to ledger
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -817,6 +850,8 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
     # Ensure cache metadata is in replay diagnostics
     replay_diag["cache_files_found"] = entries_loaded
     replay_diag["data_fetch_successful"] = True
+    replay_diag["cache_read_success"] = True
+    replay_diag["replay_success"] = len(trades) > 0
 
     _write_diagnostics_json(replay_diag)
     _write_diagnostics_txt(replay_diag)
@@ -948,6 +983,279 @@ def compute_live_trigger_parity() -> dict:
     )
 
     return report
+
+
+# --------------------------------------------------------------------
+# Live-parity replay mode (watchlist state machine)
+# --------------------------------------------------------------------
+
+LIVE_PARITY_THESIS_SCORES = {
+    "sweep": 80,
+    "wick_rejection": 70,
+    "compression_breakout": 65,
+    "volume_spike": 60,
+}
+
+
+def _proxy_thesis_score(pattern: str) -> int:
+    return LIVE_PARITY_THESIS_SCORES.get(pattern, 50)
+
+
+def _make_candidate_key(symbol: str, direction: str) -> str:
+    return f"{symbol}_{direction}"
+
+
+def run_live_parity_replay(
+    ohlcv_data: dict[str, list],
+    timeframes: list[str] | None = None,
+    cache_metadata: dict | None = None,
+) -> tuple[list[dict], dict]:
+    """Run historical replay simulating the live watchlist -> trigger pipeline.
+
+    Phase A: candidate enters watchlist after pattern detection
+    Phase B: candidate waits N candles for trigger confirmation
+    Phase C: invalidate if price moves against setup before trigger
+    Phase D: expire after configured candle window
+    Phase E: enter only after trigger confirmation
+
+    Returns (trades, diagnostics).
+    """
+    import time as _time
+    start_ms = int(_time.time() * 1000)
+
+    if timeframes is None:
+        timeframes = ["1h"]
+
+    diag = _make_diagnostics()
+    diag["replay_mode"] = "live_parity"
+    if cache_metadata:
+        for k in ("project_root", "current_working_directory", "selected_cache_dir",
+                   "checked_directories", "cache_file_count", "cache_files_found"):
+            if k in cache_metadata:
+                diag[k] = cache_metadata[k]
+
+    all_trades = []
+    seen_trade_keys = set()
+
+    # track candidates across all symbols/timeframes
+    # keyed by symbol_tf_dir
+    active_candidates: dict[str, dict] = {}
+
+    for symbol, candles in ohlcv_data.items():
+        diag["symbols_checked"] += 1
+        diag["candles_loaded"] += len(candles)
+        diag["per_symbol"][symbol]["candles"] = len(candles)
+
+        if len(candles) < 50:
+            diag["symbols_skipped_too_few_candles"] += 1
+            continue
+
+        for tf in timeframes:
+            diag["timeframes_checked"] += 1
+
+            for i in range(30, len(candles)):
+                diag["candles_evaluated"] += 1
+                diag["per_symbol"][symbol]["evaluated"] += 1
+                diag["per_timeframe"][tf]["evaluated"] += 1
+
+                c = candles[i]
+                ts = int(c[0])
+                high = float(c[2])
+                low = float(c[3])
+                close = float(c[4])
+                open_p = float(c[1])
+
+                # --- Phase A: detect new patterns and create candidates ---
+                for detector_fn, pattern_name in [
+                    (_detect_sweep, "sweep"),
+                    (_detect_wick_rejection, "wick_rejection"),
+                    (_detect_compression_breakout, "compression_breakout"),
+                    (_detect_volume_spike, "volume_spike"),
+                ]:
+                    signal = detector_fn(candles, i)
+                    if signal is None:
+                        continue
+
+                    direction = signal["direction"]
+                    ckey = f"{symbol}_{tf}_{direction}_{pattern_name}"
+
+                    # Avoid duplicate same-direction same-pattern active candidates
+                    if any(
+                        ak.startswith(f"{symbol}_{tf}_{direction}")
+                        for ak in active_candidates
+                    ):
+                        continue
+
+                    entry = signal["entry"]
+                    stop = signal["stop"]
+                    risk = abs(stop - entry)
+                    risk_pct = risk / entry if entry else 0
+
+                    if risk_pct <= 0.001:
+                        diag["risk_failed"] += 1
+                        diag["rejection_reasons"]["RISK_TOO_SMALL"] += 1
+                        continue
+                    diag["risk_passed"] += 1
+
+                    target = _calculate_rr_target(entry, stop, direction, 4.0)
+                    if target is None:
+                        diag["rr_failed"] += 1
+                        diag["rejection_reasons"]["TARGET_CALC_FAILED"] += 1
+                        continue
+                    diag["rr_passed"] += 1
+
+                    thesis_score = _proxy_thesis_score(pattern_name)
+                    if thesis_score < LIVE_PARITY_THESIS_SCORE_MIN:
+                        diag["rejection_reasons"]["THESIS_SCORE_TOO_LOW"] += 1
+                        continue
+
+                    # Create candidate in WATCHING state
+                    cand = {
+                        "symbol": symbol,
+                        "timeframe": tf,
+                        "direction": direction,
+                        "pattern": pattern_name,
+                        "entry": entry,
+                        "stop": stop,
+                        "target": target,
+                        "candle_created": i,
+                        "created_time": ts,
+                        "thesis_score": thesis_score,
+                        "status": "WATCHING",
+                        "inv_high": high + (high - low) * 0.5 if direction == "SHORT" else None,
+                        "inv_low": low - (high - low) * 0.5 if direction == "LONG" else None,
+                        "trigger_result": None,
+                    }
+                    active_candidates[ckey] = cand
+                    diag["sweep_detected"] += 1 if pattern_name == "sweep" else 0
+                    diag["wick_rejection_detected"] += 1 if pattern_name == "wick_rejection" else 0
+                    diag["compression_detected"] += 1 if pattern_name == "compression_breakout" else 0
+                    diag["volume_spike_detected"] += 1 if pattern_name == "volume_spike" else 0
+                    diag["per_symbol"][symbol][pattern_name.replace("_rejection", "").replace("_breakout", "").replace("_spike", "")] += 1
+
+                # --- Phases B, C, D: process existing candidates ---
+                expired_keys = []
+                for ckey, cand in list(active_candidates.items()):
+                    if cand["status"] == "TRIGGER_CONFIRMED":
+                        continue  # already confirmed, do not expire
+
+                    candles_since = i - cand["candle_created"]
+
+                    # Phase C: invalidation check
+                    inval = False
+                    if cand["direction"] == "SHORT" and high > cand["inv_high"] if cand.get("inv_high") else False:
+                        inval = True
+                    elif cand["direction"] == "LONG" and low < cand["inv_low"] if cand.get("inv_low") else False:
+                        inval = True
+
+                    if inval:
+                        cand["status"] = "INVALIDATED"
+                        cand["trigger_result"] = "INVALIDATED"
+                        expired_keys.append(ckey)
+                        diag["rejection_reasons"]["INVALIDATED"] += 1
+                        continue
+
+                    # Phase D: expiry check
+                    if candles_since >= LIVE_PARITY_EXPIRY_WINDOW:
+                        cand["status"] = "EXPIRED"
+                        cand["trigger_result"] = "EXPIRED"
+                        expired_keys.append(ckey)
+                        diag["rejection_reasons"]["EXPIRED"] += 1
+                        continue
+
+                    # Phase B: trigger confirmation after waiting N candles
+                    if candles_since >= LIVE_PARITY_CONFIRM_WINDOW:
+                        # Check if price is favorable for trigger
+                        confirmed = False
+                        if cand["direction"] == "SHORT":
+                            if close <= cand["entry"]:
+                                confirmed = True
+                        else:
+                            if close >= cand["entry"]:
+                                confirmed = True
+
+                        if confirmed:
+                            cand["status"] = "TRIGGER_CONFIRMED"
+                            cand["trigger_result"] = "TRIGGER_CONFIRMED"
+                            diag["trigger_confirmed"] += 1
+
+                            # Phase E: enter trade
+                            signal_for_trade = {
+                                "symbol": cand["symbol"],
+                                "direction": cand["direction"],
+                                "pattern": cand["pattern"],
+                                "entry": cand["entry"],
+                                "stop": cand["stop"],
+                                "entry_time": int(candles[i][0]),
+                            }
+                            sig_key = (
+                                f"{cand['symbol']}_{tf}_{cand['direction']}_{i}"
+                            )
+                            if sig_key not in seen_trade_keys:
+                                seen_trade_keys.add(sig_key)
+                                trade = _simulate_trade(candles, signal_for_trade, i, tf)
+                                all_trades.append(trade)
+                                diag["final_signal_created"] += 1
+                                diag["per_symbol"][cand["symbol"]]["signals"] += 1
+                                diag["per_timeframe"][tf]["signals"] += 1
+
+                # Remove processed candidates
+                for k in expired_keys:
+                    active_candidates.pop(k, None)
+
+    end_ms = int(_time.time() * 1000)
+    diag["total_duration_ms"] = end_ms - start_ms
+
+    # Write diagnostics
+    _write_diagnostics_json(diag)
+    _write_diagnostics_txt(diag)
+
+    return all_trades, diag
+
+
+def run_both_modes(
+    symbols: list[str] | None = None,
+) -> tuple[list[dict], dict, list[dict], dict]:
+    """Run both raw and live_parity replay modes and return all results.
+
+    Returns (raw_trades, raw_diag, parity_trades, parity_diag).
+    """
+    cache_diag = make_cache_diagnostics()
+    cached = load_cached_data(symbols)
+    entries_loaded = len(cached)
+
+    cache_meta = dict(cache_diag)
+    cache_meta["cache_files_found"] = entries_loaded
+    cache_meta["cache_read_success"] = entries_loaded > 0
+
+    raw_trades, raw_diag = [], {"replay_mode": "raw"}
+    parity_trades, parity_diag = [], {"replay_mode": "live_parity"}
+
+    if not cached:
+        return raw_trades, raw_diag, parity_trades, parity_diag
+
+    cache_meta["data_fetch_successful"] = True
+    cache_meta["cache_read_success"] = True
+
+    # Raw mode
+    raw_trades, raw_diag = run_replay_with_diagnostics(cached, cache_metadata=cache_meta)
+    raw_diag["replay_success"] = len(raw_trades) > 0
+
+    # Live-parity mode
+    parity_trades, parity_diag = run_live_parity_replay(cached, cache_metadata=cache_meta)
+    parity_diag["replay_success"] = len(parity_trades) > 0
+
+    # Save both to ledger (raw overwritten by pipeline; parity saved separately)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(TRADES_LEDGER, "w") as f:
+        for t in raw_trades:
+            f.write(json.dumps(t) + "\n")
+    parity_path = os.path.join(STATE_DIR, "historical_replay_parity_trades.jsonl")
+    with open(parity_path, "w") as f:
+        for t in parity_trades:
+            f.write(json.dumps(t) + "\n")
+
+    return raw_trades, raw_diag, parity_trades, parity_diag
 
 
 def main():
