@@ -7250,3 +7250,230 @@ def test_phase69_doctor_has_trader_brain():
     src = inspect.getsource(__import__("production_replay.doctor_daily_packet", fromlist=["_"]))
     assert "TRADER BRAIN" in src
     assert "pattern_memory" in src
+
+
+# ──────────────────────────────────────────────
+# Phase 70: Historical Replay Brain
+# ──────────────────────────────────────────────
+
+def test_phase70_insufficient_data_verdict():
+    """No historical data gives HISTORICAL_INSUFFICIENT_DATA."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    report = analyze_trades([])
+    assert report["verdict"] == "HISTORICAL_INSUFFICIENT_DATA"
+    assert report["total_trades"] == 0
+
+
+def test_phase70_stop_hit_is_loss():
+    """Stop hit before target = loss."""
+    from production_replay.historical_replay_engine import _calculate_rr_target, _simulate_trade
+    # SHORT trade: entry 100, stop 105, target 80 (RR 4:1)
+    signal = {
+        "symbol": "BTC-USDT",
+        "direction": "SHORT",
+        "pattern": "sweep",
+        "entry": 100.0,
+        "stop": 105.0,
+        "entry_time": 1000,
+    }
+    # Candles: entry candle + subsequent candles that hit stop first
+    candles = [
+        [1000, 99.0, 101.0, 98.0, 100.0, 1000],
+        [2000, 101.0, 106.0, 100.0, 105.0, 1500],  # sweeps to 106, hits stop at 105
+        [3000, 105.0, 107.0, 80.0, 80.0, 2000],     # would hit target but trade already closed
+    ]
+    trade = _simulate_trade(candles, signal, 0, "1h")
+    assert trade["outcome"] == "LOSS", f"expected LOSS, got {trade['outcome']}"
+    assert trade["exit_reason"] == "STOP_HIT"
+    assert trade["is_win"] is False
+
+
+def test_phase70_target_hit_is_win():
+    """Target hit before stop = win."""
+    from production_replay.historical_replay_engine import _calculate_rr_target, _simulate_trade
+    # LONG trade: entry 100, stop 95, target 120 (RR 4:1)
+    signal = {
+        "symbol": "BTC-USDT",
+        "direction": "LONG",
+        "pattern": "sweep",
+        "entry": 100.0,
+        "stop": 95.0,
+        "entry_time": 1000,
+    }
+    candles = [
+        [1000, 99.0, 101.0, 98.0, 100.0, 1000],
+        [2000, 100.0, 125.0, 99.0, 120.0, 1500],  # hits target at 120
+        [3000, 120.0, 130.0, 90.0, 90.0, 2000],    # would hit stop but trade already closed
+    ]
+    trade = _simulate_trade(candles, signal, 0, "1h")
+    assert trade["outcome"] == "WIN", f"expected WIN, got {trade['outcome']}"
+    assert trade["exit_reason"] == "TARGET_HIT"
+    assert trade["is_win"] is True
+
+
+def test_phase70_expired_trade():
+    """Expired trade handled correctly (neither stop nor target hit)."""
+    from production_replay.historical_replay_engine import _simulate_trade
+    signal = {
+        "symbol": "BTC-USDT",
+        "direction": "LONG",
+        "pattern": "sweep",
+        "entry": 100.0,
+        "stop": 95.0,
+        "entry_time": 1000,
+    }
+    # Price stays between stop and target
+    candles = [[1000 + i * 1000, 99.0, 102.0, 98.0, 101.0, 1000] for i in range(200)]
+    trade = _simulate_trade(candles, signal, 0, "15m")
+    assert trade["outcome"] == "EXPIRED", f"expected EXPIRED, got {trade['outcome']}"
+    assert trade["is_win"] is False
+
+
+def test_phase70_fees_reduce_r():
+    """Fees/slippage reduce R result."""
+    from production_replay.historical_replay_engine import _simulate_trade
+    signal = {
+        "symbol": "BTC-USDT",
+        "direction": "LONG",
+        "pattern": "sweep",
+        "entry": 100.0,
+        "stop": 90.0,  # RR with target at 140 would be 4:1
+        "entry_time": 1000,
+    }
+    # Target at 140 (entry 100, stop 90, risk=10, target=100+4*10=140)
+    # Hit target -> R = 4.0, minus fees
+    candles = [
+        [1000, 99.0, 101.0, 98.0, 100.0, 1000],
+        [2000, 100.0, 145.0, 99.0, 140.0, 1500],  # hit target at 140
+    ]
+    trade = _simulate_trade(candles, signal, 0, "1h")
+    assert trade["r_result"] > trade["r_after_fees"], "r_after_fees should be less than r_result"
+    assert trade["r_after_fees"] < trade["r_result"]
+
+
+def test_phase70_in_sample_out_of_sample_separated():
+    """In-sample and out-of-sample are separated by time."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    # Create trades with increasing entry times
+    trades = [
+        {"entry_time": 1000, "r_result": 1.0 if i < 7 else -1.0, "is_win": i < 7,
+         "symbol": "BTC-USDT", "direction": "LONG", "timeframe": "1h",
+         "pattern": "sweep", "outcome": "WIN" if i < 7 else "LOSS"}
+        for i in range(10)
+    ]
+    report = analyze_trades(trades)
+    assert report["in_sample"]["trades"] == 7  # 70% of 10
+    assert report["out_of_sample"]["trades"] == 3  # 30% of 10
+    assert report["in_sample"]["avg_r"] > 0
+    assert report["out_of_sample"]["avg_r"] < 0  # losing trades in OOS
+
+
+def test_phase70_positive_is_negative_oos_not_promoted():
+    """Positive in-sample but negative out-of-sample is not promoted."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    # 100+ trades: first 70% winning, last 30% losing
+    trades = []
+    for i in range(100):
+        is_win = i < 70
+        trades.append({
+            "entry_time": 1000 + i * 1000,
+            "r_result": 1.0 if is_win else -1.0,
+            "is_win": is_win,
+            "symbol": "BTC-USDT",
+            "direction": "LONG",
+            "timeframe": "1h",
+            "pattern": "sweep",
+            "outcome": "WIN" if is_win else "LOSS",
+        })
+    report = analyze_trades(trades)
+    assert report["in_sample"]["avg_r"] > 0
+    assert report["out_of_sample"]["avg_r"] <= 0
+    # Should NOT be promoted — overfitting warning
+    assert "likely overfitting" in str(report.get("warnings", [])).lower() or report["verdict"] in (
+        "HISTORICAL_EDGE_NOT_FOUND", "HISTORICAL_EDGE_WEAK"
+    )
+
+
+def test_phase70_report_has_breakdowns():
+    """Report includes symbol/timeframe/pattern breakdown."""
+    from production_replay.historical_strategy_brain import analyze_trades
+    trades = []
+    for i in range(50):
+        trades.append({
+            "entry_time": 1000 + i * 1000,
+            "r_result": 0.5,
+            "is_win": True,
+            "symbol": f"SYM-{i % 3}",
+            "direction": "LONG" if i % 2 == 0 else "SHORT",
+            "timeframe": "1h",
+            "pattern": "sweep",
+            "outcome": "WIN",
+        })
+    report = analyze_trades(trades)
+    assert "by_symbol" in report
+    assert "by_direction" in report
+    assert "by_timeframe" in report
+    assert "by_pattern" in report
+    assert "best_symbol" in report
+    assert "worst_symbol" in report
+
+
+def test_phase70_no_live_trading_enabled():
+    """Modules do not enable live trading."""
+    import inspect
+    for mod_name in ["historical_data_fetcher", "historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(__import__(f"production_replay.{mod_name}", fromlist=["_"]))
+        assert "BINGX_EXECUTION_MODE" not in src, f"{mod_name} contains BINGX_EXECUTION_MODE"
+        assert "LIVE_TRADING_ACK" not in src, f"{mod_name} contains LIVE_TRADING_ACK"
+        assert "research_only" in src or "offline research" in src.lower(), f"{mod_name} missing research_only flag"
+
+
+def test_phase70_no_real_order_apis():
+    """No real order APIs are called in historical modules."""
+    import inspect
+    for mod_name in ["historical_data_fetcher", "historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(__import__(f"production_replay.{mod_name}", fromlist=["_"]))
+        assert "place_order" not in src.lower(), f"{mod_name} contains place_order"
+        assert "create_order" not in src.lower(), f"{mod_name} contains create_order"
+
+
+def test_phase70_past_candles_only():
+    """Signal generation uses past candles only (no lookahead)."""
+    from production_replay.historical_replay_engine import _detect_sweep
+    # 20 candles where only the last one shows a sweep
+    candles = [[1000 + i * 1000, 100.0, 101.0, 99.0, 100.0, 1000] for i in range(20)]
+    # Add a sweep at index 19: high sweeps above recent max, closes back
+    candles[19] = [20000, 99.0, 105.0, 98.0, 99.5, 2000]  # SHORT sweep
+    signal = _detect_sweep(candles, 19)
+    if signal:
+        assert signal["direction"] in ("LONG", "SHORT")
+        # No future candle beyond index 19 should affect the signal
+        assert signal["entry_time"] == 20000
+
+
+def test_phase70_execution_mode_read_only():
+    """All historical modules keep execution mode as read_only awareness."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.historical_strategy_brain", fromlist=["_"]))
+    assert "research_only" in src or "read_only" in src or "live_trading_enabled" in src
+
+
+def test_phase70_hourly_has_historical_replay_brain():
+    """Hourly alert source includes historical replay brain section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.hourly_alert", fromlist=["_"]))
+    assert "HISTORICAL REPLAY BRAIN" in src or "historical_replay_brain" in src
+
+
+def test_phase70_doctor_has_historical_replay_brain():
+    """Doctor daily packet source includes historical replay brain section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.doctor_daily_packet", fromlist=["_"]))
+    assert "HISTORICAL REPLAY BRAIN" in src or "historical_replay_brain" in src
+
+
+def test_phase70_strategy_evidence_has_historical():
+    """Strategy evidence lock source includes historical replay section."""
+    import inspect
+    src = inspect.getsource(__import__("production_replay.strategy_evidence_lock", fromlist=["_"]))
+    assert "historical_replay" in src

@@ -151,6 +151,14 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run historical replay brain for fresh data (Phase 70)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.historical_strategy_brain"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -170,6 +178,7 @@ def run_hourly_alert() -> dict:
     watchlist = _read_json(os.path.join(RESULTS_DIR, "paper_candidate_watchlist.json"))
     evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
     pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
+    historical_brain = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -479,6 +488,15 @@ def run_hourly_alert() -> dict:
             "long_short_summary": pattern_memory.get("long_short_summary", {}) if pattern_memory else {},
             "warnings": pattern_memory.get("warnings", []) if pattern_memory else [],
         } if pattern_memory else None,
+        "historical_replay_brain": {
+            "total_trades": historical_brain.get("total_trades", 0) if historical_brain else 0,
+            "verdict": historical_brain.get("verdict", "HISTORICAL_INSUFFICIENT_DATA") if historical_brain else "HISTORICAL_INSUFFICIENT_DATA",
+            "average_r": historical_brain.get("average_r", 0) if historical_brain else 0,
+            "win_rate": historical_brain.get("win_rate", 0) if historical_brain else 0,
+            "in_sample_avg_r": historical_brain.get("in_sample", {}).get("avg_r", 0) if historical_brain else 0,
+            "out_of_sample_avg_r": historical_brain.get("out_of_sample", {}).get("avg_r", 0) if historical_brain else 0,
+            "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
+        } if historical_brain else None,
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -955,6 +973,20 @@ def _write_text_report(report: dict, action: str, reason: str):
             for w in pm_warnings[:2]:
                 lines.append(f"    Warning:                 {w}")
         lines += [""]
+
+    # Phase 70: Historical replay brain
+    hb = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
+    if hb and hb.get("total_trades", 0) > 0:
+        lines += [
+            "  HISTORICAL REPLAY BRAIN:",
+            f"    Historical Trades:  {hb.get('total_trades', 0)}",
+            f"    Verdict:            {hb.get('verdict', 'N/A')}",
+            f"    In-Sample Avg R:    {hb.get('in_sample', {}).get('avg_r', 0)}",
+            f"    Out-of-Sample Avg R: {hb.get('out_of_sample', {}).get('avg_r', 0)}",
+            f"    Win Rate:           {hb.get('win_rate', 0)}%",
+            f"    Recommendation:     {hb.get('recommendation', 'N/A')}",
+            "",
+        ]
 
     if best and not bridge_candidate_shown:
         lines += [

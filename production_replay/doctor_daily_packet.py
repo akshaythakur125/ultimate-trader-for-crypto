@@ -75,6 +75,7 @@ def main():
     _run_module("production_replay.paper_candidate_watchlist")
     _run_module("production_replay.strategy_evidence_lock")
     _run_module("production_replay.closed_trade_forensics")
+    _run_module("production_replay.historical_strategy_brain")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -97,6 +98,7 @@ def main():
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
+    historical_brain = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -834,6 +836,22 @@ def main():
     else:
         pattern_memory_lines = ["", "  TRADER BRAIN / PATTERN MEMORY: MISSING (no report)", ""]
 
+    # Phase 70: Historical replay brain
+    historical_lines = []
+    if historical_brain and historical_brain.get("total_trades", 0) > 0:
+        hb = historical_brain
+        historical_lines = [
+            "",
+            "  HISTORICAL REPLAY BRAIN:",
+            f"    Historical Trades:  {hb.get('total_trades', 0)}",
+            f"    Verdict:            {hb.get('verdict', 'N/A')}",
+            f"    In-Sample Avg R:    {hb.get('in_sample', {}).get('avg_r', 0)}",
+            f"    Out-of-Sample Avg R: {hb.get('out_of_sample', {}).get('avg_r', 0)}",
+            f"    Win Rate:           {hb.get('win_rate', 0)}%",
+            f"    Recommendation:     {hb.get('recommendation', 'N/A')}",
+            "",
+        ]
+
     # BingX live micro execution section
     live_lines = []
     if live:
@@ -964,6 +982,7 @@ def main():
     lines += rotation_engine_lines
     lines += evidence_lines
     lines += pattern_memory_lines
+    lines += historical_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1179,6 +1198,15 @@ def main():
             "long_short_summary": pattern_memory.get("long_short_summary", {}) if pattern_memory else {},
             "warnings": pattern_memory.get("warnings", []) if pattern_memory else [],
         } if pattern_memory else None,
+        "historical_replay_brain": {
+            "total_trades": historical_brain.get("total_trades", 0) if historical_brain else 0,
+            "verdict": historical_brain.get("verdict", "HISTORICAL_INSUFFICIENT_DATA") if historical_brain else "HISTORICAL_INSUFFICIENT_DATA",
+            "average_r": historical_brain.get("average_r", 0) if historical_brain else 0,
+            "win_rate": historical_brain.get("win_rate", 0) if historical_brain else 0,
+            "in_sample_avg_r": historical_brain.get("in_sample", {}).get("avg_r", 0) if historical_brain else 0,
+            "out_of_sample_avg_r": historical_brain.get("out_of_sample", {}).get("avg_r", 0) if historical_brain else 0,
+            "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
+        } if historical_brain else None,
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

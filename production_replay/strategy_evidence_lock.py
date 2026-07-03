@@ -12,7 +12,7 @@ Hard rules:
 - Never output any live-granted or go-live wording.
 """
 
-import json, os, sys
+import json, os, subprocess, sys
 from datetime import datetime, timezone
 from statistics import mean
 
@@ -196,6 +196,16 @@ def run_strategy_evidence_lock() -> dict:
     hourly = _read_json(HOURLY_PATH)
     doctor = _read_json(DOCTOR_PATH)
     rotation = _read_json(ROTATION_PATH)
+    historical = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
+    if not historical:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "production_replay.historical_strategy_brain"],
+                capture_output=True, text=True, timeout=30,
+            )
+            historical = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
+        except Exception:
+            pass
 
     agg = outcome.get("agg_stats", {}) if outcome else {}
     total_trades = len(paper_trades)
@@ -327,6 +337,15 @@ def run_strategy_evidence_lock() -> dict:
         "thesis_performance": thesis_perf,
         "anomalies": anomalies,
         "has_anomaly": has_anomaly,
+        "historical_replay": {
+            "total_trades": historical.get("total_trades", 0) if historical else 0,
+            "verdict": historical.get("verdict", "HISTORICAL_INSUFFICIENT_DATA") if historical else "HISTORICAL_INSUFFICIENT_DATA",
+            "average_r": historical.get("average_r", 0) if historical else 0,
+            "win_rate": historical.get("win_rate", 0) if historical else 0,
+            "in_sample_avg_r": historical.get("in_sample", {}).get("avg_r", 0) if historical else 0,
+            "out_of_sample_avg_r": historical.get("out_of_sample", {}).get("avg_r", 0) if historical else 0,
+            "recommendation": historical.get("recommendation", "N/A") if historical else "N/A",
+        },
         "required_before_real_trading": [
             "minimum 30 closed paper trades",
             "positive average R",
@@ -406,6 +425,19 @@ def _write_text_report(report: dict):
         lines.append(f"    - {a}")
     if report["has_anomaly"]:
         lines.append("  *** Anomalies detected — manual review required ***")
+
+    hr = report.get("historical_replay", {})
+    if hr and hr.get("total_trades", 0) > 0:
+        lines += [
+            "",
+            "  === HISTORICAL REPLAY BRAIN ===",
+            f"  Historical Trades:         {hr['total_trades']}",
+            f"  Historical Verdict:        {hr.get('verdict', 'N/A')}",
+            f"  Avg R (in-sample):         {hr.get('in_sample_avg_r', 0)}",
+            f"  Avg R (out-of-sample):     {hr.get('out_of_sample_avg_r', 0)}",
+            f"  Win Rate:                  {hr.get('win_rate', 0)}%",
+            f"  Recommendation:            {hr.get('recommendation', 'N/A')}",
+        ]
 
     lines += [
         "",
