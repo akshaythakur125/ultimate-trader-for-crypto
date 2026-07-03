@@ -13,6 +13,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from production_replay.bingx_client import load_credentials
+from production_replay.final_decision_resolver import resolve_final_action
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
@@ -54,7 +55,7 @@ def _determine_final_action(
 ) -> tuple[str, str]:
     # Rule 0: trigger bridge + preflight pass + only env blocking (Phase 55)
     if bridge_shadow_ready and preflight_pass and live_blocked_by_env:
-        return "LIVE_ARMABLE", "Trigger bridge preflight passed; ready for live_micro arming (env vars required)"
+        return "LIVE_REVIEW_READY", "Trigger bridge preflight passed; requires manual review for live"
 
     # Rule 0b: trigger bridge shadow ready (Phase 51)
     if bridge_shadow_ready:
@@ -278,12 +279,14 @@ def run_hourly_alert() -> dict:
         live_blocked_by_env=live_blocked_by_env,
     )
 
-    # Phase 65: Evidence lock overrides final action — master gate
-    evidence_live_allowed = evidence.get("live_allowed", False) if evidence else False
-    if not evidence_live_allowed:
-        if final_action in ("LIVE_ARMABLE", "LIVE_BLOCKED", "LIVE_READY") or final_action.startswith("LIVE_"):
-            final_action = "EVIDENCE_BLOCKED"
-            action_reason = "preflight passed, evidence blocked"
+    # Phase 65B: Final decision resolver — priority-based master gate
+    final_action, action_reason = resolve_final_action(
+        evidence=evidence,
+        kill_switch_on=kill_active,
+        execution_mode=execution_mode,
+        base_action=final_action,
+        base_reason=action_reason,
+    )
 
     report = {
         "mode": "hourly_alert",

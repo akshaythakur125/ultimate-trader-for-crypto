@@ -5443,12 +5443,12 @@ def test_hourly_alert_shows_preflight():
     assert "live_blocked_by_env" in src
 
 
-def test_hourly_alert_has_live_armable_action():
-    """Hourly alert defines LIVE_ARMABLE final action."""
+def test_hourly_alert_has_live_review_ready_action():
+    """Hourly alert defines LIVE_REVIEW_READY final action (Phase 65B renamed from LIVE_ARMABLE)."""
     import inspect
     import production_replay.hourly_alert as ha
     src = inspect.getsource(ha._determine_final_action)
-    assert "LIVE_ARMABLE" in src
+    assert "LIVE_REVIEW_READY" in src
     assert "live_blocked_by_env" in src
 
 
@@ -6999,67 +6999,115 @@ def test_phase64_doctor_has_strategy_evidence():
 
 
 # ──────────────────────────────────────────────
-# Phase 65: Evidence Lock Overrides Live Armable
+# Phase 65B: Force Evidence Lock Final Override
 # ──────────────────────────────────────────────
 
-def test_phase65_hourly_final_action_not_live_armable():
-    """Hourly alert final action is never LIVE_ARMABLE when evidence blocks."""
+def test_phase65b_final_decision_resolver_module_exists():
+    """final_decision_resolver module exists with resolve_final_action."""
+    import production_replay.final_decision_resolver as fdr
+    assert callable(fdr.resolve_final_action)
+
+
+def test_phase65b_evidence_blocks_live_review_ready():
+    """Evidence lock overrides LIVE_REVIEW_READY to EVIDENCE_BLOCKED."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    evidence = {"live_allowed": False, "evidence_verdict": "EVIDENCE_INCOMPLETE", "closed_trades": 0, "live_reason": "evidence incomplete"}
+    action, reason = resolve_final_action(evidence, False, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "EVIDENCE_BLOCKED", f"expected EVIDENCE_BLOCKED, got {action}"
+    assert "0 closed trades" in reason
+
+
+def test_phase65b_evidence_blocks_with_detail():
+    """Evidence lock returns detailed reason with closed trade count."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    evidence = {"live_allowed": False, "evidence_verdict": "EVIDENCE_INCOMPLETE", "closed_trades": 5, "live_reason": "only 5 closed trades"}
+    action, reason = resolve_final_action(evidence, False, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "EVIDENCE_BLOCKED"
+    assert "5 closed trades" in reason
+    assert "30" in reason
+
+
+def test_phase65b_kill_switch_blocks():
+    """Kill switch overrides to KILL_SWITCH_BLOCKED when evidence allows."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    evidence = {"live_allowed": True, "evidence_verdict": "LIVE_REVIEW_STRONG"}
+    action, reason = resolve_final_action(evidence, True, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "KILL_SWITCH_BLOCKED", f"expected KILL_SWITCH_BLOCKED, got {action}"
+    assert "kill switch" in reason.lower()
+
+
+def test_phase65b_execution_mode_blocks():
+    """Read-only execution mode overrides live action to PAPER_ONLY."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    evidence = {"live_allowed": True, "evidence_verdict": "LIVE_REVIEW_STRONG"}
+    action, reason = resolve_final_action(evidence, False, "read_only", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "PAPER_ONLY", f"expected PAPER_ONLY, got {action}"
+    assert "read_only" in reason
+
+
+def test_phase65b_evidence_missing_passes_through():
+    """When evidence is None, resolver passes through base action."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    action, reason = resolve_final_action(None, False, "live_micro", "SHADOW_READY", "shadow ready")
+    assert action == "SHADOW_READY"
+    assert reason == "shadow ready"
+
+
+def test_phase65b_evidence_missing_kill_switch_blocks():
+    """When evidence is None but kill switch is ON, still blocks."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    action, reason = resolve_final_action(None, True, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "KILL_SWITCH_BLOCKED"
+
+
+def test_phase65b_non_live_action_passes_through():
+    """Non-live actions like SHADOW_READY pass through when all gates open."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    evidence = {"live_allowed": True, "evidence_verdict": "LIVE_REVIEW_STRONG"}
+    action, reason = resolve_final_action(evidence, False, "live_micro", "SHADOW_READY", "shadow ready")
+    assert action == "SHADOW_READY"
+
+
+def test_phase65b_hourly_status_evidence_blocks():
+    """Hourly alert final_action is EVIDENCE_BLOCKED when evidence blocks."""
     from production_replay.hourly_alert import run_hourly_alert
     r = run_hourly_alert()
-    fa = r.get("final_action", "")
     se = r.get("strategy_evidence", {})
-    live_allowed = se.get("live_allowed", True) if se else True
-    if not live_allowed:
-        assert fa != "LIVE_ARMABLE", f"final_action should not be LIVE_ARMABLE when evidence blocks, got {fa}"
-        assert fa in ("EVIDENCE_BLOCKED", "SHADOW_READY", "REVIEW_NOW", "NO_VALID_CANDIDATE", "EMERGENCY_EXIT_REQUIRED", "POSITION_OPEN_MONITORING", "LIVE_BLOCKED"), f"unexpected {fa}"
+    if se and not se.get("live_allowed", True):
+        fa = r.get("final_action", "")
+        assert fa == "EVIDENCE_BLOCKED", f"expected EVIDENCE_BLOCKED, got {fa}"
+        assert "closed trade" in r.get("action_reason", "") or "evidence" in r.get("action_reason", "").lower()
 
 
-def test_phase65_evidence_blocked_overrides_live_armable():
-    """Evidence lock overrides LIVE_ARMABLE to EVIDENCE_BLOCKED in hourly output."""
+def test_phase65b_no_live_armable_in_source():
+    """Hourly alert source does not contain LIVE_ARMABLE."""
     import inspect
     src = inspect.getsource(__import__("production_replay.hourly_alert", fromlist=["_"]))
-    assert "LIVE_ARMABLE" not in src or "EVIDENCE_BLOCKED" in src
-    assert "evidence blocked" in src.lower()
+    assert "LIVE_ARMABLE" not in src, "LIVE_ARMABLE should be replaced by LIVE_REVIEW_READY"
 
 
-def test_phase65_doctor_evidence_overrides_live_executor():
-    """Doctor daily packet shows evidence lock blocking live executor."""
+def test_phase65b_hourly_status_txt_not_contains_live_armable():
+    """hourly_status.txt does not contain LIVE_ARMABLE when evidence incomplete."""
+    import os
+    path = os.path.join("deploy_results", "hourly_status.txt")
+    if os.path.exists(path):
+        with open(path) as f:
+            content = f.read()
+        assert "LIVE_ARMABLE" not in content, "hourly_status.txt must not contain LIVE_ARMABLE"
+
+
+def test_phase65b_doctor_evidence_block_detail():
+    """Doctor daily packet live section shows evidence lock detail."""
     import inspect
     src = inspect.getsource(__import__("production_replay.doctor_daily_packet", fromlist=["_"]))
-    assert "Evidence Lock" in src or "evidence_live_allowed" in src
+    assert "Evidence Lock" in src
+    assert "BLOCKED" in src or "closed trades" in src or "evidence incomplete" in src
 
 
-def test_phase65_preflight_passes_evidence_blocks():
-    """When evidence blocks, final_action is not LIVE_ARMABLE."""
-    from production_replay.hourly_alert import run_hourly_alert
-    r = run_hourly_alert()
-    se = r.get("strategy_evidence", {})
-    live_allowed = se.get("live_allowed", True) if se else True
-    if not live_allowed:
-        fa = r.get("final_action", "")
-        assert fa != "LIVE_ARMABLE", f"final_action should not be LIVE_ARMABLE, got {fa}"
-
-
-def test_phase65_no_live_armable_hard_rule():
-    """Source code does not contain LIVE_ARMABLE in a way that bypasses evidence."""
-    import inspect, re
-    src = inspect.getsource(__import__("production_replay.hourly_alert", fromlist=["_"]))
-    # LIVE_ARMABLE may appear in the code, but must be accompanied by evidence override
-    if "LIVE_ARMABLE" in src:
-        # Count occurrences — should only appear in the evidence override or as a literal string
-        live_armable_refs = len(re.findall(r'LIVE_ARMABLE', src))
-        assert live_armable_refs >= 0  # just checking it's not a problem
-
-
-def test_phase65_final_action_never_live_when_evidence_incomplete():
-    """When strategy_evidence is missing or incomplete, final action is not LIVE_ARMABLE."""
-    from production_replay.hourly_alert import run_hourly_alert
-    r = run_hourly_alert()
-    se = r.get("strategy_evidence")
-    if se is None:
-        assert r.get("final_action") != "LIVE_ARMABLE"
-    else:
-        ev = se.get("evidence_verdict", "")
-        live_allowed = se.get("live_allowed", True)
-        if not live_allowed or ev in ("EVIDENCE_INCOMPLETE", "STRATEGY_BLOCKED"):
-            assert r.get("final_action") != "LIVE_ARMABLE", f"final_action is LIVE_ARMABLE despite evidence={ev}"
+def test_phase65b_resolver_priority_chain():
+    """Evidence lock is priority 1 (overrides even kill switch)."""
+    from production_replay.final_decision_resolver import resolve_final_action
+    # Evidence blocks even when kill switch is ON
+    evidence = {"live_allowed": False, "evidence_verdict": "EVIDENCE_INCOMPLETE", "closed_trades": 0, "live_reason": "incomplete"}
+    action, reason = resolve_final_action(evidence, True, "live_micro", "LIVE_REVIEW_READY", "preflight passed")
+    assert action == "EVIDENCE_BLOCKED", f"evidence should take priority over kill switch, got {action}"
