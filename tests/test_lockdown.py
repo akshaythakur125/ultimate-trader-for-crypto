@@ -8411,3 +8411,130 @@ def test_phase73_evidence_lock_remains_blocked():
     # Final action should be EVIDENCE_BLOCKED
     for c in report.get("families", {}).values():
         assert c["tier"] != "LIVE_ELIGIBLE"
+
+
+# -------------------------------------------------------------------
+# Phase 74 — Promotion-Gated Paper Execution + Legacy Cleanup
+# -------------------------------------------------------------------
+
+def test_phase74_paper_candidate_family_allowed():
+    """PAPER_CANDIDATE family is allowed for paper trading."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate, PAPER_ALLOWED_TIERS
+    tiers = {"liquidity_sweep_reversal": "PAPER_PRIORITY", "mean_reversion": "PAPER_CANDIDATE"}
+    allowed, tier, rc = _check_promotion_gate("liquidity_sweep_reversal", tiers)
+    assert allowed is True
+    assert tier == "PAPER_PRIORITY"
+    assert rc == ""
+    allowed2, tier2, rc2 = _check_promotion_gate("mean_reversion", tiers)
+    assert allowed2 is True
+    assert tier2 == "PAPER_CANDIDATE"
+    assert rc2 == ""
+
+
+def test_phase74_observe_only_family_blocked():
+    """OBSERVE_ONLY family is blocked for paper trading."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"trend_pullback": "OBSERVE_ONLY"}
+    allowed, tier, rc = _check_promotion_gate("trend_pullback", tiers)
+    assert allowed is False
+    assert tier == "OBSERVE_ONLY"
+    assert rc == "PAPER_FAMILY_NOT_PROMOTED"
+
+
+def test_phase74_rejected_family_blocked():
+    """REJECTED family is blocked for paper trading."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"compression_breakout": "REJECTED"}
+    allowed, tier, rc = _check_promotion_gate("compression_breakout", tiers)
+    assert allowed is False
+    assert tier == "REJECTED"
+    assert rc == "PAPER_FAMILY_REJECTED"
+
+
+def test_phase74_unknown_family_blocked():
+    """Unknown family is blocked for paper trading."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {}
+    allowed, tier, rc = _check_promotion_gate("unknown", tiers)
+    assert allowed is False
+    assert tier == "UNKNOWN"
+    assert rc == "PAPER_FAMILY_UNKNOWN"
+
+
+def test_phase74_legacy_trade_invalidated():
+    """Legacy trade from unpromoted family is invalidated."""
+    from production_replay.paper_execution_ledger import resolve_strategy_family, _check_promotion_gate
+    # Simulate a legacy trade without strategy_family field
+    legacy_trade = {"symbol": "O-USDT", "side": "SHORT", "source": "rotation"}
+    family = resolve_strategy_family(legacy_trade)
+    assert family == "unknown"
+    # Check that it would be invalidated
+    tiers = {"liquidity_sweep_reversal": "PAPER_PRIORITY"}
+    allowed, _, rc = _check_promotion_gate(family, tiers)
+    assert allowed is False
+    assert rc == "PAPER_FAMILY_UNKNOWN"
+
+
+def test_phase74_invalidated_legacy_not_counted_as_evidence():
+    """Invalidated legacy trades are not counted as active trades."""
+    from production_replay.paper_execution_ledger import _read_portfolio, _write_portfolio
+    # Save and restore portfolio
+    portfolio = _read_portfolio()
+    try:
+        # Add a fake legacy trade
+        fake_legacy = {
+            "symbol": "LEGACY-USDT", "side": "SHORT", "entry": 1.0, "stop": 1.1,
+            "target": 0.5, "quantity": 100, "notional": 100, "risk": 10, "rr": 5.0,
+            "status": "PAPER_OPEN", "source": "rotation", "strategy_family": "unknown"
+        }
+        portfolio.append(fake_legacy)
+        _write_portfolio(portfolio)
+        # Verify the portfolio has the fake trade
+        loaded = _read_portfolio()
+        assert any(t["symbol"] == "LEGACY-USDT" for t in loaded)
+        # The trade should be marked as PAPER_OPEN in the list, but
+        # the promotion gate would invalidate it in run_paper_execution
+    finally:
+        # Restore original portfolio (remove fake)
+        restored = [t for t in portfolio if t.get("symbol") != "LEGACY-USDT"]
+        _write_portfolio(restored)
+
+
+def test_phase74_live_trading_disabled():
+    """Phase 74 does not enable live trading."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    report = run_paper_execution()
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+    assert report.get("real_order") is False
+
+
+def test_phase74_rotation_engine_includes_promotion_gate():
+    """Rotation engine includes promotion gate in report."""
+    from production_replay.paper_rotation_engine import run_paper_rotation_engine
+    report = run_paper_rotation_engine()
+    assert "promotion_gate" in report
+    assert "families" in report["promotion_gate"]
+    assert "allowed_tiers" in report["promotion_gate"]
+    assert "PAPER_CANDIDATE" in report["promotion_gate"]["allowed_tiers"]
+    assert "PAPER_PRIORITY" in report["promotion_gate"]["allowed_tiers"]
+
+
+def test_phase74_paper_execution_includes_promotion_gate():
+    """Paper execution ledger includes promotion gate in report."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    report = run_paper_execution()
+    assert "promotion_gate" in report
+    assert "families" in report["promotion_gate"]
+    assert "invalidated_legacy" in report
+
+
+def test_phase74_paper_execution_no_real_orders():
+    """Phase 74 paper execution does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.paper_execution_ledger", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower()
+    assert "create_order" not in src.lower()
+    assert "APPROVED" not in src

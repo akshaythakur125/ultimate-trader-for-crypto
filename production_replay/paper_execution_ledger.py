@@ -42,6 +42,27 @@ REASON_DUPLICATE = "PAPER_DUPLICATE_SYMBOL_SIDE"
 REASON_RISK_TOO_HIGH = "PAPER_RISK_TOO_HIGH"
 REASON_PORTFOLIO_NOTIONAL_TOO_HIGH = "PAPER_PORTFOLIO_NOTIONAL_TOO_HIGH"
 REASON_EXCHANGE_MIN_SIZE = "PAPER_EXCHANGE_MIN_SIZE_TOO_LARGE"
+REASON_FAMILY_NOT_PROMOTED = "PAPER_FAMILY_NOT_PROMOTED"
+REASON_FAMILY_REJECTED = "PAPER_FAMILY_REJECTED"
+REASON_FAMILY_UNKNOWN = "PAPER_FAMILY_UNKNOWN"
+REASON_INVALID_LEGACY = "PAPER_INVALID_LEGACY_PROMOTION_GATE"
+
+# Thesis type to strategy family mapping
+THESIS_TYPE_TO_FAMILY = {
+    "SWEEP_HIGH": "liquidity_sweep_reversal",
+    "SWEEP_LOW": "liquidity_sweep_reversal",
+    "UPPER_WICK_EXTENSION": "liquidity_sweep_reversal",
+    "LOWER_WICK_EXTENSION": "liquidity_sweep_reversal",
+    "COMPRESSION": "compression_breakout",
+    "BREAKOUT": "compression_breakout",
+    "EMA_PULLBACK": "trend_pullback",
+    "TREND_PULLBACK": "trend_pullback",
+    "MEAN_REVERSION": "mean_reversion",
+    "SHORT_WEAKNESS": "short_weakness",
+}
+
+# Promotion tiers that allow paper trading
+PAPER_ALLOWED_TIERS = {"PAPER_CANDIDATE", "PAPER_PRIORITY"}
 
 
 def _read_json(path: str) -> dict:
@@ -50,6 +71,50 @@ def _read_json(path: str) -> dict:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _load_promotion_tiers() -> dict[str, str]:
+    """Load strategy family promotion tiers from arbiter report.
+    Returns dict of family_name -> tier.
+    """
+    report = _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json"))
+    families = report.get("families", {})
+    return {name: info.get("tier", "UNKNOWN") for name, info in families.items()}
+
+
+def resolve_strategy_family(candidate: dict) -> str:
+    """Resolve strategy family from candidate's thesis_type, pattern, or direct family field."""
+    # Direct family field
+    family = candidate.get("strategy_family", "")
+    if family and family != "unknown":
+        return family
+    # From thesis_type
+    thesis_type = candidate.get("thesis_type", "")
+    family = THESIS_TYPE_TO_FAMILY.get(thesis_type, "")
+    if family:
+        return family
+    # From pattern_name
+    pattern = candidate.get("pattern_name", "")
+    family = THESIS_TYPE_TO_FAMILY.get(pattern, "")
+    if family:
+        return family
+    return "unknown"
+
+
+def _check_promotion_gate(family: str, promotion_tiers: dict[str, str]) -> tuple[bool, str, str]:
+    """Check if a strategy family is allowed for paper trading.
+    Returns (allowed, tier, reason_code).
+    """
+    if family == "unknown":
+        return False, "UNKNOWN", REASON_FAMILY_UNKNOWN
+    tier = promotion_tiers.get(family, "UNKNOWN")
+    if tier in PAPER_ALLOWED_TIERS:
+        return True, tier, ""
+    if tier == "REJECTED":
+        return False, tier, REASON_FAMILY_REJECTED
+    if tier == "OBSERVE_ONLY":
+        return False, tier, REASON_FAMILY_NOT_PROMOTED
+    return False, tier, REASON_FAMILY_NOT_PROMOTED
 
 
 def _read_portfolio() -> list[dict]:
@@ -298,7 +363,7 @@ def _monitor_trade(trade: dict) -> dict:
 def _create_trade_from_data(
     symbol: str, side: str, entry: float, stop: float, target: float,
     quantity: float, notional: float, risk: float, rr: float,
-    source: str = "shadow",
+    source: str = "shadow", strategy_family: str = "unknown",
 ) -> dict:
     current_price = _get_current_price(symbol)
     if not current_price or current_price <= 0:
@@ -328,6 +393,7 @@ def _create_trade_from_data(
         "opened_at": datetime.now(timezone.utc).isoformat(),
         "closed_at": None,
         "source": source,
+        "strategy_family": strategy_family,
     }
 
 
@@ -357,12 +423,47 @@ def run_paper_execution() -> dict:
     new_trades_opened = []
     skipped_duplicates = []
     rejected_candidates = []
+    invalidated_legacy = []
 
     gate_shadow_ready = shadow_decision == "SHADOW_READY"
     gate_preflight_pass = preflight_decision == "PREFLIGHT_PASS"
     gate_safe_mode = not execution_mode or execution_mode in ("read_only", "shadow_only")
     gate_no_real_order = live_decision != "EXECUTED"
     all_gates = gate_shadow_ready and gate_preflight_pass and gate_safe_mode and gate_no_real_order
+
+    # Load promotion tiers for gate checks
+    promotion_tiers = _load_promotion_tiers()
+
+    # -- Legacy trade cleanup: remove unpromoted trades --
+    portfolio = _read_portfolio()
+    active_before = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
+    clean_portfolio = []
+    for trade in portfolio:
+        if trade.get("status") != "PAPER_OPEN":
+            clean_portfolio.append(trade)
+            continue
+        family = resolve_strategy_family(trade)
+        allowed, tier, reason_code = _check_promotion_gate(family, promotion_tiers)
+        if allowed:
+            clean_portfolio.append(trade)
+        else:
+            trade["status"] = "LEGACY_INVALIDATED"
+            trade["exit_reason"] = reason_code
+            trade["closed_at"] = datetime.now(timezone.utc).isoformat()
+            trade["strategy_family"] = family
+            _append_to_ledger(trade)
+            invalidated_legacy.append({
+                "symbol": trade.get("symbol"),
+                "side": trade.get("side"),
+                "family": family,
+                "tier": tier,
+                "reason": reason_code,
+            })
+            reasons.append(
+                f"legacy invalidated: {trade.get('symbol')} {trade.get('side')} "
+                f"family={family} tier={tier} reason={reason_code}"
+            )
+    portfolio = clean_portfolio
 
     if not gate_shadow_ready:
         reasons.append(f"shadow decision is {shadow_decision}, need SHADOW_READY")
@@ -383,6 +484,7 @@ def run_paper_execution() -> dict:
     notional = float(preflight.get("notional", 0)) if preflight else 0
     risk = float(preflight.get("actual_risk_usdt", 0)) if preflight else 0
     rr = float(shadow_intent.get("rr_final", 0)) if shadow_intent else 0
+    shadow_family = resolve_strategy_family(shadow_intent) if shadow_intent else "unknown"
 
     portfolio = _read_portfolio()
     active_before = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
@@ -405,8 +507,15 @@ def run_paper_execution() -> dict:
             updated_portfolio.append(trade)
 
     # -- Helper to attempt adding a trade with risk checks --
-    def _attempt_add_trade(sym: str, sd: str, en: float, st: float, tg: float, src: str, rr_val: float):
+    def _attempt_add_trade(sym: str, sd: str, en: float, st: float, tg: float, src: str, rr_val: float, family: str):
         nonlocal status
+        # Promotion gate check
+        allowed, tier, reason_code = _check_promotion_gate(family, promotion_tiers)
+        if not allowed:
+            rejected_candidates.append(f"[{reason_code}] {sym} {sd} family={family} tier={tier} — family not promoted")
+            reasons.append(f"promotion gate blocked ({reason_code}): {sym} {sd} family={family} tier={tier}")
+            return
+
         if _is_duplicate(sym, sd, updated_portfolio):
             skipped_duplicates.append(f"{sym} {sd} already active ({src})")
             reasons.append(f"duplicate skipped ({src}): {sym} {sd} already in portfolio")
@@ -426,17 +535,17 @@ def run_paper_execution() -> dict:
         final_risk = sizin["risk"]
 
         new_trade = _create_trade_from_data(
-            sym, sd, en, st, tg, final_qty, final_notional, final_risk, rr_val, source=src,
+            sym, sd, en, st, tg, final_qty, final_notional, final_risk, rr_val, source=src, strategy_family=family,
         )
         updated_portfolio.append(new_trade)
-        new_trades_opened.append({"symbol": sym, "side": sd, "source": src, "quantity": final_qty, "notional": final_notional, "risk": final_risk})
+        new_trades_opened.append({"symbol": sym, "side": sd, "source": src, "family": family, "tier": tier, "quantity": final_qty, "notional": final_notional, "risk": final_risk})
         _append_to_ledger(new_trade)
-        reasons.append(f"paper trade opened: {sym} {sd}, entry={en}, RR={rr_val}, qty={final_qty}, notional={final_notional:.2f}, risk={final_risk:.2f}")
+        reasons.append(f"paper trade opened: {sym} {sd}, entry={en}, RR={rr_val}, qty={final_qty}, notional={final_notional:.2f}, risk={final_risk:.2f}, family={family}, tier={tier}")
         status = "PAPER_OPEN"
 
     # -- Try to add new trade from shadow intent --
     if all_gates and symbol and side and entry > 0 and stop > 0 and target > 0 and quantity > 0:
-        _attempt_add_trade(symbol, side, entry, stop, target, "shadow", rr)
+        _attempt_add_trade(symbol, side, entry, stop, target, "shadow", rr, shadow_family)
 
     # -- Try to add trade from rotation report --
     rot_candidate = None
@@ -453,7 +562,8 @@ def run_paper_execution() -> dict:
         rot_stop = float(rot_candidate["stop"])
         rot_target = float(rot_candidate["target"])
         rot_rr = float(rot_candidate.get("rr", 0) or 0)
-        _attempt_add_trade(rot_sym, rot_side, rot_entry, rot_stop, rot_target, "rotation", rot_rr)
+        rot_family = resolve_strategy_family(rot_candidate)
+        _attempt_add_trade(rot_sym, rot_side, rot_entry, rot_stop, rot_target, "rotation", rot_rr, rot_family)
 
     # -- Determine overall status --
     active_trades = [t for t in updated_portfolio if t.get("status") == "PAPER_OPEN"]
@@ -503,6 +613,11 @@ def run_paper_execution() -> dict:
             "no_real_order": gate_no_real_order,
             "all_pass": all_gates,
         },
+        "promotion_gate": {
+            "families": promotion_tiers,
+            "allowed_tiers": list(PAPER_ALLOWED_TIERS),
+        },
+        "invalidated_legacy": invalidated_legacy,
         "paper_config": paper_config,
         "current_paper_trade": primary,
         "portfolio": {
@@ -513,6 +628,7 @@ def run_paper_execution() -> dict:
             "new_trades_opened": new_trades_opened,
             "skipped_duplicates": skipped_duplicates,
             "rejected_candidates": rejected_candidates,
+            "invalidated_legacy": invalidated_legacy,
             "total_notional_exposure": round(total_notional, 2),
             "total_unrealized_pnl": round(total_unrealized, 4),
             "total_risk_usdt": round(total_risk, 4),
@@ -538,6 +654,8 @@ def _write_text_report(
     current = report.get("current_paper_trade")
     pf = report.get("portfolio", {})
     pc = report.get("paper_config", {})
+    promo = report.get("promotion_gate", {})
+    invalidated = report.get("invalidated_legacy", [])
     lines = [
         "=" * 60,
         "  PAPER EXECUTION LEDGER",
@@ -546,6 +664,15 @@ def _write_text_report(
         "",
         f"  Status: {status}",
         f"  Active Paper Trades: {pf.get('active_count', 0)} / {pf.get('max_allowed', MAX_PAPER_TRADES)}",
+        "",
+        "  Promotion Gate:",
+        f"    Allowed Tiers:   {', '.join(promo.get('allowed_tiers', []))}",
+    ]
+    for family, tier in promo.get("families", {}).items():
+        marker = " *" if tier in PAPER_ALLOWED_TIERS else ""
+        lines.append(f"    {family}: {tier}{marker}")
+
+    lines += [
         "",
         "  Paper Config (Risk vs Notional Model):",
         f"    Capital:                   {pc.get('capital_usdt', '?')} USDT",
@@ -570,7 +697,7 @@ def _write_text_report(
                 f"    [{i}] {t.get('symbol','?')} {t.get('side','?')}",
                 f"        Entry: {t.get('entry',0)}  Stop: {t.get('stop',0)}  Target: {t.get('target',0)}",
                 f"        Qty: {t.get('quantity',0)}  Notional: {t.get('notional',0)}  RR: 1:{t.get('rr',0)}",
-                f"        Risk: {t.get('risk',0):.2f} USDT",
+                f"        Risk: {t.get('risk',0):.2f} USDT  Family: {t.get('strategy_family','?')}",
                 f"        Entry Fill: {'YES' if t.get('entry_fill_check') else 'NO'}  "
                 f"Unrealized P&L: {t.get('unrealized_pnl',0):.2f}",
             ]
@@ -586,10 +713,15 @@ def _write_text_report(
     else:
         lines += ["", "  Active Paper Trades: NONE"]
 
+    if invalidated:
+        lines += ["", "  Invalidated Legacy Trades:"]
+        for il in invalidated:
+            lines.append(f"    - {il.get('symbol','?')} {il.get('side','?')} family={il.get('family','?')} tier={il.get('tier','?')} reason={il.get('reason','?')}")
+
     if new_trades:
         lines += ["", "  New Paper Trades This Run:"]
         for t in new_trades:
-            lines.append(f"    + {t.get('symbol','?')} {t.get('side','?')} source={t.get('source','?')} qty={t.get('quantity',0)} notional={t.get('notional',0):.2f} risk={t.get('risk',0):.2f}")
+            lines.append(f"    + {t.get('symbol','?')} {t.get('side','?')} source={t.get('source','?')} family={t.get('family','?')} tier={t.get('tier','?')} qty={t.get('quantity',0)} notional={t.get('notional',0):.2f} risk={t.get('risk',0):.2f}")
     if skipped:
         lines += ["", "  Skipped Duplicates:"]
         for s in skipped:

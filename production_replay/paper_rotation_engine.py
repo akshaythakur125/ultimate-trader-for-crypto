@@ -30,6 +30,23 @@ PAPER_MAX_LEVERAGE = 2
 PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 800  # 2x capital
 PAPER_MAX_ACTIVE_TRADES = 5
 
+# Thesis type to strategy family mapping (mirrored from paper_execution_ledger)
+THESIS_TYPE_TO_FAMILY = {
+    "SWEEP_HIGH": "liquidity_sweep_reversal",
+    "SWEEP_LOW": "liquidity_sweep_reversal",
+    "UPPER_WICK_EXTENSION": "liquidity_sweep_reversal",
+    "LOWER_WICK_EXTENSION": "liquidity_sweep_reversal",
+    "COMPRESSION": "compression_breakout",
+    "BREAKOUT": "compression_breakout",
+    "EMA_PULLBACK": "trend_pullback",
+    "TREND_PULLBACK": "trend_pullback",
+    "MEAN_REVERSION": "mean_reversion",
+    "SHORT_WEAKNESS": "short_weakness",
+}
+
+# Promotion tiers that allow paper trading
+PAPER_ALLOWED_TIERS = {"PAPER_CANDIDATE", "PAPER_PRIORITY"}
+
 
 def _read_json(path: str) -> dict:
     try:
@@ -37,6 +54,47 @@ def _read_json(path: str) -> dict:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _load_promotion_tiers() -> dict[str, str]:
+    """Load strategy family promotion tiers from arbiter report.
+    Returns dict of family_name -> tier.
+    """
+    report = _read_json(os.path.join(RESULTS_DIR, "strategy_promotion_arbiter_report.json"))
+    families = report.get("families", {})
+    return {name: info.get("tier", "UNKNOWN") for name, info in families.items()}
+
+
+def resolve_strategy_family(candidate: dict) -> str:
+    """Resolve strategy family from candidate's thesis_type, pattern, or direct family field."""
+    family = candidate.get("strategy_family", "")
+    if family and family != "unknown":
+        return family
+    thesis_type = candidate.get("thesis_type", "")
+    family = THESIS_TYPE_TO_FAMILY.get(thesis_type, "")
+    if family:
+        return family
+    pattern = candidate.get("pattern_name", "")
+    family = THESIS_TYPE_TO_FAMILY.get(pattern, "")
+    if family:
+        return family
+    return "unknown"
+
+
+def _check_promotion_gate(family: str, promotion_tiers: dict[str, str]) -> tuple[bool, str, str]:
+    """Check if a strategy family is allowed for paper trading.
+    Returns (allowed, tier, reason_code).
+    """
+    if family == "unknown":
+        return False, "UNKNOWN", "PAPER_FAMILY_UNKNOWN"
+    tier = promotion_tiers.get(family, "UNKNOWN")
+    if tier in PAPER_ALLOWED_TIERS:
+        return True, tier, ""
+    if tier == "REJECTED":
+        return False, tier, "PAPER_FAMILY_REJECTED"
+    if tier == "OBSERVE_ONLY":
+        return False, tier, "PAPER_FAMILY_NOT_PROMOTED"
+    return False, tier, "PAPER_FAMILY_NOT_PROMOTED"
 
 
 def _read_ledger(path: str) -> list[dict]:
@@ -126,13 +184,28 @@ def run_paper_rotation_engine() -> dict:
     active_entries = [(t.get("symbol", ""), t.get("side", "")) for t in active_trades]
     available_slots = max(0, MAX_PAPER_TRADES - len(active_trades))
 
+    # Load promotion tiers for gate checks
+    promotion_tiers = _load_promotion_tiers()
+
     all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
 
     eligible = [c for c in all_candidates if _is_eligible(c)]
     fresh_eligible = [c for c in eligible if c.get("symbol", "") not in active_symbols]
 
-    capital_filtered = []
+    # Promotion gate filter
+    promotion_filtered = []
     for c in fresh_eligible:
+        family = resolve_strategy_family(c)
+        allowed, tier, reason_code = _check_promotion_gate(family, promotion_tiers)
+        if allowed:
+            c["strategy_family"] = family
+            c["promotion_tier"] = tier
+            promotion_filtered.append(c)
+        else:
+            reasons.append(f"promotion gate blocked: {c.get('symbol','')} {c.get('direction','')} family={family} tier={tier} reason={reason_code}")
+
+    capital_filtered = []
+    for c in promotion_filtered:
         ok, reason = _passes_capital_gate(c, portfolio)
         if ok:
             capital_filtered.append(c)
@@ -224,12 +297,19 @@ def run_paper_rotation_engine() -> dict:
             "target": float(best_candidate.get("target", 0) or 0),
             "bucket": best_candidate.get("bucket", ""),
             "reason": best_candidate.get("reason", ""),
+            "strategy_family": best_candidate.get("strategy_family", "unknown"),
+            "promotion_tier": best_candidate.get("promotion_tier", "UNKNOWN"),
         } if best_candidate else None,
         "candidate_discovery": {
             "total_candidates": len(all_candidates),
             "eligible_candidates": len(eligible),
             "fresh_eligible": len(fresh_eligible),
-            "re_entry_blocked": max(0, len(fresh_eligible) - len(filtered_eligible)),
+            "promotion_filtered": len(promotion_filtered),
+            "re_entry_blocked": max(0, len(promotion_filtered) - len(filtered_eligible)),
+        },
+        "promotion_gate": {
+            "families": promotion_tiers,
+            "allowed_tiers": list(PAPER_ALLOWED_TIERS),
         },
         "reasons": reasons,
     }
@@ -243,6 +323,7 @@ def run_paper_rotation_engine() -> dict:
 
 
 def _write_text_report(report: dict):
+    promo = report.get("promotion_gate", {})
     lines = [
         "=" * 60,
         "  PAPER ROTATION ENGINE",
@@ -253,6 +334,15 @@ def _write_text_report(report: dict):
         f"  Trade Lock:        {'ON' if report['active_trade_lock_on'] else 'OFF'}",
         f"  Portfolio:         {report['active_trades_count']} / {report['max_paper_trades']} active",
         f"  Available Slots:   {report['available_slots']}",
+        "",
+        "  Promotion Gate:",
+        f"    Allowed Tiers:   {', '.join(promo.get('allowed_tiers', []))}",
+    ]
+    for family, tier in promo.get("families", {}).items():
+        marker = " *" if tier in PAPER_ALLOWED_TIERS else ""
+        lines.append(f"    {family}: {tier}{marker}")
+
+    lines += [
         "",
         "  Paper Risk Config (Risk vs Notional Model):",
         f"    Capital:                {report['risk_config']['capital_usdt']} USDT",
@@ -283,6 +373,7 @@ def _write_text_report(report: dict):
         f"    Total:              {cd.get('total_candidates', 0)}",
         f"    Eligible (RR>=4):   {cd.get('eligible_candidates', 0)}",
         f"    Fresh (ex. active): {cd.get('fresh_eligible', 0)}",
+        f"    Promotion filtered: {cd.get('promotion_filtered', 0)}",
         f"    Re-entry blocked:   {cd.get('re_entry_blocked', 0)}",
         "",
     ]
@@ -296,6 +387,8 @@ def _write_text_report(report: dict):
             f"    Score:    {rc.get('thesis_score','?')}",
             f"    Status:   {rc.get('eligibility_status','?')} ({rc.get('trigger_status','?')})",
             f"    Entry:    {rc.get('entry','?')}  Stop: {rc.get('stop','?')}  Target: {rc.get('target','?')}",
+            f"    Family:   {rc.get('strategy_family','?')}",
+            f"    Tier:     {rc.get('promotion_tier','?')}",
             f"    Reason:   {rc.get('reason','')}",
         ]
     else:
