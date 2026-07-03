@@ -8690,3 +8690,111 @@ def test_phase75_legacy_cleanup_report_fields():
     assert "invalidated_trades" in report
     assert "promotion_tiers" in report
     assert "final_decision" in report
+
+
+# -------------------------------------------------------------------
+# Phase 76 — Breadwinner Strategy Library: Liquidity Sweep Reversal v2
+# -------------------------------------------------------------------
+
+def test_phase76_no_live_orders():
+    """Phase 76 modules do not place real orders."""
+    import inspect
+    for mod_name in ["breadwinner_strategy_library", "breadwinner_backtest"]:
+        src = inspect.getsource(__import__(
+            f"production_replay.{mod_name}", fromlist=["_"]
+        ))
+        assert "place_order" not in src.lower(), f"{mod_name} has place_order"
+        assert "create_order" not in src.lower(), f"{mod_name} has create_order"
+        assert "APPROVED" not in src, f"{mod_name} has APPROVED"
+
+
+def test_phase76_no_future_leakage():
+    """Strategy detection does not use future data."""
+    import inspect
+    from production_replay.breadwinner_strategy_library import detect_liquidity_sweep_v2
+    src = inspect.getsource(detect_liquidity_sweep_v2)
+    # Should only use candles up to idx, not idx+1 or later
+    assert "candles[idx+1]" not in src, "detection uses future candle data"
+    assert "candles[i+1]" not in src, "detection uses future candle data"
+
+
+def test_phase76_strategy_creates_structured_report():
+    """Strategy library creates structured report with required fields."""
+    import os
+    from production_replay.breadwinner_backtest import run_breadwinner_backtest
+    report = run_breadwinner_backtest()
+    assert "strategy" in report
+    assert report["strategy"] == "LIQUIDITY_SWEEP_REVERSAL_V2"
+    assert "final_verdict" in report
+    assert "best_variant" in report
+    assert "variants_tested" in report
+    assert "variants_passed" in report
+    assert "best_timeframe" in report
+    assert report["live_trading_enabled"] is False
+    assert report["real_order"] is False
+    # Check files exist
+    json_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_strategy_report.json")
+    txt_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_strategy_report.txt")
+    assert os.path.exists(json_path), "breadwinner_strategy_report.json not found"
+    assert os.path.exists(txt_path), "breadwinner_strategy_report.txt not found"
+
+
+def test_phase76_bad_oos_rejected():
+    """Strategy with bad OOS gets rejected."""
+    from production_replay.breadwinner_strategy_library import _check_promotion
+    # Mock stats with negative OOS
+    all_stats = {"trades": 500, "wins": 200, "losses": 300, "win_rate": 40.0,
+                 "avg_r": 0.1, "total_r": 50.0, "max_dd": 10.0, "max_consec": 8,
+                 "profit_factor": 1.5, "symbols": set(["A", "B", "C", "D", "E"] + [f"S{i}" for i in range(50)]),
+                 "timeframes": set()}
+    is_stats = {"trades": 350, "avg_r": 0.2, "win_rate": 45.0}
+    oos_stats = {"trades": 150, "avg_r": -0.1, "win_rate": 30.0}
+    verdict, reasons = _check_promotion(all_stats, is_stats, oos_stats)
+    assert verdict in ("REJECTED", "OBSERVE_ONLY")
+    assert any("OOS avg R" in r or "overfit" in r for r in reasons)
+
+
+def test_phase76_positive_oos_promoted():
+    """Strategy with positive OOS gets promoted."""
+    from production_replay.breadwinner_strategy_library import _check_promotion
+    all_stats = {"trades": 500, "wins": 250, "losses": 250, "win_rate": 50.0,
+                 "avg_r": 0.2, "total_r": 100.0, "max_dd": 10.0, "max_consec": 8,
+                 "profit_factor": 1.5, "symbols": set(["A", "B", "C", "D", "E"] + [f"S{i}" for i in range(50)]),
+                 "timeframes": set()}
+    is_stats = {"trades": 350, "avg_r": 0.25, "win_rate": 52.0}
+    oos_stats = {"trades": 150, "avg_r": 0.18, "win_rate": 48.0}
+    verdict, reasons = _check_promotion(all_stats, is_stats, oos_stats)
+    assert verdict == "PAPER_PRIORITY"
+
+
+def test_phase76_liquidity_sweep_v2_in_doctor():
+    """Breadwinner strategy appears in doctor packet."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "breadwinner_backtest" in src
+
+
+def test_phase76_breadwinner_report_includes_final_decision():
+    """Breadwinner daily report includes final decision."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_daily_report.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            report = json.load(f)
+        assert "final_decision" in report
+        assert "live_trading" in report
+        assert report["live_trading"]["enabled"] is False
+        # If strategy_backtest exists, verify it
+        if "strategy_backtest" in report:
+            assert report["strategy_backtest"]["strategy"] == "LIQUIDITY_SWEEP_REVERSAL_V2"
+
+
+def test_phase76_no_leakage_fields():
+    """Strategy library does not use banned outcome-derived fields."""
+    from production_replay.breadwinner_strategy_library import BANNED_FIELDS
+    banned = {"r_result", "r_after_fees", "is_win", "outcome",
+              "exit_reason", "exit_price", "max_favorable_excursion_pct",
+              "max_adverse_excursion_pct", "holding_candles"}
+    assert banned == BANNED_FIELDS

@@ -55,9 +55,19 @@ def run_breadwinner_daily() -> dict:
     # Read paper execution
     paper_report = _read_json(os.path.join(RESULTS_DIR, "paper_execution_status.json"))
 
+    # Read breadwinner strategy backtest
+    strategy_report = _read_json(os.path.join(RESULTS_DIR, "breadwinner_strategy_report.json"))
+
     # Determine final decision
     edge_decision = edge_report.get("final_decision", "NO_EDGE_FOUND")
+    strategy_verdict = strategy_report.get("final_verdict", "NO_EDGE_FOUND")
     cleanup_invalidated = cleanup_report.get("invalidated_count", 0)
+
+    # Use strategy verdict if it's higher than edge miner
+    if strategy_verdict in ("PAPER_PRIORITY", "PAPER_CANDIDATE"):
+        final_decision = strategy_verdict
+    else:
+        final_decision = edge_decision
 
     # Promotion tiers
     promotion_tiers = {}
@@ -91,13 +101,21 @@ def run_breadwinner_daily() -> dict:
         "research_only": True,
         "live_trading_enabled": False,
         "real_order": False,
-        "final_decision": edge_decision,
+        "final_decision": final_decision,
         "edge_miner": {
             "symbols_scanned": edge_report.get("symbols_scanned", 0),
             "variants_tested": edge_report.get("variants_tested", 0),
             "variants_passed": edge_report.get("variants_passed", 0),
             "best_variant": edge_report.get("best_variant"),
             "final_decision": edge_decision,
+        },
+        "strategy_backtest": {
+            "strategy": strategy_report.get("strategy", "N/A"),
+            "final_verdict": strategy_verdict,
+            "best_variant": strategy_report.get("best_variant"),
+            "best_timeframe": strategy_report.get("best_timeframe"),
+            "variants_tested": strategy_report.get("variants_tested", 0),
+            "variants_passed": strategy_report.get("variants_passed", 0),
         },
         "legacy_cleanup": {
             "invalidated_count": cleanup_invalidated,
