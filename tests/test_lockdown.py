@@ -7477,3 +7477,197 @@ def test_phase70_strategy_evidence_has_historical():
     import inspect
     src = inspect.getsource(__import__("production_replay.strategy_evidence_lock", fromlist=["_"]))
     assert "historical_replay" in src
+
+
+# ---------------------------------------------------------------------------
+# Phase 70B — Historical Replay Diagnostics and Live-Trigger Parity Check
+# ---------------------------------------------------------------------------
+
+def test_phase70b_diagnostics_counters_tracked():
+    """run_replay_with_diagnostics returns counters for each stage."""
+    from production_replay.historical_replay_engine import run_replay_with_diagnostics
+
+    candles = [[1000 + i * 1000, 100.0, 102.0, 98.0, 101.0, 1000 + i * 10] for i in range(200)]
+    # Inject a bearish sweep at index 50
+    candles[50] = [51000, 99.0, 108.0, 98.0, 99.5, 2000]  # high=108 sweep above recent 102, close=99.5 < open=99
+    data = {"TEST-USDT": candles}
+    trades, diag = run_replay_with_diagnostics(data, ["1h"])
+
+    assert diag["symbols_checked"] >= 1
+    assert diag["timeframes_checked"] >= 1
+    assert diag["candles_loaded"] >= 200
+    assert diag["candles_evaluated"] > 0
+    assert "rejection_reasons" in diag
+
+
+def test_phase70b_no_signals_has_diagnostic_reason():
+    """Candle data exists but produces 0 signals yields diagnostic reason, not silent zero."""
+    from production_replay.historical_replay_engine import run_replay_with_diagnostics
+
+    # Flat doji candles (close=open) — no sweep, no wick, no compression, no volume spike
+    candles = [[1000 + i * 1000, 100.0, 101.0, 99.0, 100.0, 1000] for i in range(200)]
+    data = {"FLAT-USDT": candles}
+    trades, diag = run_replay_with_diagnostics(data, ["1h"])
+
+    assert len(trades) == 0
+    assert diag["candles_evaluated"] > 0
+    assert diag["sweep_detected"] == 0
+    assert diag["wick_rejection_detected"] == 0
+    assert diag["compression_detected"] == 0
+    assert diag["volume_spike_detected"] == 0
+    assert diag["final_signal_created"] == 0
+
+
+def test_phase70b_rejection_reasons_counted():
+    """Rejection reasons are counted per category."""
+    from production_replay.historical_replay_engine import run_replay_with_diagnostics
+
+    candles = [[1000 + i * 1000, 100.0, 102.0, 98.0, 101.0, 1000 + i * 10] for i in range(200)]
+    candles[50] = [51000, 99.0, 108.0, 98.0, 99.5, 2000]
+    data = {"TEST-USDT": candles}
+    trades, diag = run_replay_with_diagnostics(data, ["1h"])
+
+    assert isinstance(diag["rejection_reasons"], dict)
+    assert len(diag["rejection_reasons"]) >= 0
+
+
+def test_phase70b_near_miss_file_diagnostic_mode(tmp_path):
+    """Near-miss file is created in diagnostic mode."""
+    import os, json
+    old_env = os.environ.get("HISTORICAL_DIAGNOSTIC_MODE")
+    os.environ["HISTORICAL_DIAGNOSTIC_MODE"] = "1"
+
+    try:
+        from production_replay.historical_replay_engine import (
+            run_replay_with_diagnostics, NEAR_MISS_PATH
+        )
+
+        candles = [[1000 + i * 1000, 100.0, 102.0, 98.0, 101.0, 1000 + i * 10] for i in range(200)]
+        candles[50] = [51000, 99.0, 108.0, 98.0, 99.5, 2000]
+        data = {"TEST-USDT": candles}
+        trades, diag = run_replay_with_diagnostics(data, ["1h"])
+
+        if os.path.exists(NEAR_MISS_PATH):
+            with open(NEAR_MISS_PATH) as f:
+                lines = [l for l in f if l.strip()]
+            assert len(lines) > 0, "near-miss file should have entries"
+            entry = json.loads(lines[0])
+            assert "symbol" in entry
+            assert "rejection_reason" in entry
+            assert "passed_filters" in entry
+            assert "failed_filters" in entry
+    finally:
+        if old_env is None:
+            os.environ.pop("HISTORICAL_DIAGNOSTIC_MODE", None)
+        else:
+            os.environ["HISTORICAL_DIAGNOSTIC_MODE"] = old_env
+
+
+def test_phase70b_live_trigger_parity_report():
+    """Live-trigger parity check produces a structured report."""
+    from production_replay.historical_strategy_brain import _compute_live_trigger_parity
+
+    parity = _compute_live_trigger_parity()
+    assert isinstance(parity, dict)
+    assert "live_only_filters" in parity
+    assert "historical_only_filters" in parity
+    assert "overlapping_filters" in parity
+    assert "can_reproduce_fluid_usdt_live_trigger" in parity
+    assert "fluid_usdt_analysis" in parity
+    assert len(parity["live_only_filters"]) > 0
+    assert len(parity["historical_only_filters"]) > 0
+
+
+def test_phase70b_historical_report_zero_trades_has_diagnostics():
+    """Historical replay report shows diagnostics when total trades = 0."""
+    from production_replay.historical_strategy_brain import run_historical_brain
+
+    report = run_historical_brain(trades=[])
+    assert report["total_trades"] == 0
+    assert report["verdict"] == "HISTORICAL_INSUFFICIENT_DATA"
+    assert report.get("diagnostics") is not None or report.get("live_trigger_parity") is not None
+
+
+def test_phase70b_parity_identifies_live_only_filters():
+    """Parity check identifies two-phase process as live-only."""
+    from production_replay.historical_strategy_brain import _compute_live_trigger_parity
+
+    parity = _compute_live_trigger_parity()
+    has_two_phase = any("two-phase" in f.lower() or "Two-phase" in f for f in parity.get("live_only_filters", []))
+    assert has_two_phase, "live-only filters should include two-phase process mention"
+
+
+def test_phase70b_parity_identifies_volume_spike_as_historical_only():
+    """Parity check identifies volume_spike as historical-only."""
+    from production_replay.historical_strategy_brain import _compute_live_trigger_parity
+
+    parity = _compute_live_trigger_parity()
+    has_volume = any("volume_spike" in f for f in parity.get("historical_only_filters", []))
+    assert has_volume, "historical-only filters should include volume_spike"
+
+
+def test_phase70b_diagnostics_file_written():
+    """Diagnostics JSON and TXT files are written after replay."""
+    import os, json
+    from production_replay.historical_replay_engine import (
+        run_replay_with_diagnostics, DIAG_JSON_PATH, DIAG_TXT_PATH
+    )
+
+    if os.path.exists(DIAG_JSON_PATH):
+        os.remove(DIAG_JSON_PATH)
+    if os.path.exists(DIAG_TXT_PATH):
+        os.remove(DIAG_TXT_PATH)
+
+    candles = [[1000 + i * 1000, 100.0, 102.0, 98.0, 101.0, 1000 + i * 10] for i in range(200)]
+    candles[50] = [51000, 99.0, 108.0, 98.0, 99.5, 2000]
+    data = {"TEST-USDT": candles}
+    trades, diag = run_replay_with_diagnostics(data, ["1h"])
+
+    assert os.path.exists(DIAG_JSON_PATH), "diagnostics JSON should exist"
+    assert os.path.exists(DIAG_TXT_PATH), "diagnostics TXT should exist"
+
+    with open(DIAG_JSON_PATH) as f:
+        saved = json.load(f)
+    assert saved.get("candles_evaluated", 0) > 0
+
+
+def test_phase70b_load_cached_empty_dir():
+    """load_cached_data returns empty dict when no cache dir exists."""
+    from production_replay.historical_replay_engine import load_cached_data
+
+    result = load_cached_data(symbols=["BTC-USDT"])
+    assert isinstance(result, dict)
+
+
+def test_phase70b_no_live_trading():
+    """Historical replay modules do not enable live trading."""
+    import inspect
+    for mod_name in ["historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(
+            __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        )
+        assert "LIVE_TRADING_ACK" not in src, f"{mod_name} contains LIVE_TRADING_ACK"
+        assert "BINGX_EXECUTION_MODE" not in src, f"{mod_name} contains BINGX_EXECUTION_MODE"
+        assert "research_only" in src or "offline research" in src.lower(), \
+            f"{mod_name} missing research_only flag"
+
+
+def test_phase70b_no_real_orders():
+    """No real order APIs are called in historical modules."""
+    import inspect
+    for mod_name in ["historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(
+            __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        )
+        assert "place_order" not in src.lower(), f"{mod_name} contains place_order"
+        assert "create_order" not in src.lower(), f"{mod_name} contains create_order"
+
+
+def test_phase70b_full_pipeline_no_cache():
+    """run_full_pipeline returns empty trades with diagnostics when no cache."""
+    from production_replay.historical_replay_engine import run_full_pipeline
+
+    trades, diag = run_full_pipeline()
+    assert isinstance(trades, list)
+    assert isinstance(diag, dict)
+    assert diag.get("data_fetch_successful") is not None

@@ -1,6 +1,9 @@
 """Historical strategy brain — analyzes replay results, computes edge metrics,
 produces verdict, and writes structured reports.
 
+Automatically orchestrates data fetcher -> replay engine -> analysis when
+no existing trades ledger is found. Includes live-trigger parity check.
+
 Offline research only — never enables live trading.
 """
 
@@ -18,12 +21,13 @@ TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
 PATTERN_MEMORY_LEDGER = os.path.join(STATE_DIR, "historical_pattern_memory.jsonl")
 JSON_PATH = os.path.join(RESULTS_DIR, "historical_replay_report.json")
 TXT_PATH = os.path.join(RESULTS_DIR, "historical_replay_report.txt")
+DIAG_JSON_PATH = os.path.join(RESULTS_DIR, "historical_replay_diagnostics.json")
 
-VERDICT_INSUFFICIENT = "HISTORICAL_INSUFFICIENT_DATA"
-VERDICT_NOT_FOUND = "HISTORICAL_EDGE_NOT_FOUND"
-VERDICT_WEAK = "HISTORICAL_EDGE_WEAK"
-VERDICT_PROMISING = "HISTORICAL_EDGE_PROMISING"
-VERDICT_STRONG = "HISTORICAL_EDGE_STRONG_REVIEW"
+VVERDICT_INSUFFICIENT = "HISTORICAL_INSUFFICIENT_DATA"
+VVERDICT_NOT_FOUND = "HISTORICAL_EDGE_NOT_FOUND"
+VVERDICT_WEAK = "HISTORICAL_EDGE_WEAK"
+VVERDICT_PROMISING = "HISTORICAL_EDGE_PROMISING"
+VVERDICT_STRONG = "HISTORICAL_EDGE_STRONG_REVIEW"
 
 
 def _read_ledger(path: str) -> list[dict]:
@@ -32,6 +36,14 @@ def _read_ledger(path: str) -> list[dict]:
             return [json.loads(l) for l in f if l.strip()]
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def _group_and_score(groups: dict) -> dict:
@@ -97,7 +109,6 @@ def analyze_trades(trades: list[dict]) -> dict:
     max_dd = _compute_drawdown(trades)
     max_consec = _compute_max_consecutive_losses(trades)
 
-    # Groupings
     by_symbol = defaultdict(list)
     by_direction = defaultdict(list)
     by_timeframe = defaultdict(list)
@@ -119,7 +130,6 @@ def analyze_trades(trades: list[dict]) -> dict:
         else:
             by_rr_bucket["4+"].append(t)
 
-    # Split in-sample (70%) / out-of-sample (30%) by time
     sorted_trades = sorted(trades, key=lambda t: t.get("entry_time", 0))
     split_idx = int(len(sorted_trades) * 0.7)
     in_sample = sorted_trades[:split_idx]
@@ -134,7 +144,6 @@ def analyze_trades(trades: list[dict]) -> dict:
     is_win_rate = round(is_win_count / len(in_sample) * 100, 1) if in_sample else 0.0
     oos_win_rate = round(oos_win_count / len(out_of_sample) * 100, 1) if out_of_sample else 0.0
 
-    # Best/worst
     sym_stats = _group_and_score(by_symbol)
     pat_stats = _group_and_score(by_pattern)
     tf_stats = _group_and_score(by_timeframe)
@@ -155,28 +164,27 @@ def analyze_trades(trades: list[dict]) -> dict:
     best_timeframe = max(tf_stats, key=lambda t: tf_stats[t]["avg_r"]) if tf_stats else None
     worst_timeframe = min(tf_stats, key=lambda t: tf_stats[t]["avg_r"]) if tf_stats else None
 
-    # Verdict
-    verdict = VERDICT_INSUFFICIENT
+    verdict = VVERDICT_INSUFFICIENT
     recommendation = "Insufficient historical data"
 
     if total < 100:
-        verdict = VERDICT_INSUFFICIENT
+        verdict = VVERDICT_INSUFFICIENT
         recommendation = f"Only {total} trades (need 100+)"
     elif avg_r <= 0:
-        verdict = VERDICT_NOT_FOUND
+        verdict = VVERDICT_NOT_FOUND
         recommendation = f"Average R {avg_r} <= 0 — no edge found"
     elif total >= 300 and avg_r > 0.25 and win_rate > 35 and max_dd < 50:
-        verdict = VERDICT_STRONG
+        verdict = VVERDICT_STRONG
         recommendation = "Strong historical edge — promote for review"
     elif total >= 100 and avg_r > 0 and win_rate > 35:
         if max_dd > 30:
-            verdict = VERDICT_WEAK
+            verdict = VVERDICT_WEAK
             recommendation = f"Edge found but drawdown {max_dd} is high"
         else:
-            verdict = VERDICT_PROMISING
+            verdict = VVERDICT_PROMISING
             recommendation = "Promising historical edge — continue monitoring"
     elif total >= 100 and avg_r > 0:
-        verdict = VERDICT_WEAK
+        verdict = VVERDICT_WEAK
         recommendation = f"Edge weak (win rate {win_rate}% <= 35%)"
 
     report = {
@@ -219,9 +227,10 @@ def analyze_trades(trades: list[dict]) -> dict:
         "verdict": verdict,
         "recommendation": recommendation,
         "warnings": [],
+        "live_trigger_parity": None,
+        "diagnostics": None,
     }
 
-    # Warnings
     if oos_avg_r <= 0 and is_avg_r > 0:
         report["warnings"].append(
             f"Positive in-sample ({is_avg_r}) but negative out-of-sample ({oos_avg_r}) — likely overfitting"
@@ -235,7 +244,6 @@ def analyze_trades(trades: list[dict]) -> dict:
 
 
 def _compute_drawdown(trades: list[dict]) -> float:
-    """Compute maximum drawdown in R units."""
     if not trades:
         return 0.0
     sorted_trades = sorted(trades, key=lambda t: t.get("entry_time", 0))
@@ -253,15 +261,54 @@ def _compute_drawdown(trades: list[dict]) -> float:
     return round(max_dd, 2)
 
 
+def _load_diagnostics() -> dict:
+    """Load replay diagnostics from file."""
+    return _read_json(DIAG_JSON_PATH)
+
+
+def _compute_live_trigger_parity() -> dict:
+    """Compute live-trigger parity check."""
+    try:
+        from production_replay.historical_replay_engine import compute_live_trigger_parity
+        return compute_live_trigger_parity()
+    except Exception as e:
+        return {
+            "error": str(e),
+            "live_only_filters": [],
+            "historical_only_filters": [],
+            "overlapping_filters": [],
+            "can_reproduce_fluid_usdt_live_trigger": False,
+            "fluid_usdt_analysis": "Could not compute",
+            "notes": [],
+        }
+
+
 def run_historical_brain(trades: list[dict] | None = None) -> dict:
-    """Run historical strategy brain analysis."""
+    """Run historical strategy brain analysis.
+
+    If trades is None, tries to read from ledger. If ledger is empty,
+    automatically orchestrates cache load -> replay engine -> analysis.
+    """
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
     if trades is None:
         trades = _read_ledger(TRADES_LEDGER)
 
+    replay_diagnostics = _load_diagnostics()
+
+    if not trades and not replay_diagnostics.get("data_fetch_successful"):
+        trades, diag = _run_replay_pipeline()
+        replay_diagnostics = diag
+    elif not trades:
+        pass
+
+    live_parity = _compute_live_trigger_parity()
+
     report = analyze_trades(trades)
+
+    report["live_trigger_parity"] = live_parity
+    report["diagnostics"] = replay_diagnostics
 
     with open(JSON_PATH, "w") as f:
         json.dump(report, f, indent=2)
@@ -269,6 +316,21 @@ def run_historical_brain(trades: list[dict] | None = None) -> dict:
     _write_text_report(report)
     _append_to_ledger(report)
     return report
+
+
+def _run_replay_pipeline() -> tuple[list[dict], dict]:
+    """Run cache load -> replay engine to generate trades."""
+    try:
+        from production_replay.historical_replay_engine import run_full_pipeline
+        trades, diag = run_full_pipeline()
+        if trades:
+            from production_replay.historical_replay_engine import TRADES_LEDGER as TLEDGER
+            with open(TLEDGER, "w") as f:
+                for t in trades:
+                    f.write(json.dumps(t) + "\n")
+        return trades, diag
+    except Exception as e:
+        return [], {"error": str(e), "data_fetch_successful": False}
 
 
 def _write_text_report(report: dict):
@@ -296,26 +358,70 @@ def _write_text_report(report: dict):
         "",
     ]
 
-    best_pat = report.get("best_pattern")
-    worst_pat = report.get("worst_pattern")
-    if best_pat:
-        lines.append(f"  Best Pattern:  {best_pat['pattern']} — avg R {best_pat['avg_r']}, WR {best_pat['win_rate']}%")
-    if worst_pat:
-        lines.append(f"  Worst Pattern: {worst_pat['pattern']} — avg R {worst_pat['avg_r']}, WR {worst_pat['win_rate']}%")
+    # If 0 trades, show diagnostics
+    if report['total_trades'] == 0:
+        diag = report.get("diagnostics", {})
+        if diag:
+            lines += [
+                "  === DIAGNOSTICS (0 trades) ===",
+                f"  Cache files found:            {diag.get('cache_files_found', '?')}",
+                f"  Data fetch successful:        {diag.get('data_fetch_successful', '?')}",
+                f"  Candles loaded:               {diag.get('candles_loaded', 0)}",
+                f"  Candles evaluated:            {diag.get('candles_evaluated', 0)}",
+                f"  Sweep detected:               {diag.get('sweep_detected', 0)}",
+                f"  Wick rejection detected:      {diag.get('wick_rejection_detected', 0)}",
+                f"  Compression detected:         {diag.get('compression_detected', 0)}",
+                f"  Volume spike detected:        {diag.get('volume_spike_detected', 0)}",
+                f"  Trigger confirmed:            {diag.get('trigger_confirmed', 0)}",
+                f"  RR passed:                    {diag.get('rr_passed', 0)}",
+                f"  RR failed:                    {diag.get('rr_failed', 0)}",
+                f"  Final signals created:        {diag.get('final_signal_created', 0)}",
+                f"  Data fetch error:             {diag.get('data_fetch_error', 'N/A')}",
+                "",
+            ]
+            if diag.get("rejection_reasons"):
+                reasons = sorted(
+                    diag["rejection_reasons"].items(),
+                    key=lambda x: -x[1]
+                )[:10]
+                lines.append("  TOP REJECTION REASONS:")
+                for reason, count in reasons:
+                    lines.append(f"    {reason}: {count}")
+                lines.append("")
 
-    best_sym = report.get("best_symbol")
-    worst_sym = report.get("worst_symbol")
-    if best_sym:
-        lines.append(f"  Best Symbol:   {best_sym['symbol']} — avg R {best_sym['avg_r']}")
-    if worst_sym:
-        lines.append(f"  Worst Symbol:  {worst_sym['symbol']} — avg R {worst_sym['avg_r']}")
+            if diag.get("near_misses"):
+                nm = diag["near_misses"][0]
+                lines.extend([
+                    "  CLOSEST NEAR-MISS:",
+                    f"    Symbol:       {nm.get('symbol', '?')}",
+                    f"    Timeframe:    {nm.get('timeframe', '?')}",
+                    f"    Direction:    {nm.get('direction', '?')}",
+                    f"    Pattern:      {nm.get('pattern', '?')}",
+                    f"    Rejection:    {nm.get('rejection_reason', '?')}",
+                    f"    RR Estimate:  {nm.get('rr_estimate', '?')}",
+                    "",
+                ])
+    else:
+        best_pat = report.get("best_pattern")
+        worst_pat = report.get("worst_pattern")
+        if best_pat:
+            lines.append(f"  Best Pattern:  {best_pat['pattern']} — avg R {best_pat['avg_r']}, WR {best_pat['win_rate']}%")
+        if worst_pat:
+            lines.append(f"  Worst Pattern: {worst_pat['pattern']} — avg R {worst_pat['avg_r']}, WR {worst_pat['win_rate']}%")
 
-    best_tf = report.get("best_timeframe")
-    worst_tf = report.get("worst_timeframe")
-    if best_tf:
-        lines.append(f"  Best TF:       {best_tf['timeframe']} — avg R {best_tf['avg_r']}")
-    if worst_tf:
-        lines.append(f"  Worst TF:      {worst_tf['timeframe']} — avg R {worst_tf['avg_r']}")
+        best_sym = report.get("best_symbol")
+        worst_sym = report.get("worst_symbol")
+        if best_sym:
+            lines.append(f"  Best Symbol:   {best_sym['symbol']} — avg R {best_sym['avg_r']}")
+        if worst_sym:
+            lines.append(f"  Worst Symbol:  {worst_sym['symbol']} — avg R {worst_sym['avg_r']}")
+
+        best_tf = report.get("best_timeframe")
+        worst_tf = report.get("worst_timeframe")
+        if best_tf:
+            lines.append(f"  Best TF:       {best_tf['timeframe']} — avg R {best_tf['avg_r']}")
+        if worst_tf:
+            lines.append(f"  Worst TF:      {worst_tf['timeframe']} — avg R {worst_tf['avg_r']}")
 
     lines += [
         "",
@@ -323,15 +429,40 @@ def _write_text_report(report: dict):
         f"  Recommendation:    {report['recommendation']}",
     ]
 
-    if report.get("by_direction"):
+    if report.get("by_direction") and report['total_trades'] > 0:
         lines += ["", "  PERFORMANCE BY DIRECTION:"]
         for d, s in sorted(report["by_direction"].items()):
             lines.append(f"    {d}: {s['trades']} trades, avg R {s['avg_r']}, WR {s['win_rate']}%")
 
-    if report.get("by_pattern"):
+    if report.get("by_pattern") and report['total_trades'] > 0:
         lines += ["", "  PERFORMANCE BY PATTERN:"]
         for p, s in sorted(report["by_pattern"].items()):
             lines.append(f"    {p}: {s['trades']} trades, avg R {s['avg_r']}, WR {s['win_rate']}%")
+
+    # Live-trigger parity section
+    parity = report.get("live_trigger_parity", {})
+    if parity:
+        lines += [
+            "",
+            "  === LIVE-TRIGGER PARITY CHECK ===",
+            "  Filters present in both:",
+        ]
+        for f in parity.get("overlapping_filters", []):
+            lines.append(f"    - {f}")
+        lines.append("")
+        lines.append("  Filters only in LIVE trigger_watcher:")
+        for f in parity.get("live_only_filters", []):
+            lines.append(f"    - {f}")
+        lines.append("")
+        lines.append("  Filters only in HISTORICAL replay:")
+        for f in parity.get("historical_only_filters", []):
+            lines.append(f"    - {f}")
+        lines.append("")
+        lines.append(f"  Can reproduce FLUID-USDT live trigger: {parity.get('can_reproduce_fluid_usdt_live_trigger', '?')}")
+        lines.append(f"  Analysis: {parity.get('fluid_usdt_analysis', 'N/A')}")
+        for note in parity.get("notes", []):
+            lines.append(f"  Note: {note}")
+        lines.append("")
 
     if report.get("warnings"):
         lines += ["", "  WARNINGS:"]
