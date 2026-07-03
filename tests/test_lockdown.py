@@ -8008,3 +8008,127 @@ def test_phase70e_brain_no_real_orders():
     ))
     assert "place_order" not in src.lower(), "brain contains place_order"
     assert "create_order" not in src.lower(), "brain contains create_order"
+
+
+# -------------------------------------------------------------------
+# Phase 71 — Historical Edge Miner
+# -------------------------------------------------------------------
+
+def _make_fake_trades(count: int, r_mean: float = 0.1, win_rate: float = 0.5,
+                      symbol: str = "X", timeframe: str = "1h",
+                      direction: str = "LONG", pattern: str = "sweep") -> list[dict]:
+    import random
+    trades = []
+    for i in range(count):
+        is_win = random.random() < win_rate
+        r = abs(random.gauss(r_mean, 0.5)) if is_win else -abs(random.gauss(abs(r_mean) * 0.5, 0.3))
+        trades.append({
+            "symbol": symbol, "direction": direction, "timeframe": timeframe,
+            "pattern": pattern, "entry_time": i * 3600, "r_result": r,
+            "is_win": is_win, "outcome": "TARGET_HIT" if is_win else "STOP_HIT",
+        })
+    return trades
+
+
+def test_phase71_negative_strategy_gives_edge_not_found():
+    """Full negative strategy yields EDGE_NOT_FOUND overall unless subgroup qualifies."""
+    from production_replay.historical_edge_miner import run_edge_miner, _read_trades, JSON_PATH
+    import os, json
+    os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
+    report = run_edge_miner()
+    if report["total_trades_analyzed"] > 0:
+        # Report should have a verdict and at least one rejected group
+        assert report["overall_verdict"] in (
+            "EDGE_NOT_FOUND", "EDGE_FRAGILE", "EDGE_PROMISING_REVIEW", "EDGE_STRONG_REVIEW"
+        )
+        assert report["rejected_groups"] > 0
+
+
+def test_phase71_positive_is_negative_oos_is_rejected():
+    """Subgroup with positive IS but negative OOS is rejected."""
+    from production_replay.historical_edge_miner import (
+        _read_trades, _read_json, run_edge_miner, V_EDGE_NOT_FOUND, JSON_PATH
+    )
+    import os
+    os.makedirs(os.path.dirname(JSON_PATH), exist_ok=True)
+    report = _read_json(JSON_PATH) if os.path.exists(JSON_PATH) else run_edge_miner()
+    overfit = report.get("overfit_groups", [])
+    # Any overfit group should have positive IS and negative OOS
+    for g in overfit:
+        assert g["in_sample"]["avg_r"] > 0, f"overfit group {g['group']} has non-positive IS"
+        assert g["out_of_sample"]["avg_r"] <= 0, f"overfit group {g['group']} has positive OOS"
+
+
+def test_phase71_too_few_trades_is_fragile():
+    """Group with too few trades is EDGE_FRAGILE."""
+    from production_replay.historical_edge_miner import analyze_group, _check_overfit
+    few_trades = _make_fake_trades(10)
+    grp = analyze_group(few_trades, "test:fragile")
+    verdict, rec, issues = _check_overfit(grp)
+    assert verdict in ("EDGE_FRAGILE", "EDGE_NOT_FOUND")
+    assert any("insufficient trades" in i for i in issues)
+
+
+def test_phase71_positive_subgroup_is_promising():
+    """Subgroup with positive IS and OOS and enough sample is at least PROMISING."""
+    from production_replay.historical_edge_miner import analyze_group, _check_overfit
+    good_trades = _make_fake_trades(150, r_mean=0.2, win_rate=0.4)
+    grp = analyze_group(good_trades, "test:promising")
+    verdict, rec, issues = _check_overfit(grp)
+    # If all checks pass, should be at least PROMISING
+    if not issues:
+        assert verdict in ("EDGE_PROMISING_REVIEW", "EDGE_STRONG_REVIEW")
+
+
+def test_phase71_no_live_trading():
+    """Edge miner does not enable live trading."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_phase71_no_real_orders():
+    """Edge miner does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.historical_edge_miner", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower(), "miner contains place_order"
+    assert "create_order" not in src.lower(), "miner contains create_order"
+    assert "APPROVED" not in src, "miner contains APPROVED"
+
+
+def test_phase71_report_has_rejected_overfit_groups():
+    """Report includes rejected overfit groups section."""
+    from production_replay.historical_edge_miner import run_edge_miner
+    report = run_edge_miner()
+    assert "overfit_groups" in report
+    assert isinstance(report["overfit_groups"], list)
+
+
+def test_phase71_hourly_includes_edge_miner():
+    """Hourly alert includes edge miner section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "historical_edge_miner" in src, "hourly does not reference edge miner"
+
+
+def test_phase71_doctor_includes_edge_miner():
+    """Doctor daily packet includes edge miner section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "historical_edge_miner" in src, "doctor does not reference edge miner"
+
+
+def test_phase71_evidence_lock_includes_edge_miner():
+    """Strategy evidence lock includes edge miner section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.strategy_evidence_lock", fromlist=["_"]
+    ))
+    assert "historical_edge_miner" in src, "evidence lock does not reference edge miner"

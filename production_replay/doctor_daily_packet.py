@@ -852,7 +852,27 @@ def main():
             "",
         ]
 
-    # BingX live micro execution section
+    # Phase 71: Historical edge miner
+    edge_miner_data = _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json"))
+    em_lines = []
+    if edge_miner_data and edge_miner_data.get("total_groups_analyzed", 0) > 0:
+        em = edge_miner_data
+        top = em.get("top_accepted", [])
+        best_candidate = top[0]["group"] if top else "NONE"
+        best_oos = top[0]["out_of_sample"]["avg_r"] if top else "N/A"
+        best_n = top[0]["trades"] if top else "N/A"
+        overfit_count = len(em.get("overfit_groups", []))
+        em_lines = [
+            "",
+            "  HISTORICAL EDGE MINER:",
+            f"    Best candidate group: {best_candidate}",
+            f"    OOS Avg R:            {best_oos}",
+            f"    Sample size:          {best_n}",
+            f"    Overfit status:       {'OVERFIT' if overfit_count > 0 else 'PASS'}",
+            f"    Verdict:              {em.get('overall_verdict', 'N/A')}",
+            f"    Live allowed:         NO",
+            "",
+        ]
     live_lines = []
     if live:
         lmode = live.get("execution_mode", "?")
@@ -983,6 +1003,7 @@ def main():
     lines += evidence_lines
     lines += pattern_memory_lines
     lines += historical_lines
+    lines += em_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1207,6 +1228,7 @@ def main():
             "out_of_sample_avg_r": historical_brain.get("out_of_sample", {}).get("avg_r", 0) if historical_brain else 0,
             "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
         } if historical_brain else None,
+        "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

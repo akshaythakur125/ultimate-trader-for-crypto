@@ -497,6 +497,7 @@ def run_hourly_alert() -> dict:
             "out_of_sample_avg_r": historical_brain.get("out_of_sample", {}).get("avg_r", 0) if historical_brain else 0,
             "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
         } if historical_brain else None,
+        "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -985,6 +986,25 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Out-of-Sample Avg R: {hb.get('out_of_sample', {}).get('avg_r', 0)}",
             f"    Win Rate:           {hb.get('win_rate', 0)}%",
             f"    Recommendation:     {hb.get('recommendation', 'N/A')}",
+            "",
+        ]
+
+    # Phase 71: Historical edge miner
+    em = _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json"))
+    if em and em.get("total_groups_analyzed", 0) > 0:
+        top = em.get("top_accepted", [])
+        best_candidate = top[0]["group"] if top else "NONE"
+        best_oos = top[0]["out_of_sample"]["avg_r"] if top else "N/A"
+        best_n = top[0]["trades"] if top else "N/A"
+        overfit_count = len(em.get("overfit_groups", []))
+        lines += [
+            "  HISTORICAL EDGE MINER:",
+            f"    Best candidate group: {best_candidate}",
+            f"    OOS Avg R:            {best_oos}",
+            f"    Sample size:          {best_n}",
+            f"    Overfit status:       {'OVERFIT' if overfit_count > 0 else 'PASS'}",
+            f"    Verdict:              {em.get('overall_verdict', 'N/A')}",
+            f"    Live allowed:         NO",
             "",
         ]
 

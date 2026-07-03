@@ -354,6 +354,7 @@ def run_strategy_evidence_lock() -> dict:
             "no duplicate paper trades",
             "no sizing bug",
         ],
+        "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
     }
 
     with open(JSON_PATH, "w") as f:
@@ -437,6 +438,25 @@ def _write_text_report(report: dict):
             f"  Avg R (out-of-sample):     {hr.get('out_of_sample_avg_r', 0)}",
             f"  Win Rate:                  {hr.get('win_rate', 0)}%",
             f"  Recommendation:            {hr.get('recommendation', 'N/A')}",
+        ]
+
+    em = report.get("historical_edge_miner", {})
+    if em and em.get("total_groups_analyzed", 0) > 0:
+        top = em.get("top_accepted", [])
+        best_candidate = top[0]["group"] if top else "NONE"
+        best_oos = top[0]["out_of_sample"]["avg_r"] if top else "N/A"
+        best_n = top[0]["trades"] if top else "N/A"
+        overfit_count = len(em.get("overfit_groups", []))
+        lines += [
+            "",
+            "  === HISTORICAL EDGE MINER ===",
+            f"  Best candidate group:      {best_candidate}",
+            f"  OOS Avg R:                 {best_oos}",
+            f"  Sample size:               {best_n}",
+            f"  Overfit status:            {'OVERFIT' if overfit_count > 0 else 'PASS'}",
+            f"  Verdict:                   {em.get('overall_verdict', 'N/A')}",
+            f"  Live allowed:              NO",
+            "",
         ]
 
     lines += [
