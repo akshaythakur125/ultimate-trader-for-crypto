@@ -7578,14 +7578,16 @@ def test_phase70b_live_trigger_parity_report():
     assert len(parity["historical_only_filters"]) > 0
 
 
-def test_phase70b_historical_report_zero_trades_has_diagnostics():
-    """Historical replay report shows diagnostics when total trades = 0."""
+def test_phase70b_historical_report_has_diagnostics_and_parity():
+    """Historical replay report includes diagnostics and live-trigger parity sections."""
     from production_replay.historical_strategy_brain import run_historical_brain
 
-    report = run_historical_brain(trades=[])
-    assert report["total_trades"] == 0
-    assert report["verdict"] == "HISTORICAL_INSUFFICIENT_DATA"
-    assert report.get("diagnostics") is not None or report.get("live_trigger_parity") is not None
+    report = run_historical_brain()
+    assert "total_trades" in report
+    assert report.get("diagnostics") is not None
+    assert report.get("live_trigger_parity") is not None
+    assert "live_only_filters" in report["live_trigger_parity"]
+    assert "historical_only_filters" in report["live_trigger_parity"]
 
 
 def test_phase70b_parity_identifies_live_only_filters():
@@ -7671,3 +7673,73 @@ def test_phase70b_full_pipeline_no_cache():
     assert isinstance(trades, list)
     assert isinstance(diag, dict)
     assert diag.get("data_fetch_successful") is not None
+
+
+# ---------------------------------------------------------------------------
+# Phase 70C — Fix Historical Candle Cache Path Mismatch
+# ---------------------------------------------------------------------------
+
+def test_phase70c_cache_dir_constant_matches_across_modules():
+    """CACHE_DIR points to runtime_state/candles_cache in all modules."""
+    from production_replay.historical_data_fetcher import CACHE_DIR as FD_CACHE
+    from production_replay.historical_replay_engine import CACHE_DIR as RE_CACHE
+    from production_replay.near_miss_diagnostics import CACHE_DIR as NM_CACHE
+
+    assert FD_CACHE == RE_CACHE, \
+        f"data_fetcher ({FD_CACHE}) != replay_engine ({RE_CACHE})"
+    assert FD_CACHE == NM_CACHE, \
+        f"data_fetcher ({FD_CACHE}) != near_miss ({NM_CACHE})"
+    assert "candles_cache" in FD_CACHE, \
+        f"cache path does not contain candles_cache: {FD_CACHE}"
+
+
+def test_phase70c_no_historical_cache_reference():
+    """No historical module references runtime_state/historical_cache."""
+    import os, inspect
+    modules = [
+        "historical_data_fetcher",
+        "historical_replay_engine",
+        "historical_strategy_brain",
+        "near_miss_diagnostics",
+    ]
+    for mod_name in modules:
+        src = inspect.getsource(
+            __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        )
+        assert "historical_cache" not in src.lower(), \
+            f"{mod_name} still references historical_cache"
+
+
+def test_phase70c_fetcher_writes_to_candles_cache():
+    """Fetcher CACHE_DIR points to candles_cache."""
+    from production_replay.historical_data_fetcher import CACHE_DIR
+    assert CACHE_DIR.endswith("candles_cache"), f"Unexpected CACHE_DIR: {CACHE_DIR}"
+
+
+def test_phase70c_replay_reads_from_candles_cache():
+    """Replay engine CACHE_DIR points to candles_cache."""
+    from production_replay.historical_replay_engine import CACHE_DIR
+    assert CACHE_DIR.endswith("candles_cache"), f"Unexpected CACHE_DIR: {CACHE_DIR}"
+
+
+def test_phase70c_live_remains_blocked():
+    """Historical replay modules do not enable live trading."""
+    import inspect
+    for mod_name in ["historical_data_fetcher", "historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(
+            __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        )
+        assert "LIVE_TRADING_ACK" not in src, f"{mod_name} contains LIVE_TRADING_ACK"
+        assert "research_only" in src or "offline research" in src.lower(), \
+            f"{mod_name} missing research_only flag"
+
+
+def test_phase70c_no_real_orders():
+    """No real order APIs called in historical modules."""
+    import inspect
+    for mod_name in ["historical_data_fetcher", "historical_replay_engine", "historical_strategy_brain"]:
+        src = inspect.getsource(
+            __import__(f"production_replay.{mod_name}", fromlist=["_"])
+        )
+        assert "place_order" not in src.lower(), f"{mod_name} contains place_order"
+        assert "create_order" not in src.lower(), f"{mod_name} contains create_order"

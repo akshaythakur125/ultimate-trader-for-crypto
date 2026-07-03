@@ -295,13 +295,11 @@ def run_historical_brain(trades: list[dict] | None = None) -> dict:
     if trades is None:
         trades = _read_ledger(TRADES_LEDGER)
 
-    replay_diagnostics = _load_diagnostics()
-
-    if not trades and not replay_diagnostics.get("data_fetch_successful"):
-        trades, diag = _run_replay_pipeline()
-        replay_diagnostics = diag
-    elif not trades:
-        pass
+    # If no trades in ledger, try to generate from cache
+    if not trades:
+        trades, replay_diagnostics = _run_replay_pipeline()
+    else:
+        replay_diagnostics = _load_diagnostics()
 
     live_parity = _compute_live_trigger_parity()
 

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
-CACHE_DIR = os.path.join(STATE_DIR, "historical_cache")
+CACHE_DIR = os.path.join(STATE_DIR, "candles_cache")
 
 TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
 DIAG_JSON_PATH = os.path.join(RESULTS_DIR, "historical_replay_diagnostics.json")
@@ -525,10 +525,25 @@ def _read_cache(symbol: str, timeframe: str) -> list | None:
         return None
 
 
+def _normalize_candle(candle) -> list:
+    """Normalize a candle to [ts, open, high, low, close, volume] list format."""
+    if isinstance(candle, (list, tuple)):
+        return [float(v) for v in candle[:6]]
+    if isinstance(candle, dict):
+        ts = int(candle.get("timestamp", candle.get("t", 0)))
+        o = float(candle.get("open", candle.get("o", 0)))
+        h = float(candle.get("high", candle.get("h", 0)))
+        l = float(candle.get("low", candle.get("l", 0)))
+        c = float(candle.get("close", candle.get("c", 0)))
+        v = float(candle.get("volume", candle.get("v", 0)))
+        return [ts, o, h, l, c, v]
+    return [0.0] * 6
+
+
 def load_cached_data(symbols: list[str] | None = None, timeframes: list[str] | None = None) -> dict[str, list]:
     """Load cached OHLCV data for given symbols/timeframes from local cache.
 
-    Returns dict of symbol -> list of candles.
+    Returns dict of symbol_tf -> list of candles in [ts, o, h, l, c, v] format.
     """
     if timeframes is None:
         timeframes = SUPPORTED_TIMEFRAMES
@@ -550,10 +565,11 @@ def load_cached_data(symbols: list[str] | None = None, timeframes: list[str] | N
     result = {}
     for sym in symbols:
         for tf in timeframes:
-            data = _read_cache(sym, tf)
-            if data and len(data) > 50:
+            raw = _read_cache(sym, tf)
+            if raw and len(raw) > 50:
+                normalized = [_normalize_candle(c) for c in raw]
                 key = f"{sym}_{tf}"
-                result[key] = data
+                result[key] = normalized
     return result
 
 
@@ -729,7 +745,7 @@ def run_and_save(ohlcv_data: dict[str, list], timeframes: list[str] | None = Non
 
 
 def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dict]:
-    """Run the full pipeline: load cache -> replay -> diagnose.
+    """Run the full pipeline: load cache -> replay -> diagnose -> save.
 
     If no cached data exists, returns empty trades with diagnostics showing
     cache_missing status.
@@ -741,13 +757,28 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
 
     if not cached:
         diag["data_fetch_successful"] = False
-        diag["data_fetch_error"] = "No cached data found in runtime_state/historical_cache/"
+        diag["data_fetch_error"] = "No cached data found in runtime_state/candles_cache/"
         _write_diagnostics_json(diag)
         _write_diagnostics_txt(diag)
         return [], diag
 
     diag["data_fetch_successful"] = True
     trades, replay_diag = run_replay_with_diagnostics(cached)
+
+    # Save trades to ledger
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(TRADES_LEDGER, "w") as f:
+        for t in trades:
+            f.write(json.dumps(t) + "\n")
+
+    # Merge cache metadata into replay diagnostics
+    replay_diag["cache_files_found"] = diag["cache_files_found"]
+    replay_diag["data_fetch_successful"] = diag["data_fetch_successful"]
+    if diag.get("data_fetch_error"):
+        replay_diag["data_fetch_error"] = diag["data_fetch_error"]
+
+    _write_diagnostics_json(replay_diag)
+    _write_diagnostics_txt(replay_diag)
     return trades, replay_diag
 
 

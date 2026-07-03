@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import ccxt
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "historical_cache")
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "candles_cache")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
 
 SUPPORTED_TIMEFRAMES = ["15m", "30m", "1h", "4h"]
