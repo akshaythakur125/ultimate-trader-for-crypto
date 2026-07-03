@@ -76,6 +76,9 @@ def main():
     _run_module("production_replay.strategy_evidence_lock")
     _run_module("production_replay.closed_trade_forensics")
     _run_module("production_replay.historical_strategy_brain")
+    _run_module("production_replay.paper_legacy_cleanup")
+    _run_module("production_replay.auto_edge_miner")
+    _run_module("production_replay.breadwinner_daily_report")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -99,6 +102,9 @@ def main():
     one_shot_state = _read_one_shot()
     pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
     historical_brain = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
+    legacy_cleanup = _read_json(os.path.join(RESULTS_DIR, "paper_legacy_cleanup_report.json"))
+    auto_edge = _read_json(os.path.join(RESULTS_DIR, "auto_edge_miner_report.json"))
+    breadwinner = _read_json(os.path.join(RESULTS_DIR, "breadwinner_daily_report.json"))
     entry = _read_ledger_latest()
 
     if entry:

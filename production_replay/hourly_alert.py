@@ -159,6 +159,30 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run paper legacy cleanup for fresh data (Phase 75)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.paper_legacy_cleanup"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
+    # Run auto edge miner for fresh data (Phase 75)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.auto_edge_miner"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        pass
+    # Run breadwinner daily report for fresh data (Phase 75)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.breadwinner_daily_report"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -179,6 +203,9 @@ def run_hourly_alert() -> dict:
     evidence = _read_json(os.path.join(RESULTS_DIR, "strategy_evidence_report.json"))
     pattern_memory = _read_json(os.path.join(RESULTS_DIR, "pattern_memory_report.json"))
     historical_brain = _read_json(os.path.join(RESULTS_DIR, "historical_replay_report.json"))
+    legacy_cleanup = _read_json(os.path.join(RESULTS_DIR, "paper_legacy_cleanup_report.json"))
+    auto_edge = _read_json(os.path.join(RESULTS_DIR, "auto_edge_miner_report.json"))
+    breadwinner = _read_json(os.path.join(RESULTS_DIR, "breadwinner_daily_report.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))

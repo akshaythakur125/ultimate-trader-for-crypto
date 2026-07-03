@@ -26,15 +26,17 @@ PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 PAPER_TRADE_FILE = os.path.join(STATE_DIR, "current_paper_trade.json")
 PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 
-MAX_PAPER_TRADES = 5
+MAX_PAPER_TRADES = 3  # Phase 75: reduced from 5
 
-# Paper portfolio risk/capital config (risk vs notional model)
+# Paper portfolio risk/capital config (Phase 75: stricter)
 PAPER_CAPITAL_USDT = 400
-PAPER_RISK_PCT_PER_TRADE = 0.03
-PAPER_MAX_RISK_PER_TRADE_USDT = 12
+PAPER_RISK_PCT_PER_TRADE = 0.005  # 0.5% of capital
+PAPER_MAX_RISK_PER_TRADE_USDT = 2  # 0.5% of 400 USDT
 PAPER_MAX_LEVERAGE = 2
-PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 800  # 2x capital
-PAPER_MAX_ACTIVE_TRADES = 5
+PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 200  # 50% of capital (2% portfolio risk)
+PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 100  # 25% of capital
+PAPER_MAX_ACTIVE_TRADES = 3  # Phase 75: reduced from 5
+PAPER_MAX_NEW_TRADES_PER_RUN = 1  # Phase 75: max 1 new trade per run
 
 # Rejection reason codes
 REASON_PORTFOLIO_FULL = "PAPER_MAX_OPEN_TRADES_REACHED"

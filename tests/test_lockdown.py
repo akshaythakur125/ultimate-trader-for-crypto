@@ -8538,3 +8538,155 @@ def test_phase74_paper_execution_no_real_orders():
     assert "place_order" not in src.lower()
     assert "create_order" not in src.lower()
     assert "APPROVED" not in src
+
+
+# -------------------------------------------------------------------
+# Phase 75 — Hands-Off Breadwinner Sprint
+# -------------------------------------------------------------------
+
+def test_phase75_invalid_o_usdt_legacy_removed():
+    """Invalid O-USDT legacy paper trade is removed from active portfolio."""
+    from production_replay.paper_legacy_cleanup import scan_and_clean_legacy
+    report = scan_and_clean_legacy()
+    # O-USDT should not be in valid trades (unknown family)
+    portfolio_path = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "paper_portfolio.json")
+    with open(portfolio_path) as f:
+        portfolio = json.load(f)
+    for t in portfolio:
+        if t.get("status") == "PAPER_OPEN":
+            assert t.get("symbol") != "O-USDT", "O-USDT should be invalidated"
+
+
+def test_phase75_unknown_family_cannot_paper_trade():
+    """Unknown family cannot paper trade."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"liquidity_sweep_reversal": "PAPER_PRIORITY"}
+    allowed, tier, rc = _check_promotion_gate("unknown", tiers)
+    assert allowed is False
+    assert rc == "PAPER_FAMILY_UNKNOWN"
+
+
+def test_phase75_observe_only_cannot_paper_trade():
+    """OBSERVE_ONLY family cannot paper trade."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"trend_pullback": "OBSERVE_ONLY"}
+    allowed, tier, rc = _check_promotion_gate("trend_pullback", tiers)
+    assert allowed is False
+    assert rc == "PAPER_FAMILY_NOT_PROMOTED"
+
+
+def test_phase75_rejected_cannot_paper_trade():
+    """REJECTED family cannot paper trade."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"compression_breakout": "REJECTED"}
+    allowed, tier, rc = _check_promotion_gate("compression_breakout", tiers)
+    assert allowed is False
+    assert rc == "PAPER_FAMILY_REJECTED"
+
+
+def test_phase75_paper_candidate_can_paper_trade():
+    """PAPER_CANDIDATE family can paper trade."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"mean_reversion": "PAPER_CANDIDATE"}
+    allowed, tier, rc = _check_promotion_gate("mean_reversion", tiers)
+    assert allowed is True
+    assert rc == ""
+
+
+def test_phase75_paper_priority_can_paper_trade():
+    """PAPER_PRIORITY family can paper trade."""
+    from production_replay.paper_execution_ledger import _check_promotion_gate
+    tiers = {"liquidity_sweep_reversal": "PAPER_PRIORITY"}
+    allowed, tier, rc = _check_promotion_gate("liquidity_sweep_reversal", tiers)
+    assert allowed is True
+    assert rc == ""
+
+
+def test_phase75_no_real_orders():
+    """Phase 75 modules do not place real orders."""
+    import inspect
+    for mod_name in ["paper_legacy_cleanup", "auto_edge_miner", "breadwinner_daily_report"]:
+        src = inspect.getsource(__import__(
+            f"production_replay.{mod_name}", fromlist=["_"]
+        ))
+        assert "place_order" not in src.lower(), f"{mod_name} has place_order"
+        assert "create_order" not in src.lower(), f"{mod_name} has create_order"
+        assert "APPROVED" not in src, f"{mod_name} has APPROVED"
+
+
+def test_phase75_live_trading_disabled():
+    """Phase 75 does not enable live trading."""
+    from production_replay.paper_execution_ledger import run_paper_execution
+    report = run_paper_execution()
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+    assert report.get("real_order") is False
+
+
+def test_phase75_no_leakage_fields():
+    """Auto edge miner does not use outcome-derived fields."""
+    from production_replay.auto_edge_miner import BANNED_FIELDS
+    banned = {"r_result", "r_after_fees", "is_win", "outcome",
+              "exit_reason", "exit_price", "max_favorable_excursion_pct",
+              "max_adverse_excursion_pct", "holding_candles"}
+    assert banned == BANNED_FIELDS
+
+
+def test_phase75_daily_report_generated():
+    """Breadwinner daily report is generated."""
+    import os
+    from production_replay.breadwinner_daily_report import run_breadwinner_daily
+    report = run_breadwinner_daily()
+    assert "final_decision" in report
+    assert "edge_miner" in report
+    assert "legacy_cleanup" in report
+    assert "promotion_tiers" in report
+    assert "live_trading" in report
+    assert report["live_trading"]["enabled"] is False
+    # Check files exist
+    json_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_daily_report.json")
+    txt_path = os.path.join(os.path.dirname(__file__), "..", "deploy_results", "breadwinner_daily_report.txt")
+    assert os.path.exists(json_path), "breadwinner_daily_report.json not found"
+    assert os.path.exists(txt_path), "breadwinner_daily_report.txt not found"
+
+
+def test_phase75_hourly_includes_new_modules():
+    """Hourly alert includes Phase 75 modules."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "paper_legacy_cleanup" in src
+    assert "auto_edge_miner" in src
+    assert "breadwinner_daily_report" in src
+
+
+def test_phase75_doctor_includes_new_modules():
+    """Doctor daily packet includes Phase 75 modules."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "paper_legacy_cleanup" in src
+    assert "auto_edge_miner" in src
+    assert "breadwinner_daily_report" in src
+
+
+def test_phase75_paper_execution_stricter_limits():
+    """Phase 75 uses stricter paper execution limits."""
+    from production_replay import paper_execution_ledger as pel
+    assert pel.PAPER_MAX_ACTIVE_TRADES == 3
+    assert pel.PAPER_MAX_RISK_PER_TRADE_USDT == 2
+    assert pel.MAX_PAPER_TRADES == 3
+
+
+def test_phase75_legacy_cleanup_report_fields():
+    """Legacy cleanup report has required fields."""
+    from production_replay.paper_legacy_cleanup import scan_and_clean_legacy
+    report = scan_and_clean_legacy()
+    assert "portfolio_before" in report
+    assert "portfolio_after" in report
+    assert "invalidated_count" in report
+    assert "invalidated_trades" in report
+    assert "promotion_tiers" in report
+    assert "final_decision" in report
