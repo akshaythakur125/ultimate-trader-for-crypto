@@ -873,6 +873,26 @@ def main():
             f"    Live allowed:         NO",
             "",
         ]
+
+    # Phase 72: Strategy family tournament
+    tourn_data = _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json"))
+    tourn_lines = []
+    if tourn_data and tourn_data.get("total_families", 0) > 0:
+        t_best = tourn_data.get("best_family") or "NONE"
+        t_fams = tourn_data.get("families", {})
+        t_best_fam = t_fams.get(t_best, {}) if t_best != "NONE" else {}
+        tourn_lines = [
+            "",
+            "  STRATEGY FAMILY TOURNAMENT:",
+            f"    Best family:          {t_best}",
+            f"    OOS Avg R:            {t_best_fam.get('oos_avg_r', 'N/A')}",
+            f"    OOS win rate:         {t_best_fam.get('oos_win_rate', 'N/A')}%",
+            f"    Sample size:          {t_best_fam.get('total_trades', 0)}",
+            f"    Verdict:              {tourn_data.get('overall_verdict', 'N/A')}",
+            f"    Live allowed:         NO",
+            "",
+        ]
+
     live_lines = []
     if live:
         lmode = live.get("execution_mode", "?")
@@ -1004,6 +1024,7 @@ def main():
     lines += pattern_memory_lines
     lines += historical_lines
     lines += em_lines
+    lines += tourn_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines
@@ -1229,6 +1250,7 @@ def main():
             "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
         } if historical_brain else None,
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
+        "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
         "hourly_final_status": {
             "final_action": hourly.get("final_action") if hourly else None,
             "reason": hourly.get("action_reason") if hourly else None,

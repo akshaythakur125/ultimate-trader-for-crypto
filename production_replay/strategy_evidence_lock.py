@@ -355,6 +355,7 @@ def run_strategy_evidence_lock() -> dict:
             "no sizing bug",
         ],
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
+        "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
     }
 
     with open(JSON_PATH, "w") as f:
@@ -455,6 +456,23 @@ def _write_text_report(report: dict):
             f"  Sample size:               {best_n}",
             f"  Overfit status:            {'OVERFIT' if overfit_count > 0 else 'PASS'}",
             f"  Verdict:                   {em.get('overall_verdict', 'N/A')}",
+            f"  Live allowed:              NO",
+            "",
+        ]
+
+    tourn = report.get("strategy_family_tournament", {})
+    if tourn and tourn.get("total_families", 0) > 0:
+        t_best = tourn.get("best_family") or "NONE"
+        t_fams = tourn.get("families", {})
+        t_best_fam = t_fams.get(t_best, {}) if t_best != "NONE" else {}
+        lines += [
+            "",
+            "  === STRATEGY FAMILY TOURNAMENT ===",
+            f"  Best family:               {t_best}",
+            f"  OOS Avg R:                 {t_best_fam.get('oos_avg_r', 'N/A')}",
+            f"  OOS win rate:              {t_best_fam.get('oos_win_rate', 'N/A')}%",
+            f"  Sample size:               {t_best_fam.get('total_trades', 0)}",
+            f"  Verdict:                   {tourn.get('overall_verdict', 'N/A')}",
             f"  Live allowed:              NO",
             "",
         ]

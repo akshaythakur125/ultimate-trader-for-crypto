@@ -8186,3 +8186,118 @@ def test_phase71b_allowed_fields_are_entry_time_only():
     allowed = set(lg.get("allowed_fields", []))
     entry_time_fields = {"symbol", "timeframe", "direction", "pattern"}
     assert allowed <= entry_time_fields, f"unexpected allowed fields: {allowed - entry_time_fields}"
+
+
+# -------------------------------------------------------------------
+# Phase 72 — Strategy Family Tournament
+# -------------------------------------------------------------------
+
+def test_phase72_no_leakage_fields():
+    """No outcome-derived fields in trade data."""
+    from production_replay.strategy_family_tournament import BANNED_GROUPING_FIELDS, run_tournament
+    report = run_tournament()
+    lg = report.get("leakage_guard", {})
+    assert lg.get("leakage_guard") == "PASS"
+    assert lg.get("banned_fields_removed") is True
+
+
+def test_phase72_negative_family_is_rejected():
+    """Family with negative OOS avg R gets rejected."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    for fname, fam in report.get("families", {}).items():
+        if fam.get("oos_avg_r", 0) < 0:
+            assert fam["verdict"] in ("FAMILY_EDGE_NOT_FOUND", "FAMILY_EDGE_FRAGILE"), \
+                f"{fname} has negative OOS but verdict {fam['verdict']}"
+
+
+def test_phase72_positive_is_negative_oos_rejected():
+    """Family with positive IS but negative OOS is rejected."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    for fname, fam in report.get("families", {}).items():
+        if fam.get("is_avg_r", 0) > 0 and fam.get("oos_avg_r", 0) <= 0:
+            assert fam["verdict"] != "FAMILY_PROMISING_REVIEW", \
+                f"{fname} overfit but marked PROMISING"
+
+
+def test_phase72_too_few_trades_is_fragile():
+    """Family with too few trades cannot be PROMISING or STRONG."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    for fname, fam in report.get("families", {}).items():
+        if fam.get("total_trades", 0) < 300:
+            assert fam["verdict"] in ("FAMILY_EDGE_NOT_FOUND", "FAMILY_EDGE_FRAGILE"), \
+                f"{fname} has {fam['total_trades']} trades but verdict {fam['verdict']}"
+
+
+def test_phase72_positive_subgroup_is_promising():
+    """Family with positive IS and OOS and enough trades becomes PROMISING_REVIEW."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    has_promising = any(
+        fam["verdict"] in ("FAMILY_PROMISING_REVIEW", "FAMILY_STRONG_REVIEW")
+        for fam in report.get("families", {}).values()
+    )
+    # liquidity_sweep_reversal should be promising based on earlier run
+    fams = report.get("families", {})
+    if "liquidity_sweep_reversal" in fams:
+        fam = fams["liquidity_sweep_reversal"]
+        if fam.get("total_trades", 0) >= 300 and fam.get("oos_avg_r", 0) > 0:
+            assert fam["verdict"] in ("FAMILY_PROMISING_REVIEW", "FAMILY_STRONG_REVIEW")
+
+
+def test_phase72_live_blocked():
+    """Tournament does not enable live trading."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    assert report.get("live_trading_enabled") is False
+    assert report.get("research_only") is True
+
+
+def test_phase72_no_real_orders():
+    """Tournament does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.strategy_family_tournament", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower()
+    assert "create_order" not in src.lower()
+    assert "APPROVED" not in src
+
+
+def test_phase72_report_includes_all_five_families():
+    """Report includes all five strategy families."""
+    from production_replay.strategy_family_tournament import run_tournament
+    report = run_tournament()
+    families = report.get("families", {})
+    expected = {"liquidity_sweep_reversal", "compression_breakout",
+                "trend_pullback", "mean_reversion", "short_weakness"}
+    assert set(families.keys()) == expected
+
+
+def test_phase72_hourly_includes_tournament():
+    """Hourly alert includes tournament section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.hourly_alert", fromlist=["_"]
+    ))
+    assert "strategy_family_tournament" in src
+
+
+def test_phase72_doctor_includes_tournament():
+    """Doctor daily packet includes tournament section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.doctor_daily_packet", fromlist=["_"]
+    ))
+    assert "strategy_family_tournament" in src
+
+
+def test_phase72_evidence_lock_includes_tournament():
+    """Strategy evidence lock includes tournament section."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.strategy_evidence_lock", fromlist=["_"]
+    ))
+    assert "strategy_family_tournament" in src

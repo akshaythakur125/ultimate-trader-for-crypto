@@ -498,6 +498,7 @@ def run_hourly_alert() -> dict:
             "recommendation": historical_brain.get("recommendation", "N/A") if historical_brain else "N/A",
         } if historical_brain else None,
         "historical_edge_miner": _read_json(os.path.join(RESULTS_DIR, "historical_edge_miner_report.json")),
+        "strategy_family_tournament": _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json")),
         "final_action": final_action,
         "action_reason": action_reason,
     }
@@ -1004,6 +1005,23 @@ def _write_text_report(report: dict, action: str, reason: str):
             f"    Sample size:          {best_n}",
             f"    Overfit status:       {'OVERFIT' if overfit_count > 0 else 'PASS'}",
             f"    Verdict:              {em.get('overall_verdict', 'N/A')}",
+            f"    Live allowed:         NO",
+            "",
+        ]
+
+    # Phase 72: Strategy family tournament
+    tourn = _read_json(os.path.join(RESULTS_DIR, "strategy_family_tournament_report.json"))
+    if tourn and tourn.get("total_families", 0) > 0:
+        t_best = tourn.get("best_family") or "NONE"
+        fams = tourn.get("families", {})
+        t_best_fam = fams.get(t_best, {}) if t_best != "NONE" else {}
+        lines += [
+            "  STRATEGY FAMILY TOURNAMENT:",
+            f"    Best family:          {t_best}",
+            f"    OOS Avg R:            {t_best_fam.get('oos_avg_r', 'N/A')}",
+            f"    OOS win rate:         {t_best_fam.get('oos_win_rate', 'N/A')}%",
+            f"    Sample size:          {t_best_fam.get('total_trades', 0)}",
+            f"    Verdict:              {tourn.get('overall_verdict', 'N/A')}",
             f"    Live allowed:         NO",
             "",
         ]
