@@ -17,9 +17,12 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
-STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
-CACHE_DIR = os.path.join(STATE_DIR, "candles_cache")
+from production_replay.historical_cache_resolver import find_project_root, resolve_cache_dir, make_cache_diagnostics
+
+PROJECT_ROOT = find_project_root()
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "deploy_results")
+STATE_DIR = os.path.join(PROJECT_ROOT, "runtime_state")
+CACHE_DIR = resolve_cache_dir(PROJECT_ROOT)
 
 TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
 DIAG_JSON_PATH = os.path.join(RESULTS_DIR, "historical_replay_diagnostics.json")
@@ -371,6 +374,7 @@ def _simulate_trade(candles: list, signal: dict, entry_idx: int, timeframe: str)
 
 def _make_diagnostics() -> dict:
     """Create a fresh diagnostics counters dict."""
+    cache_diag = make_cache_diagnostics()
     return {
         "symbols_checked": 0,
         "symbols_skipped_too_few_candles": 0,
@@ -403,6 +407,11 @@ def _make_diagnostics() -> dict:
         "data_fetch_successful": False,
         "data_fetch_error": "",
         "cache_files_found": 0,
+        "cache_file_count": cache_diag.get("cache_file_count", 0),
+        "project_root": cache_diag.get("project_root", ""),
+        "current_working_directory": cache_diag.get("current_working_directory", ""),
+        "selected_cache_dir": cache_diag.get("selected_cache_dir", ""),
+        "checked_directories": cache_diag.get("checked_directories", []),
         "total_duration_ms": 0,
     }
 
@@ -439,13 +448,25 @@ def _write_diagnostics_txt(diag: dict):
         f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "=" * 60,
         "",
+        "  === CACHE RESOLVER ===",
+        f"  Project root:              {diag.get('project_root', '?')}",
+        f"  CWD:                       {diag.get('current_working_directory', '?')}",
+        f"  Selected cache dir:        {diag.get('selected_cache_dir', '?')}",
+        f"  Cache files found (total): {diag.get('cache_file_count', 0)}",
+    ]
+    checked = diag.get("checked_directories", [])
+    for e in checked:
+        status = "EXISTS" if e.get("exists") else "MISSING"
+        lines.append(f"  Checked: {e['path']} [{status}]")
+    lines += [
+        "",
         "  === OVERVIEW ===",
         f"  Symbols checked:              {diag['symbols_checked']}",
         f"  Symbols skipped (<50 candles): {diag['symbols_skipped_too_few_candles']}",
         f"  Timeframes checked:           {diag['timeframes_checked']}",
         f"  Candles loaded:               {diag['candles_loaded']}",
         f"  Candles evaluated:            {diag['candles_evaluated']}",
-        f"  Cache files found:            {diag['cache_files_found']}",
+        f"  Cache files found (10 max):   {min(diag.get('cache_files_found', 0), 10)}",
         f"  Data fetch successful:        {diag['data_fetch_successful']}",
         "",
         "  === DETECTOR COUNTS ===",
@@ -580,8 +601,14 @@ def load_cached_data(symbols: list[str] | None = None, timeframes: list[str] | N
 def run_replay_with_diagnostics(
     ohlcv_data: dict[str, list],
     timeframes: list[str] | None = None,
+    cache_metadata: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Run historical replay with full diagnostics.
+
+    Args:
+        ohlcv_data: dict of symbol_tf -> list of candles
+        timeframes: list of timeframe strings to simulate
+        cache_metadata: optional dict from cache loader (project_root, cache_file_count, etc.)
 
     Returns:
         (trades, diagnostics) tuple.
@@ -593,6 +620,11 @@ def run_replay_with_diagnostics(
         timeframes = ["1h"]
 
     diag = _make_diagnostics()
+    if cache_metadata:
+        for k in ("project_root", "current_working_directory", "selected_cache_dir",
+                   "checked_directories", "cache_file_count", "cache_files_found"):
+            if k in cache_metadata:
+                diag[k] = cache_metadata[k]
     all_trades = []
     seen_signals = set()
 
@@ -735,7 +767,9 @@ def run_replay(
 def run_and_save(ohlcv_data: dict[str, list], timeframes: list[str] | None = None) -> list[dict]:
     """Run replay and save trades to ledger."""
     os.makedirs(STATE_DIR, exist_ok=True)
-    trades, diag = run_replay_with_diagnostics(ohlcv_data, timeframes)
+    cache_meta = make_cache_diagnostics()
+    cache_meta["cache_files_found"] = sum(len(v) for v in ohlcv_data.values()) if ohlcv_data else 0
+    trades, diag = run_replay_with_diagnostics(ohlcv_data, timeframes, cache_metadata=cache_meta)
 
     with open(TRADES_LEDGER, "w") as f:
         for t in trades:
@@ -750,20 +784,29 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
     If no cached data exists, returns empty trades with diagnostics showing
     cache_missing status.
     """
+    cache_resolver_diag = make_cache_diagnostics()
     diag = _make_diagnostics()
 
     cached = load_cached_data(symbols)
-    diag["cache_files_found"] = len(cached)
+    entries_loaded = len(cached)
+
+    # Build cache metadata to pass into replay diagnostics
+    cache_meta = dict(cache_resolver_diag)
+    cache_meta["cache_files_found"] = entries_loaded
 
     if not cached:
         diag["data_fetch_successful"] = False
-        diag["data_fetch_error"] = "No cached data found in runtime_state/candles_cache/"
+        diag["data_fetch_error"] = "No cached data found in selected cache dir"
+        for k, v in cache_meta.items():
+            diag[k] = v
         _write_diagnostics_json(diag)
         _write_diagnostics_txt(diag)
         return [], diag
 
-    diag["data_fetch_successful"] = True
-    trades, replay_diag = run_replay_with_diagnostics(cached)
+    cache_meta["data_fetch_successful"] = True
+    trades, replay_diag = run_replay_with_diagnostics(
+        cached, cache_metadata=cache_meta
+    )
 
     # Save trades to ledger
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -771,11 +814,9 @@ def run_full_pipeline(symbols: list[str] | None = None) -> tuple[list[dict], dic
         for t in trades:
             f.write(json.dumps(t) + "\n")
 
-    # Merge cache metadata into replay diagnostics
-    replay_diag["cache_files_found"] = diag["cache_files_found"]
-    replay_diag["data_fetch_successful"] = diag["data_fetch_successful"]
-    if diag.get("data_fetch_error"):
-        replay_diag["data_fetch_error"] = diag["data_fetch_error"]
+    # Ensure cache metadata is in replay diagnostics
+    replay_diag["cache_files_found"] = entries_loaded
+    replay_diag["data_fetch_successful"] = True
 
     _write_diagnostics_json(replay_diag)
     _write_diagnostics_txt(replay_diag)

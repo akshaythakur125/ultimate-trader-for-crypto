@@ -14,8 +14,11 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
-STATE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state")
+from production_replay.historical_cache_resolver import find_project_root
+
+PROJECT_ROOT = find_project_root()
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "deploy_results")
+STATE_DIR = os.path.join(PROJECT_ROOT, "runtime_state")
 
 TRADES_LEDGER = os.path.join(STATE_DIR, "historical_replay_trades.jsonl")
 PATTERN_MEMORY_LEDGER = os.path.join(STATE_DIR, "historical_pattern_memory.jsonl")

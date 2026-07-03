@@ -13,8 +13,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import ccxt
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "runtime_state", "candles_cache")
-RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
+from production_replay.historical_cache_resolver import find_project_root, resolve_cache_dir
+
+PROJECT_ROOT = find_project_root()
+CACHE_DIR = resolve_cache_dir(PROJECT_ROOT)
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "deploy_results")
 
 SUPPORTED_TIMEFRAMES = ["15m", "30m", "1h", "4h"]
 DEFAULT_LOOKBACK_DAYS = 90

@@ -7681,20 +7681,21 @@ def test_phase70b_full_pipeline_no_cache():
 
 def test_phase70c_cache_dir_constant_matches_across_modules():
     """CACHE_DIR points to runtime_state/candles_cache in all modules."""
+    import os
     from production_replay.historical_data_fetcher import CACHE_DIR as FD_CACHE
     from production_replay.historical_replay_engine import CACHE_DIR as RE_CACHE
     from production_replay.near_miss_diagnostics import CACHE_DIR as NM_CACHE
 
-    assert FD_CACHE == RE_CACHE, \
+    assert os.path.normpath(FD_CACHE) == os.path.normpath(RE_CACHE), \
         f"data_fetcher ({FD_CACHE}) != replay_engine ({RE_CACHE})"
-    assert FD_CACHE == NM_CACHE, \
+    assert os.path.normpath(FD_CACHE) == os.path.normpath(NM_CACHE), \
         f"data_fetcher ({FD_CACHE}) != near_miss ({NM_CACHE})"
     assert "candles_cache" in FD_CACHE, \
         f"cache path does not contain candles_cache: {FD_CACHE}"
 
 
 def test_phase70c_no_historical_cache_reference():
-    """No historical module references runtime_state/historical_cache."""
+    """No historical module references the old runtime_state/historical_cache dir."""
     import os, inspect
     modules = [
         "historical_data_fetcher",
@@ -7706,7 +7707,11 @@ def test_phase70c_no_historical_cache_reference():
         src = inspect.getsource(
             __import__(f"production_replay.{mod_name}", fromlist=["_"])
         )
-        assert "historical_cache" not in src.lower(), \
+        # Skip import lines that reference the resolver module name
+        lines = [l for l in src.lower().split("\n")
+                 if "historical_cache_resolver" not in l]
+        joined = "\n".join(lines)
+        assert "historical_cache" not in joined, \
             f"{mod_name} still references historical_cache"
 
 
@@ -7743,3 +7748,91 @@ def test_phase70c_no_real_orders():
         )
         assert "place_order" not in src.lower(), f"{mod_name} contains place_order"
         assert "create_order" not in src.lower(), f"{mod_name} contains create_order"
+
+
+# ---------------------------------------------------------------------------
+# Phase 70D — Robust Historical Cache Resolver
+# ---------------------------------------------------------------------------
+
+def test_phase70d_resolver_finds_cache_files():
+    """Resolver finds files in runtime_state/candles_cache."""
+    from production_replay.historical_cache_resolver import (
+        find_project_root, resolve_cache_dir, count_cache_files
+    )
+    pr = find_project_root()
+    cd = resolve_cache_dir(pr)
+    files, count = count_cache_files(cd)
+    assert count > 0, f"no cache files found in {cd}"
+    assert all(f.endswith(".json") for f in files)
+
+
+def test_phase70d_resolver_returns_diagnostics():
+    """make_cache_diagnostics returns all expected fields."""
+    from production_replay.historical_cache_resolver import make_cache_diagnostics
+    diag = make_cache_diagnostics()
+    assert "project_root" in diag
+    assert "current_working_directory" in diag
+    assert "selected_cache_dir" in diag
+    assert "checked_directories" in diag
+    assert len(diag["checked_directories"]) == 4
+    assert "cache_file_count" in diag
+    assert "cache_files_found" in diag
+    assert diag["cache_file_count"] > 0, "should find cache files"
+
+
+def test_phase70d_resolver_shows_selected_cache_dir_in_diagnostics():
+    """Diagnostics output shows selected_cache_dir."""
+    import os, json
+    from production_replay.historical_cache_resolver import make_cache_diagnostics
+
+    diag = make_cache_diagnostics()
+    assert "selected_cache_dir" in diag
+    assert "candles_cache" in str(diag["selected_cache_dir"])
+    assert "project_root" in diag
+    assert "current_working_directory" in diag
+    assert "cache_file_count" in diag
+    assert diag["cache_file_count"] > 0
+
+
+def test_phase70d_replay_loads_positive_candles():
+    """Full pipeline loads >0 candles when cache exists."""
+    from production_replay.historical_replay_engine import run_full_pipeline
+    trades, diag = run_full_pipeline()
+    assert diag.get("cache_file_count", 0) > 0, "should have cache files"
+    assert diag.get("candles_loaded", 0) > 0, "should load candles"
+    assert diag.get("data_fetch_successful") is True
+
+
+def test_phase70d_resolver_checks_missing_dirs():
+    """Resolver checks all four directories and reports MISSING for non-existent."""
+    from production_replay.historical_cache_resolver import make_cache_diagnostics
+    diag = make_cache_diagnostics()
+    checked = diag.get("checked_directories", [])
+    assert len(checked) == 4
+    # At least one should exist (the candles_cache)
+    exists_count = sum(1 for e in checked if e.get("exists"))
+    assert exists_count >= 1, "at least one cache dir should exist"
+    # The historical_cache entries should be MISSING
+    missing = [e for e in checked if "historical_cache" in e["path"]]
+    for m in missing:
+        assert not m["exists"], f"historical_cache should not exist: {m['path']}"
+
+
+def test_phase70d_resolver_diagnostics_txt_checked_dirs():
+    """Diagnostics text shows which directories were checked."""
+    from production_replay.historical_cache_resolver import make_cache_diagnostics
+    diag = make_cache_diagnostics()
+    # Check that "Checked:" status lines would render
+    for e in diag.get("checked_directories", []):
+        assert "path" in e
+        assert "exists" in e
+
+
+def test_phase70d_no_real_orders():
+    """Historical cache resolver does not place real orders."""
+    import inspect
+    src = inspect.getsource(__import__(
+        "production_replay.historical_cache_resolver", fromlist=["_"]
+    ))
+    assert "place_order" not in src.lower(), "resolver contains place_order"
+    assert "create_order" not in src.lower(), "resolver contains create_order"
