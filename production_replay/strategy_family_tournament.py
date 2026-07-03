@@ -391,7 +391,9 @@ def _evaluate_family(family_name: str, detector, symbols: list[str],
     is_t = sorted_t[:split]
     oos_t = sorted_t[split:]
 
-    return _compute_family_stats(family_name, all_trades, is_t, oos_t)
+    result = _compute_family_stats(family_name, all_trades, is_t, oos_t)
+    result["_trades"] = all_trades
+    return result
 
 
 def _compute_family_stats(name: str, all_t: list, is_t: list, oos_t: list) -> dict:
