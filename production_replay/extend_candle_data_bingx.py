@@ -33,7 +33,7 @@ def main():
         try:
             with open(path) as f:
                 data = json.load(f)
-            if isinstance(data, list) and len(data) < 200:
+            if isinstance(data, list) and len(data) < 2000:
                 ccxt_sym = cache_sym.replace("_", "/")
                 if ccxt_sym in ex.markets:
                     need_extend.append((cache_sym, ccxt_sym))
@@ -49,7 +49,7 @@ def main():
 
     for idx, (cache_sym, ccxt_sym) in enumerate(need_extend, 1):
         try:
-            since_ms = int((datetime.now(timezone.utc).timestamp() - 30 * 86400) * 1000)
+            since_ms = int((datetime.now(timezone.utc).timestamp() - 92 * 86400) * 1000)
             all_candles = []
             while True:
                 candles = ex.fetch_ohlcv(ccxt_sym, "1h", since=since_ms, limit=1000)
@@ -107,8 +107,8 @@ def main():
                 pass
     if lengths:
         print(f"  Sample: min={min(lengths)} max={max(lengths)} avg={sum(lengths)/len(lengths):.1f}")
-        print(f"  >=200: {sum(1 for l in lengths if l >= 200)}")
-        print(f"  <200:  {sum(1 for l in lengths if l < 200)}")
+    print(f"  >=2000: {sum(1 for l in lengths if l >= 2000)}")
+    print(f"  <2000:  {sum(1 for l in lengths if l < 2000)}")
 
 
 if __name__ == "__main__":
