@@ -109,6 +109,12 @@ def _avg_volume(candles: list[dict], idx: int, lookback: int) -> float:
     return mean(vols) if vols else 0
 
 
+def _sma(closes: list[float], period: int) -> float:
+    if len(closes) < period:
+        return 0
+    return sum(closes[-period:]) / period
+
+
 def _find_swing_low(candles: list[dict], idx: int, lookback: int) -> float:
     if idx < lookback:
         return float("inf")
@@ -208,6 +214,99 @@ def detect_liquidity_sweep_v2(
                     "range_ratio": rng / avg_rng if avg_rng > 0 else 0,
                     "max_holding": max_holding,
                 }
+
+    return None
+
+
+def _bollinger_bands(closes: list[float], period: int, std_mult: float) -> tuple[float, float, float]:
+    """Compute Bollinger Bands. Returns (lower, mid, upper)."""
+    if len(closes) < period:
+        return (0, 0, 0)
+    recent = closes[-period:]
+    mid = sum(recent) / period
+    var = sum((x - mid) ** 2 for x in recent) / period
+    sd = math.sqrt(var)
+    lower = mid - std_mult * sd
+    upper = mid + std_mult * sd
+    return (lower, mid, upper)
+
+
+def detect_bb_bounce(
+    candles: list[dict],
+    idx: int,
+    period: int = 15,
+    std_mult: float = 3.5,
+    rr_target: float = 10.0,
+    max_holding: int = 0,
+) -> dict | None:
+    """Detect Bollinger Band bounce setup.
+
+    LONG: close below lower band (mean reversion)
+    SHORT: close above upper band (mean reversion)
+    Stop: 0.5% of entry, Target: entry +/- stop*rr_target
+    No max holding — trades run until stop or target.
+    """
+    if idx < period + 5:
+        return None
+
+    c = candles[idx]
+    high = float(c.get("high", 0))
+    low = float(c.get("low", 0))
+    cl = float(c.get("close", 0))
+    body = abs(cl - float(c.get("open", 0)))
+    rng = high - low
+
+    if body <= 0 or rng <= 0:
+        return None
+
+    closes = [float(cc.get("close", 0)) for cc in candles[:idx + 1]]
+    lower, mid, upper = _bollinger_bands(closes, period, std_mult)
+
+    if cl <= lower:
+        if idx + 1 >= len(candles):
+            return None
+        entry = float(candles[idx + 1].get("open", 0))
+        if entry <= 0:
+            return None
+        risk_pct = 0.005
+        stop_px = entry * (1 - risk_pct)
+        target_px = entry * (1 + risk_pct * rr_target)
+        return {
+            "direction": "LONG",
+            "entry": entry,
+            "stop": stop_px,
+            "target": target_px,
+            "pattern": "bb_bounce_v1",
+            "bb_lower": lower,
+            "bb_mid": mid,
+            "bb_upper": upper,
+            "lookback": period,
+            "std_mult": std_mult,
+            "max_holding": max_holding,
+        }
+
+    if cl >= upper:
+        if idx + 1 >= len(candles):
+            return None
+        entry = float(candles[idx + 1].get("open", 0))
+        if entry <= 0:
+            return None
+        risk_pct = 0.005
+        stop_px = entry * (1 + risk_pct)
+        target_px = entry * (1 - risk_pct * rr_target)
+        return {
+            "direction": "SHORT",
+            "entry": entry,
+            "stop": stop_px,
+            "target": target_px,
+            "pattern": "bb_bounce_v1",
+            "bb_lower": lower,
+            "bb_mid": mid,
+            "bb_upper": upper,
+            "lookback": period,
+            "std_mult": std_mult,
+            "max_holding": max_holding,
+        }
 
     return None
 

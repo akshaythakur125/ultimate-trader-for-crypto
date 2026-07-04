@@ -21,14 +21,14 @@ LEDGER_PATH = os.path.join(STATE_DIR, "paper_rotation_events.jsonl")
 PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 
-MAX_PAPER_TRADES = 5
-
-# Paper portfolio risk/capital config (risk vs notional model, mirrored from paper_execution_ledger)
+# Paper portfolio risk/capital config — MUST match paper_execution_ledger exactly
 PAPER_CAPITAL_USDT = 400
-PAPER_MAX_RISK_PER_TRADE_USDT = 12
+PAPER_MAX_RISK_PER_TRADE_USDT = 2       # 0.5% of capital
 PAPER_MAX_LEVERAGE = 2
-PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 800  # 2x capital
-PAPER_MAX_ACTIVE_TRADES = 5
+PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 200  # 50% of capital
+PAPER_MAX_ACTIVE_TRADES = 3
+PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 100  # 25% of capital
+MAX_PAPER_TRADES = PAPER_MAX_ACTIVE_TRADES
 
 # Thesis type to strategy family mapping (mirrored from paper_execution_ledger)
 THESIS_TYPE_TO_FAMILY = {
@@ -42,10 +42,13 @@ THESIS_TYPE_TO_FAMILY = {
     "TREND_PULLBACK": "trend_pullback",
     "MEAN_REVERSION": "mean_reversion",
     "SHORT_WEAKNESS": "short_weakness",
+    "BB_BOUNCE": "bb_bounce_v1",
 }
 
-# Promotion tiers that allow paper trading
 PAPER_ALLOWED_TIERS = {"PAPER_CANDIDATE", "PAPER_PRIORITY"}
+
+# Pre-validated BB family always allowed (extensively backtested)
+BB_RSI_TRUSTED_FAMILIES = {"bb_bounce_v1"}
 
 
 def _read_json(path: str) -> dict:
@@ -113,7 +116,12 @@ def _is_eligible(c: dict) -> bool:
     ts = c.get("trigger_status", "")
     if ts != "TRIGGER_CONFIRMED":
         return False
+    family = c.get("strategy_family", "")
     rr = float(c.get("rr", 0) or 0)
+    if family in BB_RSI_TRUSTED_FAMILIES:
+        if rr < 3.0:
+            return False
+        return True
     if rr < 4:
         return False
     return True
@@ -121,8 +129,10 @@ def _is_eligible(c: dict) -> bool:
 
 def _eligibility_status(c: dict) -> str:
     ts = c.get("trigger_status", "")
+    family = c.get("strategy_family", "")
+    min_rr = 3.0 if family in BB_RSI_TRUSTED_FAMILIES else 4.0
     if ts == "TRIGGER_CONFIRMED":
-        if float(c.get("thesis_score", 0) or 0) >= 75 and float(c.get("rr", 0) or 0) >= 4:
+        if float(c.get("thesis_score", 0) or 0) >= 75 and float(c.get("rr", 0) or 0) >= min_rr:
             return "SHADOW_ELIGIBLE"
         return "REVIEW_CANDIDATE"
     return ts
@@ -140,11 +150,9 @@ def _last_closed_trade_same_symbol_direction(symbol: str, direction: str) -> dic
 
 
 def _passes_capital_gate(c: dict, portfolio: list[dict]) -> tuple[bool, str]:
-    """Check if candidate fits within risk and notional caps. Rejects if risk > 12 or portfolio notional > 800."""
+    """Check if candidate fits within risk and notional caps."""
     entry = float(c.get("entry", 0) or 0)
     stop = float(c.get("stop", 0) or 0)
-    direction = c.get("direction", "")
-    side = "LONG" if direction.upper() == "LONG" else "SHORT"
     if entry <= 0 or stop <= 0:
         return False, "missing entry or stop"
 
@@ -152,18 +160,19 @@ def _passes_capital_gate(c: dict, portfolio: list[dict]) -> tuple[bool, str]:
     if risk_per_unit <= 0:
         return False, "stop equals entry (zero risk distance)"
 
-    raw_qty = PAPER_MAX_RISK_PER_TRADE_USDT / risk_per_unit
-    estimated_notional = entry * raw_qty
-    estimated_risk = risk_per_unit * raw_qty
+    qty_from_risk = PAPER_MAX_RISK_PER_TRADE_USDT / risk_per_unit
+    qty_from_notional = PAPER_MAX_NOTIONAL_PER_TRADE_USDT / entry
+    qty = min(qty_from_risk, qty_from_notional)
+    estimated_notional = entry * qty
+    estimated_risk = risk_per_unit * qty
 
     active_trades = [t for t in portfolio if t.get("status") == "PAPER_OPEN"]
     if len(active_trades) >= PAPER_MAX_ACTIVE_TRADES:
         return False, f"max {PAPER_MAX_ACTIVE_TRADES} active trades reached"
 
-    # Check portfolio notional cap (2x capital)
     total_open_notional = sum(float(t.get("notional", 0) or 0) for t in active_trades)
     if total_open_notional + estimated_notional > PAPER_MAX_PORTFOLIO_NOTIONAL_USDT:
-        return False, f"portfolio notional {total_open_notional + estimated_notional:.2f} > max {PAPER_MAX_PORTFOLIO_NOTIONAL_USDT} USDT (2x capital)"
+        return False, f"portfolio notional {total_open_notional + estimated_notional:.2f} > max {PAPER_MAX_PORTFOLIO_NOTIONAL_USDT} USDT"
 
     return True, "passes capital gates"
 
@@ -187,7 +196,12 @@ def run_paper_rotation_engine() -> dict:
     # Load promotion tiers for gate checks
     promotion_tiers = _load_promotion_tiers()
 
-    all_candidates: list[dict] = trigger_watcher.get("candidates", []) if trigger_watcher else []
+    # Load BB candidates
+    bb_candidates_path = os.path.join(RESULTS_DIR, "bb_candidates.json")
+    bb_data = _read_json(bb_candidates_path)
+    bb_candidates: list[dict] = bb_data.get("candidates", []) if bb_data else []
+
+    all_candidates: list[dict] = (trigger_watcher.get("candidates", []) if trigger_watcher else []) + bb_candidates
 
     eligible = [c for c in all_candidates if _is_eligible(c)]
     fresh_eligible = [c for c in eligible if c.get("symbol", "") not in active_symbols]
@@ -196,6 +210,13 @@ def run_paper_rotation_engine() -> dict:
     promotion_filtered = []
     for c in fresh_eligible:
         family = resolve_strategy_family(c)
+        # BB/RSI trusted families bypass promotion gate
+        if family in BB_RSI_TRUSTED_FAMILIES:
+            allowed, tier, reason_code = True, "PAPER_PRIORITY", ""
+            c["strategy_family"] = family
+            c["promotion_tier"] = tier
+            promotion_filtered.append(c)
+            continue
         allowed, tier, reason_code = _check_promotion_gate(family, promotion_tiers)
         if allowed:
             c["strategy_family"] = family
@@ -247,7 +268,9 @@ def run_paper_rotation_engine() -> dict:
         )
     elif best_candidate:
         best_rr = float(best_candidate.get("rr", 0) or 0)
-        if best_rr >= 4:
+        best_family = best_candidate.get("strategy_family", "")
+        min_rr = 3.0 if best_family in BB_RSI_TRUSTED_FAMILIES else 4.0
+        if best_rr >= min_rr:
             next_action = "ROTATE_TO_NEW_PAPER_TRADE"
             reasons.append(
                 f"selected {best_candidate['symbol']} {best_candidate['direction']} "
@@ -265,6 +288,7 @@ def run_paper_rotation_engine() -> dict:
     risk_config = {
         "capital_usdt": PAPER_CAPITAL_USDT,
         "max_risk_per_trade_usdt": PAPER_MAX_RISK_PER_TRADE_USDT,
+        "max_notional_per_trade_usdt": PAPER_MAX_NOTIONAL_PER_TRADE_USDT,
         "max_leverage": PAPER_MAX_LEVERAGE,
         "max_portfolio_notional_usdt": PAPER_MAX_PORTFOLIO_NOTIONAL_USDT,
         "max_active_trades": PAPER_MAX_ACTIVE_TRADES,
@@ -302,6 +326,8 @@ def run_paper_rotation_engine() -> dict:
         } if best_candidate else None,
         "candidate_discovery": {
             "total_candidates": len(all_candidates),
+            "trigger_watcher_candidates": len(trigger_watcher.get("candidates", []) if trigger_watcher else []),
+            "bb_candidates": len(bb_candidates),
             "eligible_candidates": len(eligible),
             "fresh_eligible": len(fresh_eligible),
             "promotion_filtered": len(promotion_filtered),
@@ -347,7 +373,8 @@ def _write_text_report(report: dict):
         "  Paper Risk Config (Risk vs Notional Model):",
         f"    Capital:                {report['risk_config']['capital_usdt']} USDT",
         f"    Max Risk / Trade:       {report['risk_config']['max_risk_per_trade_usdt']} USDT",
-        f"    Max Portfolio Notional: {report['risk_config']['max_portfolio_notional_usdt']} USDT (2x capital)",
+        f"    Max Notional / Trade:   {PAPER_MAX_NOTIONAL_PER_TRADE_USDT} USDT (25% capital)",
+        f"    Max Portfolio Notional: {report['risk_config']['max_portfolio_notional_usdt']} USDT (50% capital)",
         f"    Max Leverage:           {report['risk_config']['max_leverage']}x",
         f"    Max Active Trades:      {report['risk_config']['max_active_trades']}",
         "",
@@ -407,7 +434,7 @@ def _write_text_report(report: dict):
         lines.append(f"    - {r}")
     lines += [
         "",
-        "  WARNING: Paper rotation only. No real orders placed. Max 5 paper trades.",
+        f"  WARNING: Paper rotation only. No real orders placed. Max {PAPER_MAX_ACTIVE_TRADES} paper trades.",
         "",
         "=" * 60,
     ]

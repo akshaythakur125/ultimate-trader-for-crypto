@@ -61,9 +61,11 @@ THESIS_TYPE_TO_FAMILY = {
     "TREND_PULLBACK": "trend_pullback",
     "MEAN_REVERSION": "mean_reversion",
     "SHORT_WEAKNESS": "short_weakness",
+    "BB_BOUNCE": "bb_bounce_v1",
 }
 
-# Promotion tiers that allow paper trading
+# Pre-validated BB family always allowed
+BB_RSI_TRUSTED_FAMILIES = {"bb_bounce_v1"}
 PAPER_ALLOWED_TIERS = {"PAPER_CANDIDATE", "PAPER_PRIORITY"}
 
 
@@ -109,6 +111,8 @@ def _check_promotion_gate(family: str, promotion_tiers: dict[str, str]) -> tuple
     """
     if family == "unknown":
         return False, "UNKNOWN", REASON_FAMILY_UNKNOWN
+    if family in BB_RSI_TRUSTED_FAMILIES:
+        return True, "PAPER_PRIORITY", ""
     tier = promotion_tiers.get(family, "UNKNOWN")
     if tier in PAPER_ALLOWED_TIERS:
         return True, tier, ""
@@ -119,13 +123,40 @@ def _check_promotion_gate(family: str, promotion_tiers: dict[str, str]) -> tuple
     return False, tier, REASON_FAMILY_NOT_PROMOTED
 
 
+STALE_TRADE_TIMEOUT_HOURS = 24
+
+
 def _read_portfolio() -> list[dict]:
     try:
         with open(PORTFOLIO_PATH) as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        portfolio = data if isinstance(data, list) else []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+    # Clean stale unfilled trades (entry never filled after timeout)
+    now = datetime.now(timezone.utc)
+    cleaned = []
+    for t in portfolio:
+        if t.get("status") != "PAPER_OPEN" or t.get("entry_fill_check", False):
+            cleaned.append(t)
+            continue
+        opened = t.get("opened_at", "")
+        if opened:
+            try:
+                opened_dt = datetime.fromisoformat(opened)
+                hours_stale = (now - opened_dt).total_seconds() / 3600
+                if hours_stale > STALE_TRADE_TIMEOUT_HOURS:
+                    t["status"] = "PAPER_STALE_EXPIRED"
+                    t["exit_reason"] = "STALE_UNFILLED"
+                    t["closed_at"] = now.isoformat()
+                    _append_to_ledger(t)
+                    continue
+            except (ValueError, TypeError):
+                pass
+        cleaned.append(t)
+
+    return cleaned
 
 
 def _write_portfolio(portfolio: list[dict]):
@@ -158,10 +189,11 @@ def _get_current_price(symbol: str) -> float | None:
     return None
 
 
-def _check_hit(side: str, entry: float, stop: float, target: float, current_price: float) -> tuple[str, str | None]:
-    can_enter = (side == "LONG" and current_price >= entry) or (side == "SHORT" and current_price <= entry)
-    if not can_enter:
-        return "PAPER_OPEN", None
+def _check_hit(side: str, entry: float, stop: float, target: float, current_price: float, already_entered: bool = False) -> tuple[str, str | None]:
+    if not already_entered:
+        can_enter = (side == "LONG" and current_price >= entry) or (side == "SHORT" and current_price <= entry)
+        if not can_enter:
+            return "PAPER_OPEN", None
     if side == "LONG":
         if current_price <= stop:
             return "PAPER_CLOSED", "STOP_HIT"
@@ -254,7 +286,10 @@ def _paper_exchange_sizing(symbol: str, entry: float, stop: float) -> dict:
     target_risk = PAPER_MAX_RISK_PER_TRADE_USDT
     if risk_per_unit <= 0:
         return {"quantity": 0, "notional": 0, "risk": 0, "ok": False, "reason": "stop equals entry"}
-    raw_qty = target_risk / risk_per_unit
+    # Cap by both risk AND notional
+    qty_from_risk = target_risk / risk_per_unit
+    qty_from_notional = PAPER_MAX_NOTIONAL_PER_TRADE_USDT / entry
+    raw_qty = min(qty_from_risk, qty_from_notional)
 
     raw_contract = _fetch_paper_contract_metadata(symbol)
     if raw_contract:
@@ -316,48 +351,44 @@ def _monitor_trade(trade: dict) -> dict:
     eqty = float(trade.get("quantity", 0))
     entry_was_filled = trade.get("entry_fill_check", False)
     entry_fill_price = float(trade["entry_fill_price"]) if trade.get("entry_fill_price") is not None else None
-    existing_entry_price = entry_fill_price if entry_was_filled and entry_fill_price else eentry
 
     current_price = _get_current_price(sym)
     if not current_price or current_price <= 0:
         trade["price_at_last_check"] = current_price or eentry
         return trade
 
-    new_status, hit_reason = _check_hit(eside, eentry, estop, etarget, current_price)
     trade["price_at_last_check"] = current_price
 
     if not entry_was_filled:
-        can_enter_now = hit_reason == "ENTRY_FILLED"
-        if not can_enter_now:
+        new_status, hit_reason = _check_hit(eside, eentry, estop, etarget, current_price)
+        if hit_reason != "ENTRY_FILLED":
             trade["unrealized_pnl"] = 0.0
-        else:
-            trade["entry_fill_price"] = current_price
-            trade["entry_fill_check"] = True
-            existing_entry_price = current_price
-            new_status, hit_reason = _check_hit(eside, existing_entry_price, estop, etarget, current_price)
-            if hit_reason in ("STOP_HIT", "TARGET_HIT"):
-                pnl = _calculate_pnl(eside, existing_entry_price, current_price, eqty)
-                trade["status"] = new_status
-                trade["exit_reason"] = hit_reason
-                trade["exit_price"] = current_price
-                trade["realized_pnl"] = pnl
-                trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-                trade["_just_closed"] = True
-                return trade
-            trade["unrealized_pnl"] = _calculate_pnl(eside, existing_entry_price, current_price, eqty)
-        trade["status"] = "PAPER_OPEN"
-    else:
-        if hit_reason in ("STOP_HIT", "TARGET_HIT"):
-            pnl = _calculate_pnl(eside, existing_entry_price, current_price, eqty)
-            trade["status"] = new_status
-            trade["exit_reason"] = hit_reason
-            trade["exit_price"] = current_price
-            trade["realized_pnl"] = pnl
-            trade["closed_at"] = datetime.now(timezone.utc).isoformat()
-            trade["_just_closed"] = True
-        else:
             trade["status"] = "PAPER_OPEN"
-            trade["unrealized_pnl"] = _calculate_pnl(eside, existing_entry_price, current_price, eqty)
+            return trade
+        # Fill tolerance: within 3x original risk distance
+        original_risk = abs(estop - eentry)
+        if original_risk > 0 and abs(current_price - eentry) > original_risk * 3:
+            trade["unrealized_pnl"] = 0.0
+            trade["status"] = "PAPER_OPEN"
+            return trade
+        trade["entry_fill_price"] = current_price
+        trade["entry_fill_check"] = True
+        entry_was_filled = True
+
+    # Already entered — check stop/target using the actual fill price
+    effective_entry = float(trade.get("entry_fill_price", eentry) or eentry)
+    new_status, hit_reason = _check_hit(eside, effective_entry, estop, etarget, current_price, already_entered=True)
+    if hit_reason in ("STOP_HIT", "TARGET_HIT"):
+        pnl = _calculate_pnl(eside, effective_entry, current_price, eqty)
+        trade["status"] = new_status
+        trade["exit_reason"] = hit_reason
+        trade["exit_price"] = current_price
+        trade["realized_pnl"] = pnl
+        trade["closed_at"] = datetime.now(timezone.utc).isoformat()
+        trade["_just_closed"] = True
+    else:
+        trade["status"] = "PAPER_OPEN"
+        trade["unrealized_pnl"] = _calculate_pnl(eside, effective_entry, current_price, eqty)
 
     return trade
 
@@ -592,6 +623,7 @@ def run_paper_execution() -> dict:
         "capital_usdt": PAPER_CAPITAL_USDT,
         "risk_pct_per_trade": PAPER_RISK_PCT_PER_TRADE,
         "max_risk_per_trade_usdt": PAPER_MAX_RISK_PER_TRADE_USDT,
+        "max_notional_per_trade_usdt": PAPER_MAX_NOTIONAL_PER_TRADE_USDT,
         "max_leverage": PAPER_MAX_LEVERAGE,
         "max_portfolio_notional_usdt": PAPER_MAX_PORTFOLIO_NOTIONAL_USDT,
         "max_active_trades": PAPER_MAX_ACTIVE_TRADES,

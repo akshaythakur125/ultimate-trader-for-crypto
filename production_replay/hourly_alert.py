@@ -94,6 +94,21 @@ def run_hourly_alert() -> dict:
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
 
+    # Run BB/RSI signal generator + dispatcher before paper pipeline
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.bb_signal_generator"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.bb_paper_dispatcher"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
     # Run paper rotation engine for fresh data (Phase 63)
     try:
         subprocess.run(

@@ -70,6 +70,41 @@ def run_breadwinner_daily() -> dict:
     # Read paper signal outcome tracker (Phase 79)
     signal_report = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
 
+    # Run BB Bounce signal scanning
+    bb_signals_data = {"bb_bounce": [], "total": 0}
+    try:
+        from production_replay.bb_signal_generator import scan_bb_signals, _get_symbols
+        syms = _get_symbols()
+        bb_sigs = scan_bb_signals(syms)
+        bb_signals_data = {
+            "bb_bounce": [{
+                "symbol": s["symbol"], "direction": s["direction"],
+                "entry": round(s["entry"], 6), "stop": round(s["stop"], 6),
+                "target": round(s["target"], 6),
+            } for s in bb_sigs[:5]],
+            "total": len(bb_sigs),
+            "live_trading": "NO",
+            "paper_only": "YES",
+        }
+        # Save all signals for paper dispatcher
+        all_signals_path = os.path.join(RESULTS_DIR, "bb_all_signals.json")
+        all_signals = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "bb_bounce": bb_sigs,
+            "total": len(bb_sigs),
+        }
+        with open(all_signals_path, "w") as f:
+            json.dump(all_signals, f, indent=2)
+    except Exception as e:
+        bb_signals_data = {"error": str(e)}
+
+    # Dispatch BB signals as paper candidates
+    try:
+        from production_replay.bb_paper_dispatcher import dispatch_paper_candidates
+        dispatch_paper_candidates()
+    except Exception as e:
+        print(f"BB paper dispatch error: {e}")
+
     # Determine final decision
     edge_decision = edge_report.get("final_decision", "NO_EDGE_FOUND")
     strategy_verdict = strategy_report.get("final_verdict", "NO_EDGE_FOUND")
@@ -78,14 +113,23 @@ def run_breadwinner_daily() -> dict:
     watchtower_verdict = watchtower_report.get("final_mode", "KEEP_WATCHING") if watchtower_report else "KEEP_WATCHING"
     cleanup_invalidated = cleanup_report.get("invalidated_count", 0)
 
+    # BB signal verdict: if we have live signals, it's actionable
+    bb_signal_verdict = "NO_EDGE_FOUND"
+    bb_total = bb_signals_data.get("total", 0)
+    if bb_total > 0:
+        bb_signal_verdict = "PAPER_WATCHLIST_ONLY"
+    if bb_total >= 5:
+        bb_signal_verdict = "PAPER_CANDIDATE_FOUND"
+
     # Use best verdict across all sources
-    verdict_priority = {"PAPER_PRIORITY_FOUND": 4, "PAPER_PRIORITY": 4,
-                        "BACKTESTABLE_EDGE_FOUND": 3, "PAPER_CANDIDATE_FOUND": 3, "PAPER_CANDIDATE": 3,
+    verdict_priority = {"PAPER_PRIORITY_FOUND": 5, "PAPER_PRIORITY": 5,
+                        "PAPER_CANDIDATE_FOUND": 4, "PAPER_CANDIDATE": 4,
+                        "BACKTESTABLE_EDGE_FOUND": 3,
                         "PAPER_WATCHLIST_ONLY": 2,
-                        "PAPER_SIGNAL_READY": 5, "LIVE_REVIEW_READY": 6,
+                        "PAPER_SIGNAL_READY": 6, "LIVE_REVIEW_READY": 7,
                         "NO_EDGE_FOUND": 0, "KEEP_WATCHING": 1}
     best_verdict = "NO_EDGE_FOUND"
-    for v in [edge_decision, strategy_verdict, tournament_verdict, derivatives_verdict, watchtower_verdict]:
+    for v in [edge_decision, strategy_verdict, tournament_verdict, derivatives_verdict, watchtower_verdict, bb_signal_verdict]:
         if verdict_priority.get(v, 0) > verdict_priority.get(best_verdict, 0):
             best_verdict = v
 
@@ -168,6 +212,7 @@ def run_breadwinner_daily() -> dict:
             "invalidated_count": cleanup_invalidated,
             "invalidated_trades": cleanup_report.get("invalidated_trades", []),
         },
+        "bb_signals": bb_signals_data,
         "promotion_tiers": promotion_tiers,
         "best_valid_family": best_family,
         "active_paper_trades": len(active_trades),
@@ -286,6 +331,17 @@ def _write_text_report(report: dict):
             f"    Live Review Ready:   {'YES' if so.get('live_review_ready') else 'NO'}",
             "",
         ]
+
+    # BB signals section
+    bb = report.get("bb_signals", {})
+    if bb.get("total", 0) > 0:
+        lines += [
+            "  BB BOUNCE SIGNALS:",
+            f"    Total Signals:       {bb.get('total', 0)}",
+        ]
+        for s in bb.get("bb_bounce", [])[:5]:
+            lines.append(f"    {s['direction']:5s} {s['symbol']:20s} entry={s['entry']:.6f}")
+        lines += [""]
 
     lines += [
         f"  Live Trading: {report['live_trading']['reason']}",
