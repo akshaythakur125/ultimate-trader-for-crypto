@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cross_sectional_momentum import (
     get_daily_candles, get_eligible_symbols, _get_all_dates,
-    LOOKBACK_DAYS
+    LOOKBACK_DAYS, run_diagnostics, write_diagnostics
 )
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
@@ -288,12 +288,28 @@ def run_full_backtest():
     """Run full backtest across all variants.
     Returns report dict.
     """
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    # Run diagnostics first
+    diag = run_diagnostics()
+    write_diagnostics(diag)
+
     print("Loading daily candles...")
     all_daily = _load_all_daily_candles()
     trading_dates = _get_trading_dates(all_daily)
 
     print(f"Symbols with data: {len(all_daily)}")
-    print(f"Trading dates: {len(trading_dates)} ({trading_dates[0]} to {trading_dates[-1]})")
+    if trading_dates:
+        print(f"Trading dates: {len(trading_dates)} ({trading_dates[0]} to {trading_dates[-1]})")
+    else:
+        print("Trading dates: 0 (no data)")
+
+    # Handle zero data case
+    if not all_daily or not trading_dates:
+        print("ERROR: No data available for backtest")
+        report = _build_no_data_report(diag)
+        _write_report(report)
+        return report
 
     variants_results = []
 
@@ -404,12 +420,52 @@ def run_full_backtest():
     }
 
     # Write reports
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    _write_report(report)
+    return report
+
+
+def _build_no_data_report(diag):
+    """Build report when no data is available."""
+    return {
+        "mode": "csm_backtest",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "live_trading": False,
+        "real_orders": False,
+        "capital": CAPITAL,
+        "fee_rate": FEE_RATE,
+        "slippage_rate": SLIPPAGE_RATE,
+        "lookback_days": LOOKBACK_DAYS,
+        "symbols_used": 0,
+        "trading_dates": 0,
+        "date_range": "N/A",
+        "best_variant": "N/A",
+        "best_top_n": 0,
+        "best_bottom_n": 0,
+        "overall_sharpe": 0,
+        "overall_cagr": 0,
+        "overall_max_drawdown": 0,
+        "overall_monthly_win_rate": 0,
+        "oos_sharpe": 0,
+        "is_sharpe": 0,
+        "delay_1d_sharpe": 0,
+        "months_green": 0,
+        "total_months": 0,
+        "worst_month": 0,
+        "current_long_basket": [],
+        "current_short_basket": [],
+        "verdict": "DATA_LOAD_FAILED",
+        "status": "DATA_LOAD_FAILED",
+        "diagnostics": diag,
+        "variants": [],
+        "warnings": ["No data available for backtest. See csm_data_diagnostics for details."],
+    }
+
+
+def _write_report(report):
+    """Write report files."""
     with open(REPORT_JSON, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, default=str)
-
     _write_txt_report(report)
-    return report
 
 
 def _write_txt_report(report):
@@ -432,6 +488,33 @@ def _write_txt_report(report):
     lines.append(f"  Date Range:        {report['date_range']}")
     lines.append("")
 
+    # Handle DATA_LOAD_FAILED
+    if report["status"] == "DATA_LOAD_FAILED":
+        lines.append("  *** DATA LOAD FAILED ***")
+        diag = report.get("diagnostics", {})
+        if diag:
+            lines.append(f"  Files Found:       {diag.get('files_found', 0)}")
+            lines.append(f"  Symbols with Data: {diag.get('symbols_with_raw_data', 0)}")
+            lines.append(f"  Symbols Eligible:  {diag.get('symbols_eligible', 0)}")
+            lines.append(f"  Max Daily Closes:  {diag.get('max_daily_closes', 0)}")
+            lines.append(f"  Required:          {diag.get('required_history_days', 45)} days")
+            lines.append(f"  Date Range:        {diag.get('date_range', 'N/A')}")
+            if diag.get("rejection_reasons"):
+                lines.append("")
+                lines.append("  REJECTION REASONS:")
+                for r in diag["rejection_reasons"]:
+                    lines.append(f"    - {r}")
+        lines.append("")
+        lines.append("  SAFETY:")
+        lines.append(f"    Live Trading: NO")
+        lines.append(f"    Real Orders:  NO")
+        lines.append("")
+        lines.append("  WARNING: Backtest could not run. No data available.")
+        lines.append("=" * 60)
+        with open(REPORT_TXT, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return
+
     lines.append("  OVERALL PERFORMANCE (Best Variant):")
     lines.append(f"    Sharpe:            {report['overall_sharpe']:.4f}")
     lines.append(f"    CAGR:              {report['overall_cagr']:.2%}")
@@ -446,16 +529,17 @@ def _write_txt_report(report):
     lines.append(f"    1-Day Delay Sharpe:{report['delay_1d_sharpe']:.4f}")
     lines.append("")
 
-    lines.append("  ALL VARIANTS:")
-    for v in report.get("variants", []):
-        marker = " [REJECTED]" if v["rejected"] else ""
-        lines.append(f"    {v['label']:15s} Sharpe={v['overall'].get('sharpe', 0):.2f} "
-                     f"CAGR={v['overall'].get('cagr', 0):.1%} "
-                     f"MaxDD={v['overall'].get('max_drawdown', 0):.1%}{marker}")
-        if v["rejection_reason"]:
-            for r in v["rejection_reason"]:
-                lines.append(f"      Reason: {r}")
-    lines.append("")
+    if report.get("variants"):
+        lines.append("  ALL VARIANTS:")
+        for v in report.get("variants", []):
+            marker = " [REJECTED]" if v["rejected"] else ""
+            lines.append(f"    {v['label']:15s} Sharpe={v['overall'].get('sharpe', 0):.2f} "
+                         f"CAGR={v['overall'].get('cagr', 0):.1%} "
+                         f"MaxDD={v['overall'].get('max_drawdown', 0):.1%}{marker}")
+            if v.get("rejection_reason"):
+                for r in v["rejection_reason"]:
+                    lines.append(f"      Reason: {r}")
+        lines.append("")
 
     lines.append("  CURRENT BASKETS:")
     lines.append("    LONG:")

@@ -9244,3 +9244,114 @@ def test_phase80_report_files_created():
     src_sig = inspect.getsource(csm_daily_signal)
     assert "csm_backtest_report" in src_bt
     assert "csm_daily_signal" in src_sig
+
+
+# ============================================================
+# Phase 80B: Fix CSM Data Loader
+# ============================================================
+
+def test_phase80b_aggregate_1h_to_daily():
+    """CSM loader can aggregate sample 1h candles into daily candles."""
+    from production_replay.cross_sectional_momentum import _aggregate_to_daily
+    # Create sample 1h candles spanning 2 days
+    candles_1h = [
+        {"timestamp": "1782554400000", "open": 100, "high": 105, "low": 99, "close": 103, "volume": 10},  # Day 1
+        {"timestamp": "1782558000000", "open": 103, "high": 108, "low": 102, "close": 107, "volume": 15},  # Day 1
+        {"timestamp": "1782640800000", "open": 107, "high": 110, "low": 106, "close": 109, "volume": 20},  # Day 2
+        {"timestamp": "1782644400000", "open": 109, "high": 112, "low": 108, "close": 111, "volume": 25},  # Day 2
+    ]
+    daily = _aggregate_to_daily(candles_1h)
+    assert len(daily) == 2
+    assert daily[0]["date"] is not None
+    assert daily[0]["close"] == 107  # last 1h close on day 1
+    assert daily[1]["close"] == 111  # last 1h close on day 2
+    assert daily[0]["volume"] == 25  # 10 + 15
+    assert daily[1]["volume"] == 45  # 20 + 25
+
+
+def test_phase80b_backtest_no_crash_on_zero_data():
+    """csm_backtest does not crash on zero data."""
+    import tempfile, os, json
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_cache = os.path.join(tmpdir, "empty_cache")
+        os.makedirs(empty_cache)
+        with patch("production_replay.cross_sectional_momentum.CANDLE_DIR", empty_cache):
+            with patch("production_replay.cross_sectional_momentum.DIAG_JSON", os.path.join(tmpdir, "diag.json")):
+                with patch("production_replay.cross_sectional_momentum.DIAG_TXT", os.path.join(tmpdir, "diag.txt")):
+                    with patch("production_replay.csm_backtest.REPORT_JSON", os.path.join(tmpdir, "report.json")):
+                        with patch("production_replay.csm_backtest.REPORT_TXT", os.path.join(tmpdir, "report.txt")):
+                            from production_replay.csm_backtest import run_full_backtest
+                            report = run_full_backtest()
+                            assert report["status"] == "DATA_LOAD_FAILED"
+                            assert report["symbols_used"] == 0
+                            assert report["verdict"] == "DATA_LOAD_FAILED"
+                            assert os.path.exists(os.path.join(tmpdir, "report.json"))
+
+
+def test_phase80b_daily_signal_no_baskets_if_insufficient():
+    """csm_daily_signal does not create baskets if symbols are insufficient."""
+    import tempfile, os
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_cache = os.path.join(tmpdir, "empty_cache")
+        os.makedirs(empty_cache)
+        with patch("production_replay.cross_sectional_momentum.CANDLE_DIR", empty_cache):
+            with patch("production_replay.csm_daily_signal.RESULTS_DIR", tmpdir):
+                from production_replay.csm_daily_signal import run_daily_signal
+                report = run_daily_signal()
+                assert report["signal_status"] == "SIGNAL_UNAVAILABLE_DATA_MISSING"
+                assert report["has_valid_signal"] is False
+                assert len(report["primary_long"]) == 0
+                assert len(report["primary_short"]) == 0
+
+
+def test_phase80b_paper_portfolio_no_keyerror():
+    """csm_paper_portfolio does not throw KeyError last_rebalance."""
+    import tempfile, os
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_cache = os.path.join(tmpdir, "empty_cache")
+        os.makedirs(empty_cache)
+        portfolio_file = os.path.join(tmpdir, "portfolio.jsonl")
+        with patch("production_replay.cross_sectional_momentum.CANDLE_DIR", empty_cache):
+            with patch("production_replay.csm_paper_portfolio.PORTFOLIO_FILE", portfolio_file):
+                with patch("production_replay.csm_paper_portfolio.RESULTS_DIR", tmpdir):
+                    from production_replay.csm_paper_portfolio import run_paper_portfolio
+                    report = run_paper_portfolio()
+                    # Should not crash and should have last_rebalance
+                    assert "last_rebalance" in report["portfolio"]
+                    assert report["portfolio"]["last_rebalance"] is not None
+                    assert report["portfolio"]["status"] == "NO_VALID_SIGNAL"
+
+
+def test_phase80b_live_trading_blocked():
+    """Live trading remains blocked in all CSM modules after fixes."""
+    import inspect
+    from production_replay import cross_sectional_momentum
+    from production_replay import csm_backtest
+    from production_replay import csm_daily_signal
+    from production_replay import csm_paper_portfolio
+    for mod in [cross_sectional_momentum, csm_backtest, csm_daily_signal, csm_paper_portfolio]:
+        src = inspect.getsource(mod)
+        assert "place_order" not in src
+        assert "create_order" not in src
+        assert "submit_order" not in src
+
+
+def test_phase80b_diagnostics_written():
+    """Data diagnostics are written when running backtest."""
+    import tempfile, os
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_cache = os.path.join(tmpdir, "empty_cache")
+        os.makedirs(empty_cache)
+        with patch("production_replay.cross_sectional_momentum.CANDLE_DIR", empty_cache):
+            with patch("production_replay.cross_sectional_momentum.DIAG_JSON", os.path.join(tmpdir, "diag.json")):
+                with patch("production_replay.cross_sectional_momentum.DIAG_TXT", os.path.join(tmpdir, "diag.txt")):
+                    from production_replay.cross_sectional_momentum import run_diagnostics
+                    diag = run_diagnostics()
+                    assert "files_found" in diag
+                    assert "symbols_eligible" in diag
+                    assert "rejection_reasons" in diag
+                    assert diag["data_sufficient"] is False

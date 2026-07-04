@@ -231,6 +231,30 @@ def run_hourly_alert() -> dict:
         )
     except Exception:
         pass
+    # Run CSM backtest for fresh data (Phase 80)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.csm_backtest"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception:
+        pass
+    # Run CSM daily signal for fresh data (Phase 80)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.csm_daily_signal"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        pass
+    # Run CSM paper portfolio for fresh data (Phase 80)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "production_replay.csm_paper_portfolio"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        pass
 
     doctor = _read_json(os.path.join(RESULTS_DIR, "doctor_daily_packet.json"))
     dux = _read_json(os.path.join(RESULTS_DIR, "dux_pattern_report.json"))
@@ -260,6 +284,10 @@ def run_hourly_alert() -> dict:
     derivatives_collector = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
     watchtower = _read_json(os.path.join(RESULTS_DIR, "breadwinner_watchtower_report.json"))
     signal_tracker = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
+    csm_backtest = _read_json(os.path.join(RESULTS_DIR, "csm_backtest_report.json"))
+    csm_signal = _read_json(os.path.join(RESULTS_DIR, "csm_daily_signal.json"))
+    csm_portfolio = _read_json(os.path.join(RESULTS_DIR, "csm_paper_portfolio.json"))
+    csm_diag = _read_json(os.path.join(RESULTS_DIR, "csm_data_diagnostics.json"))
     from production_replay.live_one_shot_guard import read_state as _read_one_shot
     one_shot_state = _read_one_shot()
     universe = _read_json(os.path.join(RESULTS_DIR, "bingx_universe.json"))
@@ -1143,6 +1171,34 @@ def _write_text_report(report: dict, action: str, reason: str):
             "  BREADWINNER WATCHTOWER:",
             f"    Final Mode:          {wt.get('final_mode', 'KEEP_WATCHING')}",
             f"    Top Candidates:      NONE",
+            "",
+        ]
+
+    # Phase 80: Cross-sectional momentum
+    csm = report.get("csm_backtest")
+    if csm:
+        csm_status = csm.get("status", "N/A")
+        lines += [
+            "  CROSS-SECTIONAL MOMENTUM:",
+            f"    Status:            {csm_status}",
+            f"    Best Variant:      {csm.get('best_variant', 'N/A')}",
+            f"    Symbols Used:      {csm.get('symbols_used', 0)}",
+            f"    Overall Sharpe:    {csm.get('overall_sharpe', 0):.4f}",
+            f"    OOS Sharpe:        {csm.get('oos_sharpe', 0):.4f}",
+            f"    1-Day Delay Sharpe:{csm.get('delay_1d_sharpe', 0):.4f}",
+            f"    CAGR:              {csm.get('overall_cagr', 0):.2%}",
+            f"    Max Drawdown:      {csm.get('overall_max_drawdown', 0):.2%}",
+            f"    Verdict:           {csm.get('verdict', 'N/A')}",
+            f"    Live Trading:      NO",
+        ]
+        if csm.get("warnings"):
+            for w in csm["warnings"][:2]:
+                lines.append(f"    Warning:           {w}")
+        lines += [""]
+    else:
+        lines += [
+            "  CROSS-SECTIONAL MOMENTUM:",
+            f"    Status:            NOT_LOADED",
             "",
         ]
 

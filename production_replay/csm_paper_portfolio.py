@@ -1,7 +1,8 @@
 """
-Phase 80 — CSM Paper Portfolio
+Phase 80B — CSM Paper Portfolio (Fixed)
 Tracks paper positions for cross-sectional momentum strategy.
 Market-neutral, equal-weight, rebalanced daily.
+Never crashes if signal is unavailable.
 """
 
 import json
@@ -31,14 +32,36 @@ BOTTOM_N = 5
 
 
 def _load_portfolio():
-    """Load current portfolio from JSONL."""
+    """Load current portfolio from JSONL. Never raises KeyError."""
+    default = {
+        "positions": [],
+        "cash": CAPITAL,
+        "last_rebalance": "N/A",
+        "total_long_notional": 0,
+        "total_short_notional": 0,
+        "net_exposure": 0,
+        "gross_exposure": 0,
+        "num_positions": 0,
+        "total_unrealized_pnl": 0,
+        "equity": CAPITAL,
+        "live_trading": "NO",
+        "real_orders": "NO",
+    }
     if not os.path.exists(PORTFOLIO_FILE):
-        return {"positions": [], "cash": CAPITAL, "last_rebalance": None}
-    with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-        lines = [l.strip() for l in f if l.strip()]
-    if not lines:
-        return {"positions": [], "cash": CAPITAL, "last_rebalance": None}
-    return json.loads(lines[-1])
+        return default
+    try:
+        with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        if not lines:
+            return default
+        data = json.loads(lines[-1])
+        # Ensure required keys exist
+        for key in default:
+            if key not in data:
+                data[key] = default[key]
+        return data
+    except Exception:
+        return default
 
 
 def _save_portfolio(portfolio):
@@ -66,7 +89,7 @@ def _get_current_price(symbol):
 
 def rebalance_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
     """Rebalance portfolio to new signal.
-    Returns new portfolio state.
+    Returns new portfolio state. Never crashes.
     """
     portfolio = _load_portfolio()
     now = datetime.now(timezone.utc).isoformat()
@@ -74,13 +97,26 @@ def rebalance_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
     # Get current signal
     eligible = get_eligible_symbols()
     ranked = rank_by_momentum(eligible)
-    baskets = generate_baskets(ranked, top_n, bottom_n)
 
+    # Check if we have enough data
+    min_needed = top_n + bottom_n
+    if len(ranked) < min_needed:
+        # Cannot rebalance - insufficient data
+        portfolio["status"] = "NO_VALID_SIGNAL"
+        portfolio["last_rebalance"] = now
+        portfolio["rebalance_error"] = f"Insufficient symbols: {len(ranked)} < {min_needed}"
+        _save_portfolio(portfolio)
+        return portfolio
+
+    baskets = generate_baskets(ranked, top_n, bottom_n)
     long_basket = baskets.get("long_basket", [])
     short_basket = baskets.get("short_basket", [])
 
     if not long_basket or not short_basket:
-        print(f"[csm_paper_portfolio] Insufficient symbols for baskets")
+        portfolio["status"] = "NO_VALID_SIGNAL"
+        portfolio["last_rebalance"] = now
+        portfolio["rebalance_error"] = "Empty baskets"
+        _save_portfolio(portfolio)
         return portfolio
 
     # Calculate equal weights
@@ -99,7 +135,6 @@ def rebalance_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
         notional = notional_per_position
         quantity = notional / price if price > 0 else 0
 
-        # Apply fee and slippage
         entry_cost = notional * (FEE_RATE + SLIPPAGE_RATE)
 
         new_positions.append({
@@ -144,13 +179,17 @@ def rebalance_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
 
     portfolio = {
         "positions": new_positions,
-        "cash": CAPITAL - total_long + total_short,  # simplified
+        "cash": CAPITAL - total_long + total_short,
         "total_long_notional": total_long,
         "total_short_notional": total_short,
         "net_exposure": total_long - total_short,
         "gross_exposure": total_long + total_short,
         "num_positions": len(new_positions),
         "last_rebalance": now,
+        "status": "ACTIVE",
+        "rebalance_error": None,
+        "total_unrealized_pnl": 0,
+        "equity": CAPITAL,
         "live_trading": "NO",
         "real_orders": "NO",
     }
@@ -161,7 +200,7 @@ def rebalance_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
 
 def update_prices():
     """Update current prices for all positions.
-    Returns updated portfolio.
+    Returns updated portfolio. Never crashes.
     """
     portfolio = _load_portfolio()
     if not portfolio.get("positions"):
@@ -169,14 +208,14 @@ def update_prices():
 
     total_pnl = 0
     for pos in portfolio["positions"]:
-        price = _get_current_price(pos["symbol"])
+        price = _get_current_price(pos.get("symbol", ""))
         if price is not None:
             pos["current_price"] = price
-            if pos["side"] == "LONG":
-                pos["unrealized_pnl"] = (price - pos["entry_price"]) * pos["quantity"]
+            if pos.get("side") == "LONG":
+                pos["unrealized_pnl"] = (price - pos.get("entry_price", 0)) * pos.get("quantity", 0)
             else:
-                pos["unrealized_pnl"] = (pos["entry_price"] - price) * pos["quantity"]
-            total_pnl += pos["unrealized_pnl"]
+                pos["unrealized_pnl"] = (pos.get("entry_price", 0) - price) * pos.get("quantity", 0)
+            total_pnl += pos.get("unrealized_pnl", 0)
 
     portfolio["total_unrealized_pnl"] = total_pnl
     portfolio["equity"] = CAPITAL + total_pnl
@@ -186,37 +225,45 @@ def update_prices():
 
 
 def get_portfolio_summary():
-    """Get current portfolio summary."""
+    """Get current portfolio summary. Never crashes."""
     portfolio = _load_portfolio()
     if not portfolio.get("positions"):
         return {
-            "status": "EMPTY",
+            "status": portfolio.get("status", "NO_VALID_SIGNAL"),
             "positions": 0,
-            "equity": CAPITAL,
-            "unrealized_pnl": 0,
+            "long_positions": 0,
+            "short_positions": 0,
+            "equity": portfolio.get("equity", CAPITAL),
+            "unrealized_pnl": portfolio.get("total_unrealized_pnl", 0),
+            "total_long_notional": 0,
+            "total_short_notional": 0,
+            "last_rebalance": portfolio.get("last_rebalance", "N/A"),
+            "rebalance_error": portfolio.get("rebalance_error"),
             "live_trading": "NO",
+            "real_orders": "NO",
         }
 
     # Update prices
     portfolio = update_prices()
 
     return {
-        "status": "ACTIVE",
+        "status": portfolio.get("status", "ACTIVE"),
         "positions": len(portfolio["positions"]),
-        "long_positions": sum(1 for p in portfolio["positions"] if p["side"] == "LONG"),
-        "short_positions": sum(1 for p in portfolio["positions"] if p["side"] == "SHORT"),
+        "long_positions": sum(1 for p in portfolio["positions"] if p.get("side") == "LONG"),
+        "short_positions": sum(1 for p in portfolio["positions"] if p.get("side") == "SHORT"),
         "equity": portfolio.get("equity", CAPITAL),
         "unrealized_pnl": portfolio.get("total_unrealized_pnl", 0),
         "total_long_notional": portfolio.get("total_long_notional", 0),
         "total_short_notional": portfolio.get("total_short_notional", 0),
-        "last_rebalance": portfolio.get("last_rebalance"),
+        "last_rebalance": portfolio.get("last_rebalance", "N/A"),
+        "rebalance_error": portfolio.get("rebalance_error"),
         "live_trading": "NO",
         "real_orders": "NO",
     }
 
 
 def run_paper_portfolio(top_n=TOP_N, bottom_n=BOTTOM_N):
-    """Run paper portfolio update.
+    """Run paper portfolio update. Never crashes.
     Returns report dict.
     """
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -260,16 +307,24 @@ def _write_txt_report(report):
     lines.append(f"  Equity:            {report['portfolio']['equity']:.2f} USDT")
     lines.append(f"  Unrealized P&L:    {report['portfolio']['unrealized_pnl']:.4f} USDT")
     lines.append(f"  Last Rebalance:    {report['portfolio']['last_rebalance']}")
+
+    if report["portfolio"].get("rebalance_error"):
+        lines.append(f"  Rebalance Error:   {report['portfolio']['rebalance_error']}")
     lines.append("")
 
-    lines.append("  POSITIONS:")
-    for p in report.get("positions", []):
-        lines.append(f"    {p['symbol']:15s} {p['side']:5s} "
-                     f"entry={p['entry_price']:.6f} "
-                     f"current={p['current_price']:.6f} "
-                     f"pnl={p['unrealized_pnl']:.4f} "
-                     f"mom={p['momentum_30d']:+.4f}")
-    lines.append("")
+    if report["portfolio"]["status"] == "NO_VALID_SIGNAL":
+        lines.append("  *** NO VALID SIGNAL — DATA INSUFFICIENT ***")
+        lines.append("  Cannot rebalance. Need more historical data.")
+        lines.append("")
+    elif report.get("positions"):
+        lines.append("  POSITIONS:")
+        for p in report["positions"]:
+            lines.append(f"    {p.get('symbol', '?'):15s} {p.get('side', '?'):5s} "
+                         f"entry={p.get('entry_price', 0):.6f} "
+                         f"current={p.get('current_price', 0):.6f} "
+                         f"pnl={p.get('unrealized_pnl', 0):.4f} "
+                         f"mom={p.get('momentum_30d', 0):+.4f}")
+        lines.append("")
 
     lines.append("  SAFETY:")
     lines.append(f"    Live Trading: NO")
@@ -288,3 +343,5 @@ if __name__ == "__main__":
     print(f"Status: {report['portfolio']['status']}")
     print(f"Positions: {report['portfolio']['positions']}")
     print(f"Equity: {report['portfolio']['equity']:.2f} USDT")
+    if report['portfolio'].get('rebalance_error'):
+        print(f"Error: {report['portfolio']['rebalance_error']}")

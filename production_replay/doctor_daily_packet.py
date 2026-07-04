@@ -82,6 +82,9 @@ def main():
     _run_module("production_replay.breadwinner_backtest")
     _run_module("production_replay.breadwinner_fast_tournament")
     _run_module("production_replay.derivatives_edge_layer")
+    _run_module("production_replay.csm_backtest")
+    _run_module("production_replay.csm_daily_signal")
+    _run_module("production_replay.csm_paper_portfolio")
 
     trade_plan = _read_json(os.path.join(RESULTS_DIR, "today_trade_plan.json"))
     risk_plan = _read_json(os.path.join(RESULTS_DIR, "manual_risk_plan.json"))
@@ -113,6 +116,10 @@ def main():
     derivatives_edge = _read_json(os.path.join(RESULTS_DIR, "derivatives_edge_report.json"))
     watchtower = _read_json(os.path.join(RESULTS_DIR, "breadwinner_watchtower_report.json"))
     signal_tracker = _read_json(os.path.join(RESULTS_DIR, "paper_signal_outcome_report.json"))
+    csm_backtest = _read_json(os.path.join(RESULTS_DIR, "csm_backtest_report.json"))
+    csm_signal = _read_json(os.path.join(RESULTS_DIR, "csm_daily_signal.json"))
+    csm_portfolio = _read_json(os.path.join(RESULTS_DIR, "csm_paper_portfolio.json"))
+    csm_diag = _read_json(os.path.join(RESULTS_DIR, "csm_data_diagnostics.json"))
     entry = _read_ledger_latest()
 
     if entry:
@@ -963,6 +970,40 @@ def main():
             "",
         ]
 
+    # Phase 80: Cross-sectional momentum
+    csm_lines = []
+    if csm_backtest:
+        csm_status = csm_backtest.get("status", "N/A")
+        csm_lines = [
+            "",
+            "  CROSS-SECTIONAL MOMENTUM:",
+            f"    Status:            {csm_status}",
+            f"    Best Variant:      {csm_backtest.get('best_variant', 'N/A')}",
+            f"    Symbols Used:      {csm_backtest.get('symbols_used', 0)}",
+            f"    Overall Sharpe:    {csm_backtest.get('overall_sharpe', 0):.4f}",
+            f"    OOS Sharpe:        {csm_backtest.get('oos_sharpe', 0):.4f}",
+            f"    1-Day Delay Sharpe:{csm_backtest.get('delay_1d_sharpe', 0):.4f}",
+            f"    CAGR:              {csm_backtest.get('overall_cagr', 0):.2%}",
+            f"    Max Drawdown:      {csm_backtest.get('overall_max_drawdown', 0):.2%}",
+            f"    Verdict:           {csm_backtest.get('verdict', 'N/A')}",
+            f"    Live Trading:      NO",
+        ]
+        if csm_backtest.get("warnings"):
+            for w in csm_backtest["warnings"][:2]:
+                csm_lines.append(f"    Warning:           {w}")
+        csm_lines.append("")
+    elif csm_diag:
+        csm_lines = [
+            "",
+            "  CROSS-SECTIONAL MOMENTUM:",
+            f"    Status:            DATA_LOAD_FAILED",
+            f"    Symbols Eligible:  {csm_diag.get('symbols_eligible', 0)}",
+            f"    Max Daily Closes:  {csm_diag.get('max_daily_closes', 0)}",
+            f"    Required:          {csm_diag.get('required_history_days', 45)} days",
+            f"    Live Trading:      NO",
+            "",
+        ]
+
     live_lines = []
     if live:
         lmode = live.get("execution_mode", "?")
@@ -1098,6 +1139,7 @@ def main():
     lines += arb_lines
     lines += wt_lines
     lines += st_lines
+    lines += csm_lines
     lines += live_lines
     lines += pos_lines
     lines += hourly_lines

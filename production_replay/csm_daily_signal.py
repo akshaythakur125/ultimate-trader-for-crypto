@@ -1,5 +1,5 @@
 """
-Phase 80 — CSM Daily Signal
+Phase 80B — CSM Daily Signal (Fixed)
 Generates daily cross-sectional momentum signals.
 Outputs current long/short baskets with weights.
 """
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cross_sectional_momentum import (
-    get_eligible_symbols, rank_by_momentum, generate_baskets, get_current_signal
+    get_eligible_symbols, rank_by_momentum, generate_baskets, run_diagnostics
 )
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "deploy_results")
@@ -38,15 +38,21 @@ def run_daily_signal():
     eligible = get_eligible_symbols()
     ranked = rank_by_momentum(eligible)
 
-    # Print top/bottom momentum for debugging
+    # Print diagnostics
     print(f"Eligible: {len(eligible)}  Ranked: {len(ranked)}")
     if ranked:
         print(f"Top momentum:    {ranked[0][0]} {ranked[0][1]:+.4f}")
         print(f"Bottom momentum: {ranked[-1][0]} {ranked[-1][1]:+.4f}")
 
+    # Check if we have enough data
+    min_needed = max(v["top_n"] + v["bottom_n"] for v in DEFAULT_VARIANTS)
+    has_enough = len(ranked) >= min_needed
+    signal_status = "VALID" if has_enough else "SIGNAL_UNAVAILABLE_DATA_MISSING"
+
     variants = []
     for v in DEFAULT_VARIANTS:
         baskets = generate_baskets(ranked, v["top_n"], v["bottom_n"])
+        has_valid = not baskets.get("error")
         variants.append({
             "label": v["label"],
             "top_n": v["top_n"],
@@ -56,9 +62,10 @@ def run_daily_signal():
             "long_avg_momentum": baskets.get("long_avg_momentum", 0),
             "short_avg_momentum": baskets.get("short_avg_momentum", 0),
             "error": baskets.get("error"),
+            "has_valid_baskets": has_valid,
         })
 
-    # Use top5_bottom5 as primary signal
+    # Use top5_bottom5 as primary signal (if available)
     primary = variants[1] if len(variants) > 1 else variants[0]
 
     report = {
@@ -67,9 +74,12 @@ def run_daily_signal():
         "lookback_days": 30,
         "eligible_symbols": len(eligible),
         "ranked_symbols": len(ranked),
+        "signal_status": signal_status,
+        "has_valid_signal": has_enough,
         "primary_variant": primary["label"],
         "primary_long": primary["long_basket"],
         "primary_short": primary["short_basket"],
+        "primary_has_valid_baskets": primary.get("has_valid_baskets", False),
         "variants": variants,
         "live_trading": "NO",
         "real_orders": "NO",
@@ -94,21 +104,29 @@ def _write_txt_report(report):
     lines.append(f"  Lookback:          {report['lookback_days']} days")
     lines.append(f"  Eligible Symbols:  {report['eligible_symbols']}")
     lines.append(f"  Ranked Symbols:    {report['ranked_symbols']}")
+    lines.append(f"  Signal Status:     {report['signal_status']}")
     lines.append(f"  Primary Variant:   {report['primary_variant']}")
     lines.append("")
 
-    lines.append("  CURRENT LONG BASKET:")
-    for i, s in enumerate(report.get("primary_long", []), 1):
-        lines.append(f"    {i}. {s['symbol']:15s} mom={s['momentum_30d']:+.4f}  close={s['close']:.6f}")
-    lines.append("")
-    lines.append("  CURRENT SHORT BASKET:")
-    for i, s in enumerate(report.get("primary_short", []), 1):
-        lines.append(f"    {i}. {s['symbol']:15s} mom={s['momentum_30d']:+.4f}  close={s['close']:.6f}")
-    lines.append("")
+    if report["signal_status"] == "SIGNAL_UNAVAILABLE_DATA_MISSING":
+        lines.append("  *** SIGNAL UNAVAILABLE — DATA MISSING ***")
+        lines.append("  Insufficient symbols with 30+ days of daily data.")
+        lines.append("  Need more historical candle data for momentum ranking.")
+        lines.append("")
+    else:
+        lines.append("  CURRENT LONG BASKET:")
+        for i, s in enumerate(report.get("primary_long", []), 1):
+            lines.append(f"    {i}. {s['symbol']:15s} mom={s['momentum_30d']:+.4f}  close={s['close']:.6f}")
+        lines.append("")
+        lines.append("  CURRENT SHORT BASKET:")
+        for i, s in enumerate(report.get("primary_short", []), 1):
+            lines.append(f"    {i}. {s['symbol']:15s} mom={s['momentum_30d']:+.4f}  close={s['close']:.6f}")
+        lines.append("")
 
     lines.append("  ALL VARIANTS:")
     for v in report.get("variants", []):
-        lines.append(f"    {v['label']:15s}  Long: {len(v['long_basket'])}  Short: {len(v['short_basket'])}")
+        status = "OK" if v.get("has_valid_baskets") else f"FAIL: {v.get('error', '?')}"
+        lines.append(f"    {v['label']:15s}  Long: {len(v['long_basket'])}  Short: {len(v['short_basket'])}  [{status}]")
     lines.append("")
 
     lines.append("  SAFETY:")
@@ -126,5 +144,6 @@ def _write_txt_report(report):
 if __name__ == "__main__":
     report = run_daily_signal()
     print(f"\nPrimary: {report['primary_variant']}")
+    print(f"Status:  {report['signal_status']}")
     print(f"Long:  {[s['symbol'] for s in report['primary_long']]}")
     print(f"Short: {[s['symbol'] for s in report['primary_short']]}")
