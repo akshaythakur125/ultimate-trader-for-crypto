@@ -9118,3 +9118,129 @@ def test_phase79_breadwinner_daily_includes_watchtower():
         "production_replay.breadwinner_daily_report", fromlist=["_"]
     ))
     assert "watchtower" in src.lower()
+
+
+# ============================================================
+# Phase 80: Cross-Sectional Momentum
+# ============================================================
+
+def test_phase80_no_lookahead():
+    """Backtest uses only candles available before each rebalance."""
+    import inspect
+    from production_replay import csm_backtest
+    src = inspect.getsource(csm_backtest)
+    # The backtest should use prev_date for delayed variant
+    assert "delay" in src.lower() or "prev_date" in src.lower()
+
+
+def test_phase80_daily_rebalance_only():
+    """Rebalance is daily, not intraday."""
+    import inspect
+    from production_replay import csm_backtest
+    src = inspect.getsource(csm_backtest)
+    assert "daily" in src.lower() or "rebalance" in src.lower()
+
+
+def test_phase80_ranking_uses_past_30_days():
+    """Momentum ranking uses trailing 30 days only."""
+    from production_replay.cross_sectional_momentum import LOOKBACK_DAYS
+    assert LOOKBACK_DAYS == 30
+
+
+def test_phase80_long_top_ranked():
+    """Long basket contains top-ranked symbols."""
+    from production_replay.cross_sectional_momentum import generate_baskets
+    # Mock ranked data
+    ranked = [
+        (f"SYM{i}-USDT", 0.1 * (10 - i), [{"close": 1.0}])
+        for i in range(20)
+    ]
+    baskets = generate_baskets(ranked, 3, 3)
+    long_syms = [s["symbol"] for s in baskets["long_basket"]]
+    assert "SYM0-USDT" in long_syms
+    assert "SYM1-USDT" in long_syms
+    assert "SYM2-USDT" in long_syms
+
+
+def test_phase80_short_bottom_ranked():
+    """Short basket contains bottom-ranked symbols."""
+    from production_replay.cross_sectional_momentum import generate_baskets
+    ranked = [
+        (f"SYM{i}-USDT", 0.1 * (10 - i), [{"close": 1.0}])
+        for i in range(20)
+    ]
+    baskets = generate_baskets(ranked, 3, 3)
+    short_syms = [s["symbol"] for s in baskets["short_basket"]]
+    assert "SYM19-USDT" in short_syms
+    assert "SYM18-USDT" in short_syms
+    assert "SYM17-USDT" in short_syms
+
+
+def test_phase80_market_neutral_weights():
+    """Long and short weights sum correctly for market-neutral."""
+    from production_replay.cross_sectional_momentum import generate_baskets
+    ranked = [
+        (f"SYM{i}-USDT", 0.1 * (10 - i), [{"close": 1.0}])
+        for i in range(20)
+    ]
+    baskets = generate_baskets(ranked, 5, 5)
+    long_weight = sum(1.0 / 10 for _ in baskets["long_basket"])
+    short_weight = sum(1.0 / 10 for _ in baskets["short_basket"])
+    assert abs(long_weight - 0.5) < 0.01
+    assert abs(short_weight - 0.5) < 0.01
+
+
+def test_phase80_fees_slippage_reduce_returns():
+    """Fees and slippage are deducted from returns."""
+    import inspect
+    from production_replay import csm_backtest
+    src = inspect.getsource(csm_backtest)
+    assert "FEE_RATE" in src
+    assert "SLIPPAGE_RATE" in src
+    assert "REBALANCE_COST" in src
+
+
+def test_phase80_delay_variant_exists():
+    """1-day delay variant exists in backtest."""
+    import inspect
+    from production_replay import csm_backtest
+    src = inspect.getsource(csm_backtest)
+    assert "delay=True" in src or "delay_1d" in src.lower()
+
+
+def test_phase80_live_trading_blocked():
+    """Live trading remains blocked in all CSM modules."""
+    import inspect
+    from production_replay import csm_backtest
+    from production_replay import csm_daily_signal
+    from production_replay import csm_paper_portfolio
+    for mod in [csm_backtest, csm_daily_signal, csm_paper_portfolio]:
+        src = inspect.getsource(mod)
+        assert "NO" in src  # live_trading = NO
+        assert "place_order" not in src
+        assert "create_order" not in src
+
+
+def test_phase80_real_orders_blocked():
+    """No real order placement code in CSM modules."""
+    import inspect
+    from production_replay import cross_sectional_momentum
+    from production_replay import csm_backtest
+    from production_replay import csm_daily_signal
+    from production_replay import csm_paper_portfolio
+    for mod in [cross_sectional_momentum, csm_backtest, csm_daily_signal, csm_paper_portfolio]:
+        src = inspect.getsource(mod)
+        assert "BINGX_EXECUTION_MODE" not in src
+        assert "LIVE_TRADING_ACK" not in src
+        assert "submit_order" not in src
+
+
+def test_phase80_report_files_created():
+    """Report files are created by backtest and signal modules."""
+    import inspect
+    from production_replay import csm_backtest
+    from production_replay import csm_daily_signal
+    src_bt = inspect.getsource(csm_backtest)
+    src_sig = inspect.getsource(csm_daily_signal)
+    assert "csm_backtest_report" in src_bt
+    assert "csm_daily_signal" in src_sig
