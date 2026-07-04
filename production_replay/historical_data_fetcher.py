@@ -95,13 +95,13 @@ def fetch_ohlcv(
     if exchange is None:
         return []
 
-    since = exchange.parse8601(
+    since = int(
         (datetime.now(timezone.utc).timestamp() - lookback_days * 86400) * 1000
     )
     all_candles = []
     try:
         while True:
-            candles = exchange.fetch_ohclv(symbol, timeframe, since=since, limit=MAX_CANDLES_PER_REQUEST)
+            candles = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=MAX_CANDLES_PER_REQUEST)
             if not candles:
                 break
             all_candles.extend(candles)
@@ -134,7 +134,7 @@ def fetch_multiple_symbols(
 ) -> dict[str, list]:
     result = {}
     for sym in symbols:
-        candles = fetch_ohclv(sym, timeframe, lookback_days)
+        candles = fetch_ohlcv(sym, timeframe, lookback_days)
         if candles:
             result[sym] = candles
     return result

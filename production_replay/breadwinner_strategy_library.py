@@ -253,12 +253,17 @@ def simulate_trade(
     return {"r_result": round(r, 4), "outcome": "EXPIRED", "exit_idx": last_idx, "exit_price": close, "holding": last_idx - entry_idx}
 
 
+def _net_r(t: dict) -> float:
+    """R after fees; falls back to gross r_result for trades without fee data."""
+    return t.get("r_after_fees", t.get("r_result", 0))
+
+
 def _max_dd(trades: list[dict]) -> float:
     peak = 0
     dd = 0
     equity = 0
     for t in trades:
-        equity += t.get("r_result", 0)
+        equity += _net_r(t)
         peak = max(peak, equity)
         dd = max(dd, peak - equity)
     return round(dd, 2)
@@ -268,7 +273,7 @@ def _max_consec(trades: list[dict]) -> int:
     max_c = 0
     curr = 0
     for t in trades:
-        if t.get("r_result", 0) <= 0:
+        if _net_r(t) <= 0:
             curr += 1
             max_c = max(max_c, curr)
         else:
@@ -277,15 +282,17 @@ def _max_consec(trades: list[dict]) -> int:
 
 
 def _compute_stats(trades: list[dict]) -> dict:
+    """All stats are net of fees so promotion gates reflect tradable results."""
     if not trades:
         return {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "avg_r": 0.0,
                 "total_r": 0.0, "max_dd": 0.0, "max_consec": 0, "profit_factor": 0.0,
                 "symbols": set(), "timeframes": set()}
-    r_vals = [t["r_result"] for t in trades]
-    wins = [t for t in trades if t["r_result"] > 0]
-    losses = [t for t in trades if t["r_result"] <= 0]
-    gw = sum(t["r_result"] for t in wins)
-    gl = abs(sum(t["r_result"] for t in losses))
+    trades = sorted(trades, key=lambda t: t.get("entry_time", 0))
+    r_vals = [_net_r(t) for t in trades]
+    wins = [r for r in r_vals if r > 0]
+    losses = [r for r in r_vals if r <= 0]
+    gw = sum(wins)
+    gl = abs(sum(losses))
     pf = gw / gl if gl > 0 else float("inf")
     return {
         "trades": len(trades), "wins": len(wins), "losses": len(losses),

@@ -281,12 +281,17 @@ def _check_leakage(group_label: str) -> list[str]:
     return violations
 
 
+def _net_r(t: dict) -> float:
+    """R after fees; falls back to gross r_result for trades without fee data."""
+    return t.get("r_after_fees", t.get("r_result", 0))
+
+
 def _max_dd(trades: list[dict]) -> float:
     peak = 0
     dd = 0
     equity = 0
     for t in trades:
-        equity += t.get("r_result", 0)
+        equity += _net_r(t)
         peak = max(peak, equity)
         dd = max(dd, peak - equity)
     return round(dd, 2)
@@ -296,7 +301,7 @@ def _max_consec(trades: list[dict]) -> int:
     max_c = 0
     curr = 0
     for t in trades:
-        if t.get("r_result", 0) <= 0:
+        if _net_r(t) <= 0:
             curr += 1
             max_c = max(max_c, curr)
         else:
@@ -305,15 +310,17 @@ def _max_consec(trades: list[dict]) -> int:
 
 
 def _compute_stats(trades: list[dict]) -> dict:
+    """All stats are net of fees so promotion gates reflect tradable results."""
     if not trades:
         return {"trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "avg_r": 0.0,
                 "total_r": 0.0, "max_dd": 0.0, "max_consec": 0, "profit_factor": 0.0,
                 "symbols": set(), "timeframes": set()}
-    r_vals = [t["r_result"] for t in trades]
-    wins = [t for t in trades if t["r_result"] > 0]
-    losses = [t for t in trades if t["r_result"] <= 0]
-    gw = sum(t["r_result"] for t in wins)
-    gl = abs(sum(t["r_result"] for t in losses))
+    trades = sorted(trades, key=lambda t: t.get("entry_time", 0))
+    r_vals = [_net_r(t) for t in trades]
+    wins = [r for r in r_vals if r > 0]
+    losses = [r for r in r_vals if r <= 0]
+    gw = sum(wins)
+    gl = abs(sum(losses))
     pf = gw / gl if gl > 0 else float("inf")
     return {
         "trades": len(trades), "wins": len(wins), "losses": len(losses),
@@ -336,7 +343,10 @@ def _evaluate_variant(family: str, detector, symbols: list[str], timeframe: str,
         candles = _load_candles(sym, timeframe)
         if len(candles) < 60:
             continue
+        open_until = -1  # no overlapping trades on the same symbol
         for i in range(30, len(candles)):
+            if i <= open_until:
+                continue
             sig = detector(candles, i, lookback, stop_buffer)
             if sig is None:
                 continue
@@ -351,6 +361,7 @@ def _evaluate_variant(family: str, detector, symbols: list[str], timeframe: str,
             seen_keys.add(sig_key)
 
             result = _simulate_trade(candles, i, direction, entry, stop, target)
+            open_until = result["exit_idx"]
             fee = (entry + result["exit_price"]) * FEE_RATE
             r_after_fees = result["r_result"] - fee / abs(entry - stop) if abs(entry - stop) > 0 else result["r_result"]
 
@@ -358,6 +369,7 @@ def _evaluate_variant(family: str, detector, symbols: list[str], timeframe: str,
                 "symbol": sym, "timeframe": timeframe, "direction": direction,
                 "pattern": sig["pattern"], "entry_price": entry, "stop": stop,
                 "target": target, "exit_price": result["exit_price"],
+                "entry_time": int(candles[i].get("timestamp", i)),
                 "r_result": round(result["r_result"], 4),
                 "r_after_fees": round(r_after_fees, 4),
                 "is_win": result["r_result"] > 0,
@@ -367,7 +379,8 @@ def _evaluate_variant(family: str, detector, symbols: list[str], timeframe: str,
     if not all_trades:
         return None
 
-    sorted_t = sorted(all_trades, key=lambda t: t.get("symbol", ""))
+    # Walk-forward split: 70/30 by entry time, so OOS is strictly later in time
+    sorted_t = sorted(all_trades, key=lambda t: t.get("entry_time", 0))
     split = int(len(sorted_t) * SPLIT_RATIO)
     is_t = sorted_t[:split]
     oos_t = sorted_t[split:]

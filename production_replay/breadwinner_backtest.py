@@ -53,7 +53,10 @@ def _run_backtest_variant(
         if len(candles) < 60:
             continue
 
+        open_until = -1  # no overlapping trades on the same symbol
         for i in range(sweep_lookback + 5, len(candles)):
+            if i <= open_until:
+                continue
             sig = detect_liquidity_sweep_v2(
                 candles, i, sweep_lookback, volume_lookback, max_holding, rr_target
             )
@@ -71,6 +74,7 @@ def _run_backtest_variant(
             seen_keys.add(sig_key)
 
             result = simulate_trade(candles, i, direction, entry, stop, target, max_holding)
+            open_until = result["exit_idx"]
             fee = (entry + result["exit_price"]) * FEE_RATE
             r_after_fees = result["r_result"] - fee / abs(entry - stop) if abs(entry - stop) > 0 else result["r_result"]
 
@@ -78,6 +82,7 @@ def _run_backtest_variant(
                 "symbol": sym, "timeframe": timeframe, "direction": direction,
                 "pattern": sig["pattern"], "entry_price": entry, "stop": stop,
                 "target": target, "exit_price": result["exit_price"],
+                "entry_time": int(candles[i].get("timestamp", i)),
                 "r_result": result["r_result"],
                 "r_after_fees": round(r_after_fees, 4),
                 "is_win": result["r_result"] > 0,
@@ -93,8 +98,8 @@ def _run_backtest_variant(
     if not all_trades:
         return None
 
-    # Walk-forward split: 70/30 by time
-    sorted_t = sorted(all_trades, key=lambda t: t.get("entry_price", 0))
+    # Walk-forward split: 70/30 by entry time, so OOS is strictly later in time
+    sorted_t = sorted(all_trades, key=lambda t: t.get("entry_time", 0))
     split = int(len(sorted_t) * SPLIT_RATIO)
     is_t = sorted_t[:split]
     oos_t = sorted_t[split:]
