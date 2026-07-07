@@ -41,7 +41,8 @@ def _get_symbols() -> list[str]:
 
 def scan_bb_signals(symbols: list[str], timeframe: str = "1h",
                     period: int = 15, std_mult: float = 3.5,
-                    rr_target: float = 10.0) -> list[dict]:
+                    rr_target: float = 10.0,
+                    min_entry_volume_ratio: float = 0.0) -> list[dict]:
     """Scan all symbols for BB bounce setups on the latest complete candle."""
     signals = []
     for sym in symbols:
@@ -52,7 +53,8 @@ def scan_bb_signals(symbols: list[str], timeframe: str = "1h",
         for i in range(len(candles) - 3, len(candles) - 1):
             if i >= len(candles) - 1:
                 continue
-            sig = detect_bb_bounce(candles, i, period, std_mult, rr_target)
+            sig = detect_bb_bounce(candles, i, period, std_mult, rr_target,
+                                   min_entry_volume_ratio=min_entry_volume_ratio)
             if sig:
                 sig["symbol"] = sym
                 sig["timeframe"] = timeframe
@@ -76,18 +78,19 @@ def main():
     symbols = _get_symbols()
     print(f"Symbols: {len(symbols)}")
 
-    bb_signals = scan_bb_signals(symbols)
+    bb_signals = scan_bb_signals(symbols, min_entry_volume_ratio=1.5)
     print(f"\nBB Bounce signals: {len(bb_signals)}")
     for s in bb_signals[:10]:
         print(f"  {s['symbol']:20s} {s['direction']:5s} entry={s['entry']:.4f} "
-              f"stop={s['stop']:.4f} target={s['target']:.4f}")
+              f"stop={s['stop']:.4f} target={s['target']:.4f} "
+              f"entry_vol={s.get('entry_volume_ratio',0):.2f}x")
 
     report = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "symbols_scanned": len(symbols),
         "bb_bounce": {
             "signals": len(bb_signals),
-            "config": "p=15 s=3.5 rr=10.0 stop=0.5% no_trend no_vol no_max_hold",
+            "config": "p=15 s=3.5 rr=10.0 stop=0.5% entry_vol>=1.5x no_max_hold",
             "top_signals": bb_signals[:5],
         },
         "total_signals": len(bb_signals),

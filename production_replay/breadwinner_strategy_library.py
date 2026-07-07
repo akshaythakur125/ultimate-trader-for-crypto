@@ -238,6 +238,7 @@ def detect_bb_bounce(
     std_mult: float = 3.5,
     rr_target: float = 10.0,
     max_holding: int = 0,
+    min_entry_volume_ratio: float = 0.0,
 ) -> dict | None:
     """Detect Bollinger Band bounce setup.
 
@@ -245,6 +246,8 @@ def detect_bb_bounce(
     SHORT: close above upper band (mean reversion)
     Stop: 0.5% of entry, Target: entry +/- stop*rr_target
     No max holding — trades run until stop or target.
+    When min_entry_volume_ratio > 0, the entry candle's volume must
+    exceed recent 20-candle average by that ratio (volume breakout filter).
     """
     if idx < period + 5:
         return None
@@ -262,40 +265,36 @@ def detect_bb_bounce(
     closes = [float(cc.get("close", 0)) for cc in candles[:idx + 1]]
     lower, mid, upper = _bollinger_bands(closes, period, std_mult)
 
-    if cl <= lower:
-        if idx + 1 >= len(candles):
-            return None
-        entry = float(candles[idx + 1].get("open", 0))
-        if entry <= 0:
-            return None
-        risk_pct = 0.005
-        stop_px = entry * (1 - risk_pct)
-        target_px = entry * (1 + risk_pct * rr_target)
-        return {
-            "direction": "LONG",
-            "entry": entry,
-            "stop": stop_px,
-            "target": target_px,
-            "pattern": "bb_bounce_v1",
-            "bb_lower": lower,
-            "bb_mid": mid,
-            "bb_upper": upper,
-            "lookback": period,
-            "std_mult": std_mult,
-            "max_holding": max_holding,
-        }
+    signal_vol = float(candles[idx].get("volume", 0))
+    signal_avg_vol = _avg_volume(candles, idx, 20)
 
-    if cl >= upper:
+    for direction, cond in [("LONG", cl <= lower), ("SHORT", cl >= upper)]:
+        if not cond:
+            continue
         if idx + 1 >= len(candles):
             return None
         entry = float(candles[idx + 1].get("open", 0))
         if entry <= 0:
             return None
+
+        # Entry candle volume breakout filter
+        entry_vol = float(candles[idx + 1].get("volume", 0))
+        entry_avg_vol = _avg_volume(candles, idx + 1, 20)
+        entry_vol_ratio = entry_vol / entry_avg_vol if entry_avg_vol > 0 else 0
+        if min_entry_volume_ratio > 0:
+            if entry_vol_ratio < min_entry_volume_ratio:
+                return None
+
         risk_pct = 0.005
-        stop_px = entry * (1 + risk_pct)
-        target_px = entry * (1 - risk_pct * rr_target)
+        if direction == "LONG":
+            stop_px = entry * (1 - risk_pct)
+            target_px = entry * (1 + risk_pct * rr_target)
+        else:
+            stop_px = entry * (1 + risk_pct)
+            target_px = entry * (1 - risk_pct * rr_target)
+
         return {
-            "direction": "SHORT",
+            "direction": direction,
             "entry": entry,
             "stop": stop_px,
             "target": target_px,
@@ -306,6 +305,8 @@ def detect_bb_bounce(
             "lookback": period,
             "std_mult": std_mult,
             "max_holding": max_holding,
+            "signal_volume_ratio": signal_vol / signal_avg_vol if signal_avg_vol > 0 else 0,
+            "entry_volume_ratio": entry_vol_ratio,
         }
 
     return None
