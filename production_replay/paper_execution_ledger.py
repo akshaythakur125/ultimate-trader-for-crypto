@@ -29,13 +29,13 @@ PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 MAX_PAPER_TRADES = 3  # Phase 75: reduced from 5
 
 # Paper portfolio risk/capital config (Phase 75: stricter)
-PAPER_CAPITAL_USDT = 400
-PAPER_RISK_PCT_PER_TRADE = 0.005  # 0.5% of capital
-PAPER_MAX_RISK_PER_TRADE_USDT = 2  # 0.5% of 400 USDT
+PAPER_CAPITAL_USDT = 500
+PAPER_RISK_PCT_PER_TRADE = 0.01  # 1% of capital
+PAPER_MAX_RISK_PER_TRADE_USDT = 5  # 1% of 500 USDT
 PAPER_MAX_LEVERAGE = 2
-PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 200  # 50% of capital (2% portfolio risk)
-PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 100  # 25% of capital
-PAPER_MAX_ACTIVE_TRADES = 3  # Phase 75: reduced from 5
+PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 250  # 50% of capital
+PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 125  # 25% of capital
+PAPER_MAX_ACTIVE_TRADES = 3
 PAPER_MAX_NEW_TRADES_PER_RUN = 1  # Phase 75: max 1 new trade per run
 
 # Rejection reason codes
