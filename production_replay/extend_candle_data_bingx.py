@@ -33,7 +33,7 @@ def main():
         try:
             with open(path) as f:
                 data = json.load(f)
-            if isinstance(data, list) and len(data) < 2000:
+            if isinstance(data, list) and len(data) < 4400:  # ponytail: 6mo ~4384 1h candles
                 ccxt_sym = cache_sym.replace("_", "/")
                 if ccxt_sym in ex.markets:
                     need_extend.append((cache_sym, ccxt_sym))
@@ -49,7 +49,7 @@ def main():
 
     for idx, (cache_sym, ccxt_sym) in enumerate(need_extend, 1):
         try:
-            since_ms = int((datetime.now(timezone.utc).timestamp() - 92 * 86400) * 1000)
+            since_ms = int((datetime.now(timezone.utc).timestamp() - 183 * 86400) * 1000)
             all_candles = []
             while True:
                 candles = ex.fetch_ohlcv(ccxt_sym, "1h", since=since_ms, limit=1000)

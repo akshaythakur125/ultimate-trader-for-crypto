@@ -23,7 +23,7 @@ PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 
 # Paper portfolio risk/capital config — MUST match paper_execution_ledger exactly
 PAPER_CAPITAL_USDT = 20
-PAPER_MAX_RISK_PER_TRADE_USDT = 0.20       # 1% of capital
+PAPER_MAX_RISK_PER_TRADE_USDT = 1.00       # 1% of capital
 PAPER_MAX_LEVERAGE = 2
 PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 10  # 50% of capital
 PAPER_MAX_ACTIVE_TRADES = 3

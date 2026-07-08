@@ -47,7 +47,7 @@ def backtest_bb(min_volume_ratio: float) -> dict:
         seen = set()
         for idx in range(PERIOD + 10, len(candles) - 2):
             sig = detect_bb_bounce(candles, idx, period=PERIOD, std_mult=STD_MULT,
-                                   rr_target=RR_TARGET, max_holding=0, min_volume_ratio=min_volume_ratio)
+                                   rr_target=RR_TARGET, max_holding=0, min_entry_volume_ratio=min_volume_ratio)
             if not sig: continue
             entry_idx = idx + 1
             if entry_idx >= len(candles): continue
@@ -105,7 +105,7 @@ def backtest_bb_entry_volume(volume_threshold: float) -> dict:
         for idx in range(PERIOD + 10, len(candles) - 2):
             # Always detect with NO volume filter first
             sig = detect_bb_bounce(candles, idx, period=PERIOD, std_mult=STD_MULT,
-                                   rr_target=RR_TARGET, max_holding=0, min_volume_ratio=0.0)
+                                   rr_target=RR_TARGET, max_holding=0, min_entry_volume_ratio=0.0)
             if not sig: continue
             entry_idx = idx + 1
             if entry_idx >= len(candles): continue
@@ -159,7 +159,7 @@ def backtest_bb_either_volume(volume_threshold: float) -> dict:
         seen = set()
         for idx in range(PERIOD + 10, len(candles) - 2):
             sig = detect_bb_bounce(candles, idx, period=PERIOD, std_mult=STD_MULT,
-                                   rr_target=RR_TARGET, max_holding=0, min_volume_ratio=0.0)
+                                   rr_target=RR_TARGET, max_holding=0, min_entry_volume_ratio=0.0)
             if not sig: continue
             entry_idx = idx + 1
             if entry_idx >= len(candles): continue

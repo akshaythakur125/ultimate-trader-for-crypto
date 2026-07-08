@@ -30,8 +30,8 @@ MAX_PAPER_TRADES = 3  # Phase 75: reduced from 5
 
 # Paper portfolio risk/capital config (Phase 75: stricter)
 PAPER_CAPITAL_USDT = 20
-PAPER_RISK_PCT_PER_TRADE = 0.01  # 1% of capital
-PAPER_MAX_RISK_PER_TRADE_USDT = 0.20  # 1% of 500 USDT
+PAPER_RISK_PCT_PER_TRADE = 0.05  # 1% of capital
+PAPER_MAX_RISK_PER_TRADE_USDT = 1.00  # 1% of 500 USDT
 PAPER_MAX_LEVERAGE = 2
 PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 10  # 50% of capital
 PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 5  # 25% of capital
