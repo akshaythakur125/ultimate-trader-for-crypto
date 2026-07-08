@@ -370,7 +370,7 @@ print("  PASSED (4)")
 def test_sizing_normal():
     sizing = _paper_exchange_sizing("BTC/USDT:USDT", 100, 99)
     assert sizing is not None and sizing["ok"], f"Sizing failed: {sizing}"
-    expected_qty = min(5 / 1, 125 / 100)
+    expected_qty = min(PAPER_MAX_RISK_PER_TRADE_USDT / 1, PAPER_MAX_NOTIONAL_PER_TRADE_USDT / 100)
     assert abs(sizing["quantity"] - expected_qty) < 0.001, f"Qty mismatch: {sizing['quantity']} vs {expected_qty}"
     assert sizing["notional"] <= PAPER_MAX_NOTIONAL_PER_TRADE_USDT + 0.01
     assert sizing["risk"] <= PAPER_MAX_RISK_PER_TRADE_USDT + 0.01
@@ -378,14 +378,16 @@ def test_sizing_normal():
 def test_sizing_notional_cap():
     sizing = _paper_exchange_sizing("BTC/USDT:USDT", 1000, 990)
     assert sizing is not None and sizing["ok"]
-    assert abs(sizing["quantity"] - 0.125) < 0.001
-    assert abs(sizing["notional"] - 125.0) < 0.01
+    expected_qty = min(PAPER_MAX_RISK_PER_TRADE_USDT / 10, PAPER_MAX_NOTIONAL_PER_TRADE_USDT / 1000)
+    assert abs(sizing["quantity"] - expected_qty) < 0.001
+    assert abs(sizing["notional"] - sizing["quantity"] * 1000) < 0.01
 
 def test_sizing_risk_cap():
     sizing = _paper_exchange_sizing("BTC/USDT:USDT", 10, 9.9)
     assert sizing is not None and sizing["ok"]
-    assert abs(sizing["quantity"] - 12.5) < 0.001
-    assert abs(sizing["risk"] - 1.25) < 0.01
+    expected_qty = min(PAPER_MAX_RISK_PER_TRADE_USDT / 0.1, PAPER_MAX_NOTIONAL_PER_TRADE_USDT / 10)
+    assert abs(sizing["quantity"] - expected_qty) < 0.001
+    assert abs(sizing["risk"] - sizing["quantity"] * 0.1) < 0.01
 
 def test_sizing_no_stop():
     sizing = _paper_exchange_sizing("BTC/USDT:USDT", 100, 100)
