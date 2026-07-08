@@ -214,6 +214,7 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
     apisec = os.environ.get("BINGX_API_SECRET")
     if apikey and apisec:
         ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+        ex_exec.load_markets()
         open_orders = load_open_orders()
         for s in signals:
             try:
@@ -226,10 +227,21 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     continue
                 sym = s["symbol"].replace("_", "/") + ":USDT"
 
+                # Skip if symbol doesn't exist on BingX
+                if sym not in ex_exec.markets:
+                    print(f"    >>> SKIPPED: {sym} — not available on BingX")
+                    continue
+
                 # Skip if already have open order for this symbol
                 if any(o["symbol"] == sym for o in open_orders):
                     print(f"    >>> SKIPPED: {sym} — already has open orders")
                     continue
+
+                # Set leverage to 2x before placing orders
+                try:
+                    ex_exec.set_leverage(2, sym)
+                except Exception as e:
+                    print(f"    >>> LEVERAGE WARNING: {sym} {e}")
 
                 # 1) Market entry
                 entry_order = ex_exec.create_market_order(sym, side, qty)
