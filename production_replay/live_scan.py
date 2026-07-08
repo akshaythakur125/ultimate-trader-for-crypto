@@ -134,14 +134,34 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
         for s in signals:
             try:
                 side = "buy" if s["direction"] == "LONG" else "sell"
+                close_side = "sell" if s["direction"] == "LONG" else "buy"
                 risk_usdt = 1.00  # 5% of 20 capital
                 diff = abs(s["entry"] - s["stop"])
                 qty = round(risk_usdt / diff, 2) if diff > 0 else 0
                 if qty <= 0:
                     continue
                 sym = s["symbol"].replace("_", "/") + ":USDT"
+
+                # 1) Market entry
                 ex.create_market_order(sym, side, qty)
-                print(f"    >>> ORDER PLACED: {sym} {side} {qty}")
+                print(f"    >>> ENTRY: {sym} {side} {qty}")
+
+                # 2) Stop-loss (trigger order)
+                try:
+                    sl_price = float(s["stop"])
+                    ex.create_order(sym, "stop", close_side, qty, sl_price, params={"triggerPrice": sl_price})
+                    print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {sl_price}")
+                except Exception as e:
+                    print(f"    >>> STOP-LOSS FAILED: {s['symbol']} {e}")
+
+                # 3) Take-profit (limit order)
+                try:
+                    tp_price = float(s["target"])
+                    ex.create_order(sym, "limit", close_side, qty, tp_price)
+                    print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {tp_price}")
+                except Exception as e:
+                    print(f"    >>> TAKE-PROFIT FAILED: {s['symbol']} {e}")
+
             except Exception as e:
                 print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
     else:
