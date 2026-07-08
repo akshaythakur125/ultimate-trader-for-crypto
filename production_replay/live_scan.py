@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from production_replay.breadwinner_strategy_library import detect_bb_bounce
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "candles_cache")
+OPEN_ORDERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "open_orders.json")
 
 
 def load_cached(cache_sym):
@@ -23,6 +24,20 @@ def save_cache(cache_sym, candles):
         json.dump(candles, f)
 
 
+def load_open_orders():
+    try:
+        with open(OPEN_ORDERS_PATH) as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def save_open_orders(orders):
+    os.makedirs(os.path.dirname(OPEN_ORDERS_PATH), exist_ok=True)
+    with open(OPEN_ORDERS_PATH, "w") as f:
+        json.dump(orders, f, indent=2)
+
+
 def ccxt_to_dict(candle):
     return {
         "timestamp": str(candle[0]),
@@ -34,10 +49,79 @@ def ccxt_to_dict(candle):
     }
 
 
+def cancel_orphaned_orders(ex_client):
+    """Check open orders and cancel the other leg when one fills."""
+    open_orders = load_open_orders()
+    if not open_orders:
+        return
+
+    updated = []
+    for trade in open_orders:
+        sym = trade["symbol"]
+        sl_order_id = trade.get("sl_order_id")
+        tp_order_id = trade.get("tp_order_id")
+        sl_cancelled = False
+        tp_cancelled = False
+
+        # Check stop-loss order status
+        if sl_order_id:
+            try:
+                sl_status = ex_client.fetch_order(sl_order_id, sym)
+                if sl_status["status"] in ("closed", "filled"):
+                    print(f"    >>> STOP HIT: {sym} — cancelling take-profit")
+                    if tp_order_id:
+                        try:
+                            ex_client.cancel_order(tp_order_id, sym)
+                            print(f"    >>> TP CANCELLED: {sym} {tp_order_id}")
+                        except Exception as e:
+                            print(f"    >>> TP CANCEL FAILED: {sym} {e}")
+                    sl_cancelled = True
+                elif sl_status["status"] == "canceled":
+                    sl_cancelled = True
+            except Exception:
+                pass
+
+        # Check take-profit order status
+        if tp_order_id and not sl_cancelled:
+            try:
+                tp_status = ex_client.fetch_order(tp_order_id, sym)
+                if tp_status["status"] in ("closed", "filled"):
+                    print(f"    >>> TARGET HIT: {sym} — cancelling stop-loss")
+                    if sl_order_id:
+                        try:
+                            ex_client.cancel_order(sl_order_id, sym)
+                            print(f"    >>> SL CANCELLED: {sym} {sl_order_id}")
+                        except Exception as e:
+                            print(f"    >>> SL CANCEL FAILED: {sym} {e}")
+                    tp_cancelled = True
+                elif tp_status["status"] == "canceled":
+                    tp_cancelled = True
+            except Exception:
+                pass
+
+        # Keep trade in list if both legs still active
+        if not sl_cancelled and not tp_cancelled:
+            updated.append(trade)
+        else:
+            print(f"    >>> TRADE CLOSED: {sym}")
+
+    save_open_orders(updated)
+    if len(open_orders) != len(updated):
+        print(f"  Orders cleaned: {len(open_orders)} -> {len(updated)}")
+
+
 print("Connecting to BingX...")
 ex = ccxt.bingx()
 ex.load_markets()
 print(f"Markets loaded: {len(ex.markets)}")
+
+# Auto-cancel orphaned orders from previous runs
+if os.environ.get("BINGX_EXECUTION_MODE") == "live":
+    apikey = os.environ.get("BINGX_API_KEY")
+    apisec = os.environ.get("BINGX_API_SECRET")
+    if apikey and apisec:
+        ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+        cancel_orphaned_orders(ex_client)
 
 symbols_in_cache = sorted([f.replace("_1h.json", "") for f in os.listdir(CACHE_DIR) if f.endswith("_1h.json")])
 if not symbols_in_cache:
@@ -126,11 +210,11 @@ else:
 
 # ponytail: real execution via ccxt when BINGX_EXECUTION_MODE=live
 if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
-    import os, ccxt as _ccxt
     apikey = os.environ.get("BINGX_API_KEY")
     apisec = os.environ.get("BINGX_API_SECRET")
     if apikey and apisec:
-        ex = _ccxt.bingx({"apiKey": apikey, "secret": apisec})
+        ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+        open_orders = load_open_orders()
         for s in signals:
             try:
                 side = "buy" if s["direction"] == "LONG" else "sell"
@@ -142,25 +226,51 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     continue
                 sym = s["symbol"].replace("_", "/") + ":USDT"
 
+                # Skip if already have open order for this symbol
+                if any(o["symbol"] == sym for o in open_orders):
+                    print(f"    >>> SKIPPED: {sym} — already has open orders")
+                    continue
+
                 # 1) Market entry
-                ex.create_market_order(sym, side, qty)
-                print(f"    >>> ENTRY: {sym} {side} {qty}")
+                entry_order = ex_exec.create_market_order(sym, side, qty)
+                entry_order_id = entry_order.get("id")
+                print(f"    >>> ENTRY: {sym} {side} {qty} (order={entry_order_id})")
+
+                sl_order_id = None
+                tp_order_id = None
 
                 # 2) Stop-loss (trigger order)
                 try:
                     sl_price = float(s["stop"])
-                    ex.create_order(sym, "stop", close_side, qty, sl_price, params={"triggerPrice": sl_price})
-                    print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {sl_price}")
+                    sl_order = ex_exec.create_order(sym, "stop", close_side, qty, sl_price, params={"triggerPrice": sl_price})
+                    sl_order_id = sl_order.get("id")
+                    print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {sl_price} (order={sl_order_id})")
                 except Exception as e:
                     print(f"    >>> STOP-LOSS FAILED: {s['symbol']} {e}")
 
                 # 3) Take-profit (limit order)
                 try:
                     tp_price = float(s["target"])
-                    ex.create_order(sym, "limit", close_side, qty, tp_price)
-                    print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {tp_price}")
+                    tp_order = ex_exec.create_order(sym, "limit", close_side, qty, tp_price)
+                    tp_order_id = tp_order.get("id")
+                    print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {tp_price} (order={tp_order_id})")
                 except Exception as e:
                     print(f"    >>> TAKE-PROFIT FAILED: {s['symbol']} {e}")
+
+                # Save order IDs for auto-cancellation
+                open_orders.append({
+                    "symbol": sym,
+                    "direction": s["direction"],
+                    "entry": float(s["entry"]),
+                    "stop": float(s["stop"]),
+                    "target": float(s["target"]),
+                    "qty": qty,
+                    "entry_order_id": entry_order_id,
+                    "sl_order_id": sl_order_id,
+                    "tp_order_id": tp_order_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                save_open_orders(open_orders)
 
             except Exception as e:
                 print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
