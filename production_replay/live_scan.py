@@ -2,7 +2,7 @@
 import json, os, sys, time, ccxt
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from production_replay.breadwinner_strategy_library import detect_bb_bounce
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_state", "candles_cache")
