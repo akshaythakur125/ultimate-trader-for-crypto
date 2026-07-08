@@ -124,4 +124,27 @@ else:
         if 'entry_volume_ratio' in s:
             print(f"    Entry vol: {s['entry_volume_ratio']:.2f}x avg")
 
-print(f"\n  Paper only. No real orders.")
+# ponytail: real execution via ccxt when BINGX_EXECUTION_MODE=live
+if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
+    import os, ccxt as _ccxt
+    apikey = os.environ.get("BINGX_API_KEY")
+    apisec = os.environ.get("BINGX_API_SECRET")
+    if apikey and apisec:
+        ex = _ccxt.bingx({"apiKey": apikey, "secret": apisec})
+        for s in signals:
+            try:
+                side = "buy" if s["direction"] == "LONG" else "sell"
+                risk_usdt = 1.00  # 5% of 20 capital
+                diff = abs(s["entry"] - s["stop"])
+                qty = round(risk_usdt / diff, 2) if diff > 0 else 0
+                if qty <= 0:
+                    continue
+                sym = s["symbol"].replace("_", "/") + ":USDT"
+                ex.create_market_order(sym, side, qty)
+                print(f"    >>> ORDER PLACED: {sym} {side} {qty}")
+            except Exception as e:
+                print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
+    else:
+        print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET. Skipping orders.")
+else:
+    print(f"\n  Paper only. Set BINGX_EXECUTION_MODE=live for real orders.")
