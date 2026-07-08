@@ -22,12 +22,12 @@ PORTFOLIO_PATH = os.path.join(STATE_DIR, "paper_portfolio.json")
 PAPER_LEDGER = os.path.join(STATE_DIR, "paper_trades.jsonl")
 
 # Paper portfolio risk/capital config — MUST match paper_execution_ledger exactly
-PAPER_CAPITAL_USDT = 500
-PAPER_MAX_RISK_PER_TRADE_USDT = 5       # 1% of capital
+PAPER_CAPITAL_USDT = 20
+PAPER_MAX_RISK_PER_TRADE_USDT = 0.20       # 1% of capital
 PAPER_MAX_LEVERAGE = 2
-PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 250  # 50% of capital
+PAPER_MAX_PORTFOLIO_NOTIONAL_USDT = 10  # 50% of capital
 PAPER_MAX_ACTIVE_TRADES = 3
-PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 125  # 25% of capital
+PAPER_MAX_NOTIONAL_PER_TRADE_USDT = 5  # 25% of capital
 MAX_PAPER_TRADES = PAPER_MAX_ACTIVE_TRADES
 
 # Thesis type to strategy family mapping (mirrored from paper_execution_ledger)
