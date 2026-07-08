@@ -40,6 +40,8 @@ ex.load_markets()
 print(f"Markets loaded: {len(ex.markets)}")
 
 symbols_in_cache = sorted([f.replace("_1h.json", "") for f in os.listdir(CACHE_DIR) if f.endswith("_1h.json")])
+if not symbols_in_cache:
+    symbols_in_cache = [s.replace("/", "_") for s in ex.markets if s.endswith("/USDT")][:100]
 
 to_fetch = []
 for cs in symbols_in_cache:
