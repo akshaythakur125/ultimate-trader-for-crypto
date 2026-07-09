@@ -7,6 +7,7 @@ from production_replay.breadwinner_strategy_library import detect_bb_bounce
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "candles_cache")
 OPEN_ORDERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "open_orders.json")
+TRADE_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "trade_log.jsonl")
 
 
 def load_cached(cache_sym):
@@ -38,6 +39,12 @@ def save_open_orders(orders):
         json.dump(orders, f, indent=2)
 
 
+def log_trade(entry):
+    os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
+    with open(TRADE_LOG_PATH, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def ccxt_to_dict(candle):
     return {
         "timestamp": str(candle[0]),
@@ -60,8 +67,8 @@ def cancel_orphaned_orders(ex_client):
         sym = trade["symbol"]
         sl_order_id = trade.get("sl_order_id")
         tp_order_id = trade.get("tp_order_id")
-        sl_cancelled = False
-        tp_cancelled = False
+        sl_hit = False
+        tp_hit = False
 
         # Check stop-loss order status
         if sl_order_id:
@@ -75,14 +82,14 @@ def cancel_orphaned_orders(ex_client):
                             print(f"    >>> TP CANCELLED: {sym} {tp_order_id}")
                         except Exception as e:
                             print(f"    >>> TP CANCEL FAILED: {sym} {e}")
-                    sl_cancelled = True
+                    sl_hit = True
                 elif sl_status["status"] == "canceled":
-                    sl_cancelled = True
-            except Exception:
-                pass
+                    sl_hit = True
+            except Exception as e:
+                print(f"    >>> SL CHECK FAILED: {sym} {e}")
 
-        # Check take-profit order status
-        if tp_order_id and not sl_cancelled:
+        # Check take-profit order status (only if SL didn't hit)
+        if tp_order_id and not sl_hit:
             try:
                 tp_status = ex_client.fetch_order(tp_order_id, sym)
                 if tp_status["status"] in ("closed", "filled"):
@@ -93,17 +100,20 @@ def cancel_orphaned_orders(ex_client):
                             print(f"    >>> SL CANCELLED: {sym} {sl_order_id}")
                         except Exception as e:
                             print(f"    >>> SL CANCEL FAILED: {sym} {e}")
-                    tp_cancelled = True
+                    tp_hit = True
                 elif tp_status["status"] == "canceled":
-                    tp_cancelled = True
-            except Exception:
-                pass
+                    tp_hit = True
+            except Exception as e:
+                print(f"    >>> TP CHECK FAILED: {sym} {e}")
 
-        # Keep trade in list if both legs still active
-        if not sl_cancelled and not tp_cancelled:
+        # Keep trade only if both legs still active
+        if not sl_hit and not tp_hit:
             updated.append(trade)
         else:
-            print(f"    >>> TRADE CLOSED: {sym}")
+            outcome = "STOP" if sl_hit else "TARGET"
+            log_trade({"event": "closed", "symbol": sym, "outcome": outcome,
+                       "timestamp": datetime.now(timezone.utc).isoformat()})
+            print(f"    >>> TRADE CLOSED: {sym} ({outcome})")
 
     save_open_orders(updated)
     if len(open_orders) != len(updated):
@@ -161,9 +171,9 @@ for idx, (cs, ccxt_sym) in enumerate(to_fetch):
 
         ok += 1
 
-        for i in [len(merged) - 3]:  # ponytail: only last candle trigger = max 1h stale
+        for i in [len(merged) - 3]:
             sig = detect_bb_bounce(merged, i, period=15, std_mult=3.5, rr_target=10.0,
-                                   min_entry_volume_ratio=1.5)  # ponytail: 1.5x volume filter matches official scanner
+                                   min_entry_volume_ratio=1.5)
             if sig:
                 trigger_c = merged[i]
                 trigger_ts = datetime.fromtimestamp(int(trigger_c["timestamp"]) / 1000, tz=timezone.utc)
@@ -220,10 +230,14 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
             try:
                 side = "buy" if s["direction"] == "LONG" else "sell"
                 close_side = "sell" if s["direction"] == "LONG" else "buy"
-                risk_usdt = 1.00  # 5% of 20 capital
+                risk_usdt = 1.00
                 diff = abs(s["entry"] - s["stop"])
-                qty = round(risk_usdt / diff, 2) if diff > 0 else 0
+                if diff <= 0:
+                    print(f"    >>> SKIPPED: {s['symbol']} — zero risk distance")
+                    continue
+                qty = round(risk_usdt / diff, 2)
                 if qty <= 0:
+                    print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
                     continue
                 sym = s["symbol"].replace("_", "/") + ":USDT"
 
@@ -232,7 +246,8 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     print(f"    >>> SKIPPED: {sym} — not available on BingX")
                     continue
 
-                # Skip if already have open order for this symbol
+                # Reload open_orders to check for duplicates (in case multiple signals this run)
+                open_orders = load_open_orders()
                 if any(o["symbol"] == sym for o in open_orders):
                     print(f"    >>> SKIPPED: {sym} — already has open orders")
                     continue
@@ -246,6 +261,10 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                 # 1) Market entry
                 entry_order = ex_exec.create_market_order(sym, side, qty)
                 entry_order_id = entry_order.get("id")
+                log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
+                           "qty": qty, "entry": float(s["entry"]), "stop": float(s["stop"]),
+                           "target": float(s["target"]), "order_id": entry_order_id,
+                           "timestamp": datetime.now(timezone.utc).isoformat()})
                 print(f"    >>> ENTRY: {sym} {side} {qty} (order={entry_order_id})")
 
                 sl_order_id = None
