@@ -254,9 +254,11 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
 
                 # Set leverage to 2x before placing orders
                 try:
-                    ex_exec.set_leverage(2, sym)
+                    ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
                 except Exception as e:
                     print(f"    >>> LEVERAGE WARNING: {sym} {e}")
+                    # If leverage fails, skip this trade to avoid oversized positions
+                    continue
 
                 # 1) Market entry
                 entry_order = ex_exec.create_market_order(sym, side, qty)
