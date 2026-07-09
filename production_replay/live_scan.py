@@ -251,19 +251,25 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                 sl_order_id = None
                 tp_order_id = None
 
-                # 2) Stop-loss (trigger order)
+                # 2) Stop-loss (STOP_MARKET for BingX perpetuals)
                 try:
                     sl_price = float(s["stop"])
-                    sl_order = ex_exec.create_order(sym, "stop", close_side, qty, sl_price, params={"triggerPrice": sl_price})
+                    sl_order = ex_exec.create_order(
+                        sym, "STOP_MARKET", close_side, qty, None,
+                        params={"stopPrice": sl_price, "workingType": "MARK_PRICE"}
+                    )
                     sl_order_id = sl_order.get("id")
                     print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {sl_price} (order={sl_order_id})")
                 except Exception as e:
                     print(f"    >>> STOP-LOSS FAILED: {s['symbol']} {e}")
 
-                # 3) Take-profit (limit order)
+                # 3) Take-profit (TAKE_PROFIT_MARKET for BingX perpetuals)
                 try:
                     tp_price = float(s["target"])
-                    tp_order = ex_exec.create_order(sym, "limit", close_side, qty, tp_price)
+                    tp_order = ex_exec.create_order(
+                        sym, "TAKE_PROFIT_MARKET", close_side, qty, None,
+                        params={"stopPrice": tp_price, "workingType": "MARK_PRICE"}
+                    )
                     tp_order_id = tp_order.get("id")
                     print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {tp_price} (order={tp_order_id})")
                 except Exception as e:
