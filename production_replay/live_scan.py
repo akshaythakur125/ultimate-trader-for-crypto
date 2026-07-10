@@ -100,6 +100,15 @@ def safe_float(val, default=0.0):
 def close_position_market(ex_client, sym, side, qty):
     close_side = "sell" if side == "LONG" else "buy"
     try:
+        positions = ex_client.fetch_positions()
+        has_position = False
+        for p in positions:
+            if p["symbol"] == sym and abs(safe_float(p.get("contracts", 0))) > 0:
+                has_position = True
+                break
+        if not has_position:
+            print(f"    >>> NO POSITION TO CLOSE: {sym}")
+            return True
         order = ex_client.create_market_order(sym, close_side, qty)
         print(f"    >>> EMERGENCY CLOSE: {sym} {close_side} {qty} (order={order.get('id')})")
         return True
@@ -118,7 +127,7 @@ def sync_positions_with_exchange(ex_client, tracked_orders):
         active_positions = {}
         for p in positions:
             amt = safe_float(p.get("contracts", 0))
-            if amt > 0:
+            if abs(amt) > 0:
                 active_positions[p["symbol"]] = p
     except Exception as e:
         print(f"  >>> POSITION SYNC FAILED: {e} — keeping tracked orders as-is")
@@ -343,6 +352,11 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                 min_qty = safe_float(market_info.get("limits", {}).get("amount", {}).get("min"), 0.001)
                 min_notional = safe_float(market_info.get("limits", {}).get("cost", {}).get("min"), MIN_NOTIONAL)
 
+                max_qty_for_notional = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
+                if min_qty * current_price > MAX_NOTIONAL_PER_TRADE:
+                    print(f"    >>> SKIPPED: {sym} — min notional ${min_qty * current_price:.2f} > max ${MAX_NOTIONAL_PER_TRADE}")
+                    continue
+
                 if qty < min_qty:
                     qty = min_qty
 
@@ -351,8 +365,12 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     qty = round(min_notional / current_price, 4)
                     notional = qty * current_price
 
+                if qty < min_qty:
+                    print(f"    >>> SKIPPED: {sym} — qty {qty} < min {min_qty} after notional adjustment")
+                    continue
+
                 if notional > MAX_NOTIONAL_PER_TRADE:
-                    qty = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
+                    qty = max_qty_for_notional
                     notional = qty * current_price
                     print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
 
@@ -368,7 +386,7 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                 total_notional = sum(
                     o.get("qty", 0) * o.get("entry", 0)
                     for o in open_orders
-                    if o.get("entry", 0) > 0
+                    if o.get("entry", 0) > 0 and o.get("qty", 0) > 0
                 ) + notional
                 if total_notional > MAX_TOTAL_NOTIONAL:
                     print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
