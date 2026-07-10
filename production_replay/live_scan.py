@@ -1,5 +1,5 @@
 """Fetch fresh 1h candles from BingX, scan for BB Bounce v1 signals live."""
-import json, os, sys, time, ccxt
+import json, os, sys, time, fcntl, ccxt
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -8,6 +8,11 @@ from production_replay.breadwinner_strategy_library import detect_bb_bounce
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "candles_cache")
 OPEN_ORDERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "open_orders.json")
 TRADE_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "trade_log.jsonl")
+
+MAX_TRADES = 3
+MAX_NOTIONAL_PER_TRADE = 5.0
+MAX_TOTAL_NOTIONAL = 10.0
+MAX_RETRIES = 3
 
 
 def load_cached(cache_sym):
@@ -36,13 +41,17 @@ def load_open_orders():
 def save_open_orders(orders):
     os.makedirs(os.path.dirname(OPEN_ORDERS_PATH), exist_ok=True)
     with open(OPEN_ORDERS_PATH, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         json.dump(orders, f, indent=2)
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def log_trade(entry):
     os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
     with open(TRADE_LOG_PATH, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
         f.write(json.dumps(entry) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def ccxt_to_dict(candle):
@@ -54,6 +63,17 @@ def ccxt_to_dict(candle):
         "close": candle[4],
         "volume": candle[5],
     }
+
+
+def fetch_ohlcv_with_retry(ex, symbol, timeframe, limit):
+    for attempt in range(MAX_RETRIES):
+        try:
+            return ex.fetch_ohlcv(symbol, timeframe, limit=limit)
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(1 * (attempt + 1))
+            else:
+                raise
 
 
 def cancel_orphaned_orders(ex_client):
@@ -151,7 +171,7 @@ start = time.time()
 
 for idx, (cs, ccxt_sym) in enumerate(to_fetch):
     try:
-        candles = ex.fetch_ohlcv(ccxt_sym, "1h", limit=30)
+        candles = fetch_ohlcv_with_retry(ex, ccxt_sym, "1h", 30)
         if not candles:
             fail += 1
             continue
@@ -182,6 +202,7 @@ for idx, (cs, ccxt_sym) in enumerate(to_fetch):
                 sig["trigger_close"] = trigger_c["close"]
                 sig["candle_idx"] = i
                 sig["total_candles"] = len(merged)
+                sig["current_price"] = float(merged[-1]["close"])
                 signals.append(sig)
                 break
 
@@ -241,68 +262,91 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     continue
                 sym = s["symbol"].replace("_", "/") + ":USDT"
 
-                # Skip if symbol doesn't exist on BingX
                 if sym not in ex_exec.markets:
                     print(f"    >>> SKIPPED: {sym} — not available on BingX")
                     continue
 
-                # Reload open_orders to check for duplicates (in case multiple signals this run)
                 open_orders = load_open_orders()
                 if any(o["symbol"] == sym for o in open_orders):
                     print(f"    >>> SKIPPED: {sym} — already has open orders")
                     continue
 
-                # Set leverage to 2x before placing orders
+                if len(open_orders) >= MAX_TRADES:
+                    print(f"    >>> SKIPPED: {sym} — max {MAX_TRADES} trades reached")
+                    continue
+
+                notional = qty * s["current_price"]
+                if notional > MAX_NOTIONAL_PER_TRADE:
+                    qty = round(MAX_NOTIONAL_PER_TRADE / s["current_price"], 2)
+                    notional = qty * s["current_price"]
+                    print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
+                total_notional = sum(o.get("qty", 0) * o.get("entry", 0) for o in open_orders) + notional
+                if total_notional > MAX_TOTAL_NOTIONAL:
+                    print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
+                    continue
+
                 try:
                     ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
                 except Exception as e:
-                    print(f"    >>> LEVERAGE WARNING: {sym} {e}")
-                    # If leverage fails, skip this trade to avoid oversized positions
-                    continue
+                    try:
+                        ex_exec.set_leverage(2, sym)
+                    except Exception as e2:
+                        print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
+                        continue
 
                 # 1) Market entry
                 entry_order = ex_exec.create_market_order(sym, side, qty)
                 entry_order_id = entry_order.get("id")
+                actual_entry = float(entry_order.get("average", s["entry"]))
+
+                if actual_entry <= 0:
+                    actual_entry = float(entry_order.get("price", s["entry"]))
+
+                risk_pct = 0.005
+                if s["direction"] == "LONG":
+                    actual_stop = actual_entry * (1 - risk_pct)
+                    actual_target = actual_entry * (1 + risk_pct * 10.0)
+                else:
+                    actual_stop = actual_entry * (1 + risk_pct)
+                    actual_target = actual_entry * (1 - risk_pct * 10.0)
+
                 log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
-                           "qty": qty, "entry": float(s["entry"]), "stop": float(s["stop"]),
-                           "target": float(s["target"]), "order_id": entry_order_id,
+                           "qty": qty, "entry": actual_entry, "stop": actual_stop,
+                           "target": actual_target, "order_id": entry_order_id,
                            "timestamp": datetime.now(timezone.utc).isoformat()})
-                print(f"    >>> ENTRY: {sym} {side} {qty} (order={entry_order_id})")
+                print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
 
                 sl_order_id = None
                 tp_order_id = None
 
                 # 2) Stop-loss (STOP_MARKET for BingX perpetuals)
                 try:
-                    sl_price = float(s["stop"])
                     sl_order = ex_exec.create_order(
                         sym, "STOP_MARKET", close_side, qty, None,
-                        params={"stopPrice": sl_price, "workingType": "MARK_PRICE"}
+                        params={"stopPrice": actual_stop, "workingType": "MARK_PRICE"}
                     )
                     sl_order_id = sl_order.get("id")
-                    print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {sl_price} (order={sl_order_id})")
+                    print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {actual_stop} (order={sl_order_id})")
                 except Exception as e:
                     print(f"    >>> STOP-LOSS FAILED: {s['symbol']} {e}")
 
                 # 3) Take-profit (TAKE_PROFIT_MARKET for BingX perpetuals)
                 try:
-                    tp_price = float(s["target"])
                     tp_order = ex_exec.create_order(
                         sym, "TAKE_PROFIT_MARKET", close_side, qty, None,
-                        params={"stopPrice": tp_price, "workingType": "MARK_PRICE"}
+                        params={"stopPrice": actual_target, "workingType": "MARK_PRICE"}
                     )
                     tp_order_id = tp_order.get("id")
-                    print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {tp_price} (order={tp_order_id})")
+                    print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {actual_target} (order={tp_order_id})")
                 except Exception as e:
                     print(f"    >>> TAKE-PROFIT FAILED: {s['symbol']} {e}")
 
-                # Save order IDs for auto-cancellation
                 open_orders.append({
                     "symbol": sym,
                     "direction": s["direction"],
-                    "entry": float(s["entry"]),
-                    "stop": float(s["stop"]),
-                    "target": float(s["target"]),
+                    "entry": actual_entry,
+                    "stop": actual_stop,
+                    "target": actual_target,
                     "qty": qty,
                     "entry_order_id": entry_order_id,
                     "sl_order_id": sl_order_id,
