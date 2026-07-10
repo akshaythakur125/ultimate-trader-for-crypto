@@ -315,7 +315,11 @@ def main():
             if 'entry_volume_ratio' in s:
                 print(f"    Entry vol: {s['entry_volume_ratio']:.2f}x avg")
 
-    if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
+    if not signals:
+        pass  # already printed "No actionable signals" above
+    elif os.environ.get("BINGX_EXECUTION_MODE") != "live":
+        print(f"\n  Signals found but not in live mode. Set BINGX_EXECUTION_MODE=live for real orders.")
+    else:
         apikey = os.environ.get("BINGX_API_KEY")
         apisec = os.environ.get("BINGX_API_SECRET")
         if not apikey or not apisec:
@@ -484,8 +488,6 @@ def main():
 
                 except Exception as e:
                     print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
-    else:
-        print(f"\n  Paper only. Set BINGX_EXECUTION_MODE=live for real orders.")
 
 
 if __name__ == "__main__":
