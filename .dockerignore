@@ -1,0 +1,17 @@
+.env
+.env.*
+run_live_scanner.sh
+.git/
+.gitignore
+__pycache__/
+*.pyc
+venv/
+.venv/
+runtime_state/
+deploy_results/
+phase*_results/
+*.egg-info/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*

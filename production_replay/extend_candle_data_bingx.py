@@ -100,7 +100,8 @@ def main():
     for f in sorted(os.listdir(CACHE_DIR))[:100]:
         if f.endswith("_1h.json"):
             try:
-                d = json.load(open(os.path.join(CACHE_DIR, f)))
+                with open(os.path.join(CACHE_DIR, f)) as fh:
+                    d = json.load(fh)
                 if isinstance(d, list):
                     lengths.append(len(d))
             except Exception:

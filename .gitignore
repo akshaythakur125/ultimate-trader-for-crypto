@@ -46,6 +46,9 @@ deploy_results/
 !deploy_results/.gitkeep
 !deploy_results/.gitignore
 
+# VM runner script (contains API keys in plaintext)
+run_live_scanner.sh
+
 # Runtime state (persistent, not cleaned)
 runtime_state/*
 !runtime_state/.gitkeep

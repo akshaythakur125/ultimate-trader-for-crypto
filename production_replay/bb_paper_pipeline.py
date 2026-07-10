@@ -18,11 +18,18 @@ STATE_DIR = os.path.join(PROJECT_DIR, "runtime_state")
 
 def _run_module(name: str, timeout: int = 60) -> bool:
     try:
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", f"production_replay.{name}"],
             capture_output=True, text=True, timeout=timeout,
         )
+        if result.returncode != 0:
+            stderr = result.stderr.strip() if result.stderr else "no stderr"
+            print(f"  [{name}] FAILED (exit {result.returncode}): {stderr[-200:]}")
+            return False
         return True
+    except subprocess.TimeoutExpired:
+        print(f"  [{name}] TIMEOUT after {timeout}s")
+        return False
     except Exception as e:
         print(f"  [{name}] FAILED: {e}")
         return False
