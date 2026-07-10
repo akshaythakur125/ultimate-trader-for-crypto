@@ -243,7 +243,7 @@ def main():
 
     for idx, (cs, ccxt_sym) in enumerate(to_fetch):
         try:
-            candles = fetch_ohlcv_with_retry(ex, ccxt_sym, "h1", 30)
+            candles = fetch_ohlcv_with_retry(ex, ccxt_sym, "1h", 30)
             if not candles:
                 fail += 1
                 continue
