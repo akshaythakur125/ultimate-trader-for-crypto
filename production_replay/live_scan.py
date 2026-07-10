@@ -398,10 +398,16 @@ def main():
                         continue
 
                     try:
-                        ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
+                        lev = ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
+                        if lev is None:
+                            print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
+                            continue
                     except Exception as e:
                         try:
-                            ex_exec.set_leverage(2, sym)
+                            lev = ex_exec.set_leverage(2, sym)
+                            if lev is None:
+                                print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
+                                continue
                         except Exception as e2:
                             print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
                             continue
@@ -486,8 +492,8 @@ def main():
                     })
                     save_open_orders(open_orders)
 
-                except Exception as e:
-                    print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
+            except Exception as e:
+                print(f"    >>> ORDER FAILED: {s['symbol']} {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
