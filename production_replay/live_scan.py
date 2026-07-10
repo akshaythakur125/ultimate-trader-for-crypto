@@ -1,5 +1,5 @@
 """Fetch fresh 1h candles from BingX, scan for BB Bounce v1 signals live."""
-import json, os, sys, time, fcntl, ccxt
+import json, os, sys, time, ccxt
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -13,6 +13,14 @@ MAX_TRADES = 3
 MAX_NOTIONAL_PER_TRADE = 5.0
 MAX_TOTAL_NOTIONAL = 10.0
 MAX_RETRIES = 3
+MIN_NOTIONAL = 5.0
+BB_PERIOD = 15
+BB_STD_MULT = 3.5
+BB_RR_TARGET = 10.0
+BB_MIN_ENTRY_VOL_RATIO = 1.5
+RISK_PCT = 0.005
+STOP_MULTIPLIER = RISK_PCT
+TARGET_MULTIPLIER = RISK_PCT * BB_RR_TARGET
 
 
 def load_cached(cache_sym):
@@ -20,11 +28,12 @@ def load_cached(cache_sym):
     try:
         with open(path) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
         return []
 
 
 def save_cache(cache_sym, candles):
+    os.makedirs(CACHE_DIR, exist_ok=True)
     path = os.path.join(CACHE_DIR, f"{cache_sym}_1h.json")
     with open(path, "w") as f:
         json.dump(candles, f)
@@ -34,24 +43,22 @@ def load_open_orders():
     try:
         with open(OPEN_ORDERS_PATH) as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
 
 
 def save_open_orders(orders):
     os.makedirs(os.path.dirname(OPEN_ORDERS_PATH), exist_ok=True)
-    with open(OPEN_ORDERS_PATH, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    tmp = OPEN_ORDERS_PATH + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(orders, f, indent=2)
-        fcntl.flock(f, fcntl.LOCK_UN)
+    os.replace(tmp, OPEN_ORDERS_PATH)
 
 
 def log_trade(entry):
     os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
     with open(TRADE_LOG_PATH, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
         f.write(json.dumps(entry) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def ccxt_to_dict(candle):
@@ -76,6 +83,15 @@ def fetch_ohlcv_with_retry(ex, symbol, timeframe, limit):
                 raise
 
 
+def safe_float(val, default=0.0):
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 def cancel_orphaned_orders(ex_client):
     """Check open orders and cancel the other leg when one fills."""
     open_orders = load_open_orders()
@@ -90,7 +106,6 @@ def cancel_orphaned_orders(ex_client):
         sl_hit = False
         tp_hit = False
 
-        # Check stop-loss order status
         if sl_order_id:
             try:
                 sl_status = ex_client.fetch_order(sl_order_id, sym)
@@ -103,12 +118,9 @@ def cancel_orphaned_orders(ex_client):
                         except Exception as e:
                             print(f"    >>> TP CANCEL FAILED: {sym} {e}")
                     sl_hit = True
-                elif sl_status["status"] == "canceled":
-                    sl_hit = True
             except Exception as e:
                 print(f"    >>> SL CHECK FAILED: {sym} {e}")
 
-        # Check take-profit order status (only if SL didn't hit)
         if tp_order_id and not sl_hit:
             try:
                 tp_status = ex_client.fetch_order(tp_order_id, sym)
@@ -121,17 +133,15 @@ def cancel_orphaned_orders(ex_client):
                         except Exception as e:
                             print(f"    >>> SL CANCEL FAILED: {sym} {e}")
                     tp_hit = True
-                elif tp_status["status"] == "canceled":
-                    tp_hit = True
             except Exception as e:
                 print(f"    >>> TP CHECK FAILED: {sym} {e}")
 
-        # Keep trade only if both legs still active
         if not sl_hit and not tp_hit:
             updated.append(trade)
         else:
             outcome = "STOP" if sl_hit else "TARGET"
             log_trade({"event": "closed", "symbol": sym, "outcome": outcome,
+                       "entry": trade.get("entry"), "qty": trade.get("qty"),
                        "timestamp": datetime.now(timezone.utc).isoformat()})
             print(f"    >>> TRADE CLOSED: {sym} ({outcome})")
 
@@ -145,7 +155,6 @@ ex = ccxt.bingx()
 ex.load_markets()
 print(f"Markets loaded: {len(ex.markets)}")
 
-# Auto-cancel orphaned orders from previous runs
 if os.environ.get("BINGX_EXECUTION_MODE") == "live":
     apikey = os.environ.get("BINGX_API_KEY")
     apisec = os.environ.get("BINGX_API_SECRET")
@@ -153,9 +162,10 @@ if os.environ.get("BINGX_EXECUTION_MODE") == "live":
         ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
         cancel_orphaned_orders(ex_client)
 
+os.makedirs(CACHE_DIR, exist_ok=True)
 symbols_in_cache = sorted([f.replace("_1h.json", "") for f in os.listdir(CACHE_DIR) if f.endswith("_1h.json")])
 if not symbols_in_cache:
-    symbols_in_cache = [s.replace("/", "_") for s in ex.markets if s.endswith("/USDT")][:100]
+    symbols_in_cache = [s.replace("/", "_") for s in ex.markets if s.endswith("/USDT")][:200]
 
 to_fetch = []
 for cs in symbols_in_cache:
@@ -185,26 +195,29 @@ for idx, (cs, ccxt_sym) in enumerate(to_fetch):
 
         merged = sorted(cached_map.values(), key=lambda x: int(x["timestamp"]))
 
-        if len(merged) < 20:
+        if len(merged) < BB_PERIOD + 6:
             fail += 1
             continue
 
         ok += 1
 
-        for i in [len(merged) - 3]:
-            sig = detect_bb_bounce(merged, i, period=15, std_mult=3.5, rr_target=10.0,
-                                   min_entry_volume_ratio=1.5)
-            if sig:
-                trigger_c = merged[i]
-                trigger_ts = datetime.fromtimestamp(int(trigger_c["timestamp"]) / 1000, tz=timezone.utc)
-                sig["symbol"] = cs
-                sig["trigger_ts"] = trigger_ts.isoformat()
-                sig["trigger_close"] = trigger_c["close"]
-                sig["candle_idx"] = i
-                sig["total_candles"] = len(merged)
-                sig["current_price"] = float(merged[-1]["close"])
-                signals.append(sig)
-                break
+        check_idx = len(merged) - 3
+        if check_idx < BB_PERIOD + 5:
+            fail += 1
+            continue
+
+        sig = detect_bb_bounce(merged, check_idx, period=BB_PERIOD, std_mult=BB_STD_MULT,
+                               rr_target=BB_RR_TARGET, min_entry_volume_ratio=BB_MIN_ENTRY_VOL_RATIO)
+        if sig:
+            trigger_c = merged[check_idx]
+            trigger_ts = datetime.fromtimestamp(int(trigger_c["timestamp"]) / 1000, tz=timezone.utc)
+            sig["symbol"] = cs
+            sig["trigger_ts"] = trigger_ts.isoformat()
+            sig["trigger_close"] = trigger_c["close"]
+            sig["candle_idx"] = check_idx
+            sig["total_candles"] = len(merged)
+            sig["current_price"] = float(merged[-1]["close"])
+            signals.append(sig)
 
         save_cache(cs, merged)
 
@@ -214,6 +227,7 @@ for idx, (cs, ccxt_sym) in enumerate(to_fetch):
 
     except Exception as e:
         fail += 1
+        print(f"  [{cs}] ERROR: {e}")
 
     time.sleep(0.15)
 
@@ -239,11 +253,12 @@ else:
         if 'entry_volume_ratio' in s:
             print(f"    Entry vol: {s['entry_volume_ratio']:.2f}x avg")
 
-# ponytail: real execution via ccxt when BINGX_EXECUTION_MODE=live
 if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
     apikey = os.environ.get("BINGX_API_KEY")
     apisec = os.environ.get("BINGX_API_SECRET")
-    if apikey and apisec:
+    if not apikey or not apisec:
+        print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET. Skipping orders.")
+    else:
         ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
         ex_exec.load_markets()
         open_orders = load_open_orders()
@@ -256,15 +271,39 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                 if diff <= 0:
                     print(f"    >>> SKIPPED: {s['symbol']} — zero risk distance")
                     continue
-                qty = round(risk_usdt / diff, 2)
+
+                current_price = s["current_price"]
+                if current_price <= 0:
+                    print(f"    >>> SKIPPED: {s['symbol']} — zero current price")
+                    continue
+
+                qty = round(risk_usdt / diff, 4)
                 if qty <= 0:
                     print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
                     continue
+
                 sym = s["symbol"].replace("_", "/") + ":USDT"
 
                 if sym not in ex_exec.markets:
                     print(f"    >>> SKIPPED: {sym} — not available on BingX")
                     continue
+
+                market_info = ex_exec.markets.get(sym, {})
+                min_qty = safe_float(market_info.get("limits", {}).get("amount", {}).get("min"), 0.001)
+                min_notional = safe_float(market_info.get("limits", {}).get("cost", {}).get("min"), MIN_NOTIONAL)
+
+                if qty < min_qty:
+                    qty = min_qty
+
+                notional = qty * current_price
+                if notional < min_notional:
+                    qty = round(min_notional / current_price, 4)
+                    notional = qty * current_price
+
+                if notional > MAX_NOTIONAL_PER_TRADE:
+                    qty = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
+                    notional = qty * current_price
+                    print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
 
                 open_orders = load_open_orders()
                 if any(o["symbol"] == sym for o in open_orders):
@@ -275,11 +314,6 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     print(f"    >>> SKIPPED: {sym} — max {MAX_TRADES} trades reached")
                     continue
 
-                notional = qty * s["current_price"]
-                if notional > MAX_NOTIONAL_PER_TRADE:
-                    qty = round(MAX_NOTIONAL_PER_TRADE / s["current_price"], 2)
-                    notional = qty * s["current_price"]
-                    print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
                 total_notional = sum(o.get("qty", 0) * o.get("entry", 0) for o in open_orders) + notional
                 if total_notional > MAX_TOTAL_NOTIONAL:
                     print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
@@ -294,32 +328,28 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                         print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
                         continue
 
-                # 1) Market entry
                 entry_order = ex_exec.create_market_order(sym, side, qty)
+                if not entry_order or not entry_order.get("id"):
+                    print(f"    >>> ENTRY FAILED: {sym} — no order ID returned")
+                    continue
+
                 entry_order_id = entry_order.get("id")
-                actual_entry = float(entry_order.get("average", s["entry"]))
-
+                actual_entry = safe_float(entry_order.get("average"), 0)
                 if actual_entry <= 0:
-                    actual_entry = float(entry_order.get("price", s["entry"]))
+                    actual_entry = safe_float(entry_order.get("price"), 0)
+                if actual_entry <= 0:
+                    actual_entry = current_price
 
-                risk_pct = 0.005
                 if s["direction"] == "LONG":
-                    actual_stop = actual_entry * (1 - risk_pct)
-                    actual_target = actual_entry * (1 + risk_pct * 10.0)
+                    actual_stop = actual_entry * (1 - STOP_MULTIPLIER)
+                    actual_target = actual_entry * (1 + TARGET_MULTIPLIER)
                 else:
-                    actual_stop = actual_entry * (1 + risk_pct)
-                    actual_target = actual_entry * (1 - risk_pct * 10.0)
-
-                log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
-                           "qty": qty, "entry": actual_entry, "stop": actual_stop,
-                           "target": actual_target, "order_id": entry_order_id,
-                           "timestamp": datetime.now(timezone.utc).isoformat()})
-                print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
+                    actual_stop = actual_entry * (1 + STOP_MULTIPLIER)
+                    actual_target = actual_entry * (1 - TARGET_MULTIPLIER)
 
                 sl_order_id = None
                 tp_order_id = None
 
-                # 2) Stop-loss (STOP_MARKET for BingX perpetuals)
                 try:
                     sl_order = ex_exec.create_order(
                         sym, "STOP_MARKET", close_side, qty, None,
@@ -328,9 +358,17 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     sl_order_id = sl_order.get("id")
                     print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {actual_stop} (order={sl_order_id})")
                 except Exception as e:
-                    print(f"    >>> STOP-LOSS FAILED: {s['symbol']} {e}")
+                    print(f"    >>> STOP-LOSS FAILED: {sym} {e} — CANCELLING ENTRY")
+                    try:
+                        ex_exec.cancel_order(entry_order_id, sym)
+                        print(f"    >>> ENTRY CANCELLED: {sym}")
+                    except Exception as e2:
+                        print(f"    >>> ENTRY CANCEL ALSO FAILED: {sym} {e2} — MANUAL INTERVENTION NEEDED")
+                    log_trade({"event": "entry_failed_sl", "symbol": sym, "direction": s["direction"],
+                               "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
+                               "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
+                    continue
 
-                # 3) Take-profit (TAKE_PROFIT_MARKET for BingX perpetuals)
                 try:
                     tp_order = ex_exec.create_order(
                         sym, "TAKE_PROFIT_MARKET", close_side, qty, None,
@@ -339,7 +377,28 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     tp_order_id = tp_order.get("id")
                     print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {actual_target} (order={tp_order_id})")
                 except Exception as e:
-                    print(f"    >>> TAKE-PROFIT FAILED: {s['symbol']} {e}")
+                    print(f"    >>> TAKE-PROFIT FAILED: {sym} {e}")
+                    try:
+                        ex_exec.cancel_order(sl_order_id, sym)
+                        print(f"    >>> SL CANCELLED: {sym}")
+                    except Exception as e2:
+                        print(f"    >>> SL CANCEL ALSO FAILED: {sym} {e2}")
+                    try:
+                        ex_exec.cancel_order(entry_order_id, sym)
+                        print(f"    >>> ENTRY CANCELLED: {sym}")
+                    except Exception as e2:
+                        print(f"    >>> ENTRY CANCEL ALSO FAILED: {sym} {e2} — MANUAL INTERVENTION NEEDED")
+                    log_trade({"event": "entry_failed_tp", "symbol": sym, "direction": s["direction"],
+                               "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
+                               "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
+                    continue
+
+                log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
+                           "qty": qty, "entry": actual_entry, "stop": actual_stop,
+                           "target": actual_target, "entry_order_id": entry_order_id,
+                           "sl_order_id": sl_order_id, "tp_order_id": tp_order_id,
+                           "timestamp": datetime.now(timezone.utc).isoformat()})
+                print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
 
                 open_orders.append({
                     "symbol": sym,
@@ -357,7 +416,5 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
 
             except Exception as e:
                 print(f"    >>> ORDER FAILED: {s['symbol']} {e}")
-    else:
-        print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET. Skipping orders.")
 else:
     print(f"\n  Paper only. Set BINGX_EXECUTION_MODE=live for real orders.")

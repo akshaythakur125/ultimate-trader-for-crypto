@@ -357,10 +357,11 @@ def test_capital_gate_zero_risk():
 
 print("\n  capital gate...")
 test_capital_gate_passes()
+test_capital_gate_max_trades()
 test_capital_gate_missing_entry()
 test_capital_gate_missing_stop()
 test_capital_gate_zero_risk()
-print("  PASSED (4)")
+print("  PASSED (5)")
 
 
 # ─────────────────────────────────────────────
@@ -444,8 +445,9 @@ test_check_hit_long_target()
 test_check_hit_long_stop()
 test_check_hit_short_stop()
 test_check_hit_short_target()
+test_check_hit_no_entry()
 test_check_hit_already_entered()
-print("  PASSED (5)")
+print("  PASSED (6)")
 
 
 # ─────────────────────────────────────────────
@@ -531,5 +533,5 @@ print("  PASSED (4)")
 print("\n" + "=" * 50)
 print("  ALL TESTS PASSED")
 print("=" * 50)
-print(f"  10 test groups, 53 tests total")
+print(f"  10 test groups, 55 tests total")
 print()
