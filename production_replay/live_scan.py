@@ -28,21 +28,26 @@ def load_cached(cache_sym):
     try:
         with open(path) as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
 
 
 def save_cache(cache_sym, candles):
     os.makedirs(CACHE_DIR, exist_ok=True)
     path = os.path.join(CACHE_DIR, f"{cache_sym}_1h.json")
-    with open(path, "w") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(candles, f)
+    os.replace(tmp, path)
 
 
 def load_open_orders():
     try:
         with open(OPEN_ORDERS_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        return [o for o in data if isinstance(o, dict) and "symbol" in o and "entry" in o]
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return []
 
@@ -90,6 +95,49 @@ def safe_float(val, default=0.0):
         return float(val)
     except (TypeError, ValueError):
         return default
+
+
+def close_position_market(ex_client, sym, side, qty):
+    close_side = "sell" if side == "LONG" else "buy"
+    try:
+        order = ex_client.create_market_order(sym, close_side, qty)
+        print(f"    >>> EMERGENCY CLOSE: {sym} {close_side} {qty} (order={order.get('id')})")
+        return True
+    except Exception as e:
+        print(f"    >>> EMERGENCY CLOSE FAILED: {sym} {e} — MANUAL INTERVENTION NEEDED")
+        return False
+
+
+def sync_positions_with_exchange(ex_client, tracked_orders):
+    """Verify tracked orders against actual BingX positions. Remove orphaned tracking."""
+    if not tracked_orders:
+        return tracked_orders
+
+    try:
+        positions = ex_client.fetch_positions()
+        active_positions = {}
+        for p in positions:
+            amt = safe_float(p.get("contracts", 0))
+            if amt > 0:
+                active_positions[p["symbol"]] = p
+    except Exception as e:
+        print(f"  >>> POSITION SYNC FAILED: {e} — keeping tracked orders as-is")
+        return tracked_orders
+
+    verified = []
+    for trade in tracked_orders:
+        sym = trade["symbol"]
+        if sym in active_positions:
+            verified.append(trade)
+        else:
+            print(f"  >>> ORPHAN CLEANED: {sym} — no position on BingX")
+            log_trade({"event": "orphan_cleaned", "symbol": sym,
+                       "timestamp": datetime.now(timezone.utc).isoformat()})
+
+    if len(tracked_orders) != len(verified):
+        print(f"  Positions synced: {len(tracked_orders)} tracked -> {len(verified)} with active positions")
+
+    return verified
 
 
 def cancel_orphaned_orders(ex_client):
@@ -161,6 +209,10 @@ if os.environ.get("BINGX_EXECUTION_MODE") == "live":
     if apikey and apisec:
         ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
         cancel_orphaned_orders(ex_client)
+        open_orders = load_open_orders()
+        if open_orders:
+            open_orders = sync_positions_with_exchange(ex_client, open_orders)
+            save_open_orders(open_orders)
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 symbols_in_cache = sorted([f.replace("_1h.json", "") for f in os.listdir(CACHE_DIR) if f.endswith("_1h.json")])
@@ -260,7 +312,6 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
         print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET. Skipping orders.")
     else:
         ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
-        ex_exec.load_markets()
         open_orders = load_open_orders()
         for s in signals:
             try:
@@ -314,7 +365,11 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     print(f"    >>> SKIPPED: {sym} — max {MAX_TRADES} trades reached")
                     continue
 
-                total_notional = sum(o.get("qty", 0) * o.get("entry", 0) for o in open_orders) + notional
+                total_notional = sum(
+                    o.get("qty", 0) * o.get("entry", 0)
+                    for o in open_orders
+                    if o.get("entry", 0) > 0
+                ) + notional
                 if total_notional > MAX_TOTAL_NOTIONAL:
                     print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
                     continue
@@ -358,15 +413,12 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     sl_order_id = sl_order.get("id")
                     print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {actual_stop} (order={sl_order_id})")
                 except Exception as e:
-                    print(f"    >>> STOP-LOSS FAILED: {sym} {e} — CANCELLING ENTRY")
-                    try:
-                        ex_exec.cancel_order(entry_order_id, sym)
-                        print(f"    >>> ENTRY CANCELLED: {sym}")
-                    except Exception as e2:
-                        print(f"    >>> ENTRY CANCEL ALSO FAILED: {sym} {e2} — MANUAL INTERVENTION NEEDED")
-                    log_trade({"event": "entry_failed_sl", "symbol": sym, "direction": s["direction"],
+                    print(f"    >>> STOP-LOSS FAILED: {sym} {e} — CLOSING POSITION")
+                    closed = close_position_market(ex_exec, sym, s["direction"], qty)
+                    log_trade({"event": "entry_failed_sl_closed", "symbol": sym, "direction": s["direction"],
                                "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
-                               "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
+                               "closed": closed, "error": str(e),
+                               "timestamp": datetime.now(timezone.utc).isoformat()})
                     continue
 
                 try:
@@ -377,20 +429,17 @@ if signals and os.environ.get("BINGX_EXECUTION_MODE") == "live":
                     tp_order_id = tp_order.get("id")
                     print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {actual_target} (order={tp_order_id})")
                 except Exception as e:
-                    print(f"    >>> TAKE-PROFIT FAILED: {sym} {e}")
+                    print(f"    >>> TAKE-PROFIT FAILED: {sym} {e} — CLOSING POSITION")
                     try:
                         ex_exec.cancel_order(sl_order_id, sym)
                         print(f"    >>> SL CANCELLED: {sym}")
                     except Exception as e2:
                         print(f"    >>> SL CANCEL ALSO FAILED: {sym} {e2}")
-                    try:
-                        ex_exec.cancel_order(entry_order_id, sym)
-                        print(f"    >>> ENTRY CANCELLED: {sym}")
-                    except Exception as e2:
-                        print(f"    >>> ENTRY CANCEL ALSO FAILED: {sym} {e2} — MANUAL INTERVENTION NEEDED")
-                    log_trade({"event": "entry_failed_tp", "symbol": sym, "direction": s["direction"],
+                    closed = close_position_market(ex_exec, sym, s["direction"], qty)
+                    log_trade({"event": "entry_failed_tp_closed", "symbol": sym, "direction": s["direction"],
                                "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
-                               "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
+                               "closed": closed, "error": str(e),
+                               "timestamp": datetime.now(timezone.utc).isoformat()})
                     continue
 
                 log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
