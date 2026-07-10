@@ -2,6 +2,7 @@
 
 import json, math, os, sys, tempfile, time
 from copy import deepcopy
+from random import Random
 from statistics import mean
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -25,16 +26,17 @@ def make_candle(open_p, high, low, close, volume=1000.0):
 
 def make_trend(days=100, start=100.0, trend=0.0, vol=1000.0):
     """Generate synthetic candles. trend=0 flat, >0 uptrend, <0 downtrend."""
+    rng = Random(42)
     candles = []
     px = start
     for i in range(days * 24):
-        px += trend + (hash(str(i)) % 100 - 50) / 100
+        px += trend + (rng.randint(0, 99) - 50) / 100
         px = max(px, 0.01)
-        rng = px * 0.02
+        candle_range = px * 0.02
         op = px
-        hi = px + rng * (hash(str(i)) % 100) / 100
-        lo = px - rng * (hash(str(i)) % 100) / 100
-        cl = px + (hash(str(i + 999)) % 100 - 50) / 100 * rng
+        hi = px + candle_range * rng.randint(0, 99) / 100
+        lo = px - candle_range * rng.randint(0, 99) / 100
+        cl = px + (rng.randint(0, 99) - 50) / 100 * candle_range
         candles.append(make_candle(op, hi, lo, cl, vol))
     return candles
 
