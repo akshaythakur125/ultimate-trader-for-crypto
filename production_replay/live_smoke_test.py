@@ -24,7 +24,7 @@ from production_replay.live_scan import (
 
 def _make_smoke_report(ex_client, symbol: str, side: str, notional: float) -> dict:
     market_key = _resolve_market_key(symbol, ex_client.markets) or symbol
-    market = ex_client.markets.get(market_key, {})
+    market = ex_client.markets.get(market_key, {}) or {}
     ticker = ex_client.fetch_ticker(market_key)
     price = safe_float(
         ticker.get("last")
@@ -38,8 +38,9 @@ def _make_smoke_report(ex_client, symbol: str, side: str, notional: float) -> di
 
     mode_ok, mode_report = _check_symbol_modes(ex_client, market_key)
     qty = round(min(notional, MAX_NOTIONAL_PER_TRADE) / price, 4)
-    min_qty = safe_float(market.get("limits", {}).get("amount", {}).get("min"), 0.001)
-    min_notional = safe_float(market.get("limits", {}).get("cost", {}).get("min"), MIN_NOTIONAL)
+    limits = market.get("limits") or {}
+    min_qty = safe_float((limits.get("amount") or {}).get("min"), 0.001)
+    min_notional = safe_float((limits.get("cost") or {}).get("min"), MIN_NOTIONAL)
     if qty < min_qty:
         qty = min_qty
 

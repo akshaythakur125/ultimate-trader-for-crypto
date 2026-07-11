@@ -442,9 +442,12 @@ def main():
                         print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
                         continue
 
-                    market_info = ex_exec.markets.get(sym, {})
-                    min_qty = safe_float(market_info.get("limits", {}).get("amount", {}).get("min"), 0.001)
-                    min_notional = safe_float(market_info.get("limits", {}).get("cost", {}).get("min"), MIN_NOTIONAL)
+                    market_info = ex_exec.markets.get(sym, {}) or {}
+                    limits = market_info.get("limits") or {}
+                    amount_limits = limits.get("amount") or {}
+                    cost_limits = limits.get("cost") or {}
+                    min_qty = safe_float(amount_limits.get("min"), 0.001)
+                    min_notional = safe_float(cost_limits.get("min"), MIN_NOTIONAL)
 
                     max_qty_for_notional = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
                     if min_qty * current_price > MAX_NOTIONAL_PER_TRADE:

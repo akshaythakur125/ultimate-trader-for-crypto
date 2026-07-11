@@ -31,3 +31,15 @@ def test_live_smoke_report_is_read_only():
     assert report["qty"] > 0
     assert report["entry_price"] == 100.0
     assert report["mode_report"]["ok"] is True
+
+
+def test_live_smoke_report_handles_missing_limits():
+    class _NoLimitsBingX(_FakeBingX):
+        def __init__(self):
+            self.markets = {"BTC/USDT:USDT": {"limits": None}}
+
+    report = _make_smoke_report(_NoLimitsBingX(), "BTC/USDT:USDT", "LONG", 5.0)
+
+    assert report["ok"] is True
+    assert report["min_notional"] == 5.0
+    assert report["qty"] > 0
