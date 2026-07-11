@@ -22,7 +22,7 @@ EXECUTION_MODE = os.environ.get("BINGX_EXECUTION_MODE", "read_only").lower()
 
 def load_credentials() -> dict[str, str | None]:
     api_key = os.environ.get("BINGX_API_KEY")
-    api_secret = os.environ.get("BINGX_API_SECRET")
+    api_secret = os.environ.get("BINGX_API_SECRET") or os.environ.get("BINGX_SECRET_KEY")
     base_url = os.environ.get("BINGX_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     return {"api_key": api_key, "api_secret": api_secret, "base_url": base_url}
 

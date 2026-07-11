@@ -23,6 +23,97 @@ STOP_MULTIPLIER = RISK_PCT
 TARGET_MULTIPLIER = RISK_PCT * BB_RR_TARGET
 
 
+def _load_live_credentials() -> tuple[str | None, str | None]:
+    api_key = os.environ.get("BINGX_API_KEY")
+    api_secret = os.environ.get("BINGX_API_SECRET") or os.environ.get("BINGX_SECRET_KEY")
+    return api_key, api_secret
+
+
+def _get_hedged_mode(ex_client) -> bool:
+    try:
+        return bool(ex_client.fetch_position_mode().get("hedged", False))
+    except Exception:
+        return False
+
+
+def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
+    report = {"symbol": symbol}
+    try:
+        position_mode = ex_client.fetch_position_mode(symbol)
+        report["hedged"] = bool(position_mode.get("hedged", False))
+        report["position_mode"] = "hedged" if report["hedged"] else "one_way"
+    except Exception as e:
+        report["error"] = f"position mode check failed: {e}"
+        return False, report
+
+    try:
+        margin_mode = ex_client.fetch_margin_mode(symbol)
+        raw_margin_mode = str(margin_mode.get("marginMode", "")).lower()
+        if raw_margin_mode in ("cross", "crossed"):
+            raw_margin_mode = "cross"
+        elif raw_margin_mode not in ("isolated", "cross"):
+            report["error"] = f"unsupported margin mode: {raw_margin_mode or 'unknown'}"
+            return False, report
+        report["margin_mode"] = raw_margin_mode
+    except Exception as e:
+        report["error"] = f"margin mode check failed: {e}"
+        return False, report
+
+    report["ok"] = True
+    return True, report
+
+
+def _market_key_to_cache_symbol(market_key: str) -> str:
+    if "/" not in market_key:
+        return market_key.replace(":", "")
+    base, rest = market_key.split("/", 1)
+    quote = rest.split(":", 1)[0]
+    return f"{base}{quote}"
+
+
+def _resolve_market_key(raw_symbol: str, markets: dict) -> str | None:
+    candidates = []
+    if raw_symbol:
+        candidates.append(raw_symbol)
+        cleaned = raw_symbol.replace("_", "/")
+        candidates.append(cleaned)
+        if cleaned.endswith("/USDT"):
+            candidates.append(f"{cleaned}:USDT")
+        if cleaned.endswith("USDT") and "/" not in cleaned:
+            candidates.append(f"{cleaned[:-4]}/USDT:USDT")
+        if cleaned.endswith(":USDT"):
+            candidates.append(cleaned)
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate in markets:
+            return candidate
+    return None
+
+
+def _discover_symbols(ex) -> list[tuple[str, str]]:
+    pairs = []
+    cached_files = [
+        f for f in os.listdir(CACHE_DIR)
+        if f.endswith("_1h.json")
+    ] if os.path.exists(CACHE_DIR) else []
+    if cached_files:
+        for filename in sorted(cached_files):
+            cache_sym = filename[:-8]
+            market_key = _resolve_market_key(cache_sym, ex.markets)
+            if market_key:
+                pairs.append((cache_sym, market_key))
+        if pairs:
+            return pairs
+
+    for market_key, market in ex.markets.items():
+        if market.get("swap") and market.get("quote") == "USDT" and market.get("active", True):
+            pairs.append((_market_key_to_cache_symbol(market_key), market_key))
+    return pairs[:200]
+
+
 def load_cached(cache_sym):
     path = os.path.join(CACHE_DIR, f"{cache_sym}_1h.json")
     try:
@@ -214,8 +305,7 @@ def main():
     print(f"Markets loaded: {len(ex.markets)}")
 
     if os.environ.get("BINGX_EXECUTION_MODE") == "live":
-        apikey = os.environ.get("BINGX_API_KEY")
-        apisec = os.environ.get("BINGX_API_SECRET")
+        apikey, apisec = _load_live_credentials()
         if apikey and apisec:
             ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
             cancel_orphaned_orders(ex_client)
@@ -225,15 +315,7 @@ def main():
                 save_open_orders(open_orders)
 
     os.makedirs(CACHE_DIR, exist_ok=True)
-    symbols_in_cache = sorted([f.replace("_1h.json", "") for f in os.listdir(CACHE_DIR) if f.endswith("_1h.json")])
-    if not symbols_in_cache:
-        symbols_in_cache = [s.replace("/", "_") for s in ex.markets if s.endswith("/USDT")][:200]
-
-    to_fetch = []
-    for cs in symbols_in_cache:
-        ccxt_sym = cs.replace("_", "/")
-        if ccxt_sym in ex.markets:
-            to_fetch.append((cs, ccxt_sym))
+    to_fetch = _discover_symbols(ex)
 
     print(f"Will fetch fresh data for {len(to_fetch)} symbols...")
 
@@ -274,6 +356,7 @@ def main():
                 trigger_c = merged[check_idx]
                 trigger_ts = datetime.fromtimestamp(int(trigger_c["timestamp"]) / 1000, tz=timezone.utc)
                 sig["symbol"] = cs
+                sig["market_key"] = ccxt_sym
                 sig["trigger_ts"] = trigger_ts.isoformat()
                 sig["trigger_close"] = trigger_c["close"]
                 sig["candle_idx"] = check_idx
@@ -308,7 +391,7 @@ def main():
             risk = abs(s['entry'] - s['stop'])
             reward = abs(s['entry'] - s['target'])
             rr = reward / risk if risk > 0 else 0
-            print(f"\n  {s['symbol']}/USDT  {s['direction']:5s}  {s['pattern']}")
+            print(f"\n  {s['symbol']}  {s['direction']:5s}  {s['pattern']}")
             print(f"    Trigger: {s['trigger_ts']}  Close={s['trigger_close']}")
             print(f"    Entry:   {s['entry']:.6f}  Stop={s['stop']:.6f}  Target={s['target']:.6f}")
             print(f"    Risk/unit: {risk:.6f}  Reward/unit: {reward:.6f}  RR=1:{rr:.0f}")
@@ -320,17 +403,16 @@ def main():
     elif os.environ.get("BINGX_EXECUTION_MODE") != "live":
         print(f"\n  Signals found but not in live mode. Set BINGX_EXECUTION_MODE=live for real orders.")
     else:
-        apikey = os.environ.get("BINGX_API_KEY")
-        apisec = os.environ.get("BINGX_API_SECRET")
+        apikey, apisec = _load_live_credentials()
         if not apikey or not apisec:
-            print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET. Skipping orders.")
+            print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET_KEY. Skipping orders.")
         else:
             ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+            hedged_mode = _get_hedged_mode(ex_exec)
             open_orders = load_open_orders()
             for s in signals:
                 try:
                     side = "buy" if s["direction"] == "LONG" else "sell"
-                    close_side = "sell" if s["direction"] == "LONG" else "buy"
                     risk_usdt = 1.00
                     diff = abs(s["entry"] - s["stop"])
                     if diff <= 0:
@@ -347,10 +429,9 @@ def main():
                         print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
                         continue
 
-                    sym = s["symbol"].replace("_", "/") + ":USDT"
-
-                    if sym not in ex_exec.markets:
-                        print(f"    >>> SKIPPED: {sym} — not available on BingX")
+                    sym = s.get("market_key") or _resolve_market_key(s["symbol"], ex_exec.markets)
+                    if not sym:
+                        print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
                         continue
 
                     market_info = ex_exec.markets.get(sym, {})
@@ -378,6 +459,45 @@ def main():
                         qty = max_qty_for_notional
                         notional = qty * current_price
                         print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
+
+                    mode_ok, mode_report = _check_symbol_modes(ex_exec, sym)
+                    if not mode_ok:
+                        print(f"    >>> MODE CHECK FAILED: {sym} {mode_report.get('error', 'unknown')}")
+                        log_trade({
+                            "event": "mode_check_failed",
+                            "symbol": sym,
+                            "direction": s["direction"],
+                            "mode_report": mode_report,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        })
+                        continue
+
+                    print(
+                        f"    >>> MODE CHECK: {sym} position={mode_report['position_mode']} "
+                        f"margin={mode_report['margin_mode']}"
+                    )
+
+                    planned_stop = float(s["stop"])
+                    planned_target = float(s["target"])
+                    if s["direction"] == "LONG":
+                        actual_stop = planned_stop
+                        actual_target = planned_target
+                    else:
+                        actual_stop = planned_stop
+                        actual_target = planned_target
+
+                    tp_payload = {
+                        "triggerPrice": actual_target,
+                        "workingType": "MARK_PRICE",
+                        "type": "TAKE_PROFIT_MARKET",
+                        "quantity": qty,
+                    }
+                    sl_payload = {
+                        "triggerPrice": actual_stop,
+                        "workingType": "MARK_PRICE",
+                        "type": "STOP_MARKET",
+                        "quantity": qty,
+                    }
 
                     open_orders = load_open_orders()
                     if any(o["symbol"] == sym for o in open_orders):
@@ -412,7 +532,18 @@ def main():
                             print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
                             continue
 
-                    entry_order = ex_exec.create_market_order(sym, side, qty)
+                    entry_order = ex_exec.create_order(
+                        sym,
+                        "market",
+                        side,
+                        qty,
+                        None,
+                        params={
+                            "hedged": hedged_mode,
+                            "takeProfit": tp_payload,
+                            "stopLoss": sl_payload,
+                        },
+                    )
                     if not entry_order or not entry_order.get("id"):
                         print(f"    >>> ENTRY FAILED: {sym} — no order ID returned")
                         continue
@@ -424,59 +555,15 @@ def main():
                     if actual_entry <= 0:
                         actual_entry = current_price
 
-                    if s["direction"] == "LONG":
-                        actual_stop = actual_entry * (1 - STOP_MULTIPLIER)
-                        actual_target = actual_entry * (1 + TARGET_MULTIPLIER)
-                    else:
-                        actual_stop = actual_entry * (1 + STOP_MULTIPLIER)
-                        actual_target = actual_entry * (1 - TARGET_MULTIPLIER)
-
-                    sl_order_id = None
-                    tp_order_id = None
-
-                    try:
-                        sl_order = ex_exec.create_order(
-                            sym, "STOP_MARKET", close_side, qty, None,
-                            params={"stopPrice": actual_stop, "workingType": "MARK_PRICE"}
-                        )
-                        sl_order_id = sl_order.get("id")
-                        print(f"    >>> STOP-LOSS: {sym} {close_side} {qty} @ {actual_stop} (order={sl_order_id})")
-                    except Exception as e:
-                        print(f"    >>> STOP-LOSS FAILED: {sym} {e} — CLOSING POSITION")
-                        closed = close_position_market(ex_exec, sym, s["direction"], qty)
-                        log_trade({"event": "entry_failed_sl_closed", "symbol": sym, "direction": s["direction"],
-                                   "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
-                                   "closed": closed, "error": str(e),
-                                   "timestamp": datetime.now(timezone.utc).isoformat()})
-                        continue
-
-                    try:
-                        tp_order = ex_exec.create_order(
-                            sym, "TAKE_PROFIT_MARKET", close_side, qty, None,
-                            params={"stopPrice": actual_target, "workingType": "MARK_PRICE"}
-                        )
-                        tp_order_id = tp_order.get("id")
-                        print(f"    >>> TAKE-PROFIT: {sym} {close_side} {qty} @ {actual_target} (order={tp_order_id})")
-                    except Exception as e:
-                        print(f"    >>> TAKE-PROFIT FAILED: {sym} {e} — CLOSING POSITION")
-                        try:
-                            ex_exec.cancel_order(sl_order_id, sym)
-                            print(f"    >>> SL CANCELLED: {sym}")
-                        except Exception as e2:
-                            print(f"    >>> SL CANCEL ALSO FAILED: {sym} {e2}")
-                        closed = close_position_market(ex_exec, sym, s["direction"], qty)
-                        log_trade({"event": "entry_failed_tp_closed", "symbol": sym, "direction": s["direction"],
-                                   "qty": qty, "entry": actual_entry, "order_id": entry_order_id,
-                                   "closed": closed, "error": str(e),
-                                   "timestamp": datetime.now(timezone.utc).isoformat()})
-                        continue
-
                     log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
                                "qty": qty, "entry": actual_entry, "stop": actual_stop,
                                "target": actual_target, "entry_order_id": entry_order_id,
-                               "sl_order_id": sl_order_id, "tp_order_id": tp_order_id,
+                               "hedged_mode": hedged_mode,
+                               "sl_attached": True,
+                               "tp_attached": True,
                                "timestamp": datetime.now(timezone.utc).isoformat()})
                     print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
+                    print(f"    >>> BRACKET: SL @ {actual_stop} | TP @ {actual_target} | hedged={hedged_mode}")
 
                     open_orders.append({
                         "symbol": sym,
@@ -486,8 +573,7 @@ def main():
                         "target": actual_target,
                         "qty": qty,
                         "entry_order_id": entry_order_id,
-                        "sl_order_id": sl_order_id,
-                        "tp_order_id": tp_order_id,
+                        "hedged_mode": hedged_mode,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
                     save_open_orders(open_orders)
