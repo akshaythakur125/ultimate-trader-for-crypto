@@ -48,7 +48,12 @@ def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
 
     try:
         margin_mode = ex_client.fetch_margin_mode(symbol)
-        raw_margin_mode = str(margin_mode.get("marginMode", "")).lower()
+        raw_margin_mode = str(
+            margin_mode.get("marginMode")
+            or margin_mode.get("marginType")
+            or margin_mode.get("margin_mode")
+            or ""
+        ).lower()
         if raw_margin_mode in ("cross", "crossed"):
             raw_margin_mode = "cross"
         elif raw_margin_mode not in ("isolated", "cross"):
@@ -307,12 +312,15 @@ def main():
     if os.environ.get("BINGX_EXECUTION_MODE") == "live":
         apikey, apisec = _load_live_credentials()
         if apikey and apisec:
+            print("Live mode: BingX credentials detected")
             ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
             cancel_orphaned_orders(ex_client)
             open_orders = load_open_orders()
             if open_orders:
                 open_orders = sync_positions_with_exchange(ex_client, open_orders)
                 save_open_orders(open_orders)
+        else:
+            print("Live mode warning: BingX credentials missing or incomplete; orders will be skipped")
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     to_fetch = _discover_symbols(ex)
