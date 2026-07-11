@@ -492,8 +492,8 @@ def main():
                     })
                     save_open_orders(open_orders)
 
-            except Exception as e:
-                print(f"    >>> ORDER FAILED: {s['symbol']} {type(e).__name__}: {e}")
+                except Exception as e:
+                    print(f"    >>> ORDER FAILED: {s['symbol']} {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
