@@ -31,7 +31,8 @@ def _load_live_credentials() -> tuple[str | None, str | None]:
 
 def _get_hedged_mode(ex_client) -> bool:
     try:
-        return bool(ex_client.fetch_position_mode().get("hedged", False))
+        mode = ex_client.fetch_position_mode() or {}
+        return bool(mode.get("hedged", False))
     except Exception:
         return False
 
@@ -39,7 +40,7 @@ def _get_hedged_mode(ex_client) -> bool:
 def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
     report = {"symbol": symbol}
     try:
-        position_mode = ex_client.fetch_position_mode(symbol)
+        position_mode = ex_client.fetch_position_mode(symbol) or {}
         report["hedged"] = bool(position_mode.get("hedged", False))
         report["position_mode"] = "hedged" if report["hedged"] else "one_way"
     except Exception as e:
@@ -47,7 +48,7 @@ def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
         return False, report
 
     try:
-        margin_mode = ex_client.fetch_margin_mode(symbol)
+        margin_mode = ex_client.fetch_margin_mode(symbol) or {}
         raw_margin_mode = str(
             margin_mode.get("marginMode")
             or margin_mode.get("marginType")

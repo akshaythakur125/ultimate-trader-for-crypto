@@ -43,3 +43,19 @@ def test_live_smoke_report_handles_missing_limits():
     assert report["ok"] is True
     assert report["min_notional"] == 5.0
     assert report["qty"] > 0
+
+
+def test_live_smoke_report_handles_missing_mode_payloads():
+    class _NoModePayloadBingX(_FakeBingX):
+        def fetch_position_mode(self, symbol):
+            assert symbol == "BTC/USDT:USDT"
+            return None
+
+        def fetch_margin_mode(self, symbol):
+            assert symbol == "BTC/USDT:USDT"
+            return None
+
+    report = _make_smoke_report(_NoModePayloadBingX(), "BTC/USDT:USDT", "LONG", 5.0)
+
+    assert report["ok"] is False
+    assert "error" in report["mode_report"] or report["mode_report"].get("position_mode") == "one_way"
