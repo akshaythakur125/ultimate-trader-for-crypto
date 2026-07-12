@@ -45,12 +45,15 @@ def _sign(params: dict[str, str], secret: str) -> str:
 
 def _signed_post(endpoint: str, api_key: str, api_secret: str, base_url: str,
                  params: dict) -> dict:
+    # BingX reads signed parameters from the URL query string, not the JSON
+    # body. Sign over the sorted query string, then send those same params as
+    # the query string (mirrors the working read path in bingx_client).
     params["timestamp"] = str(int(time.time() * 1000))
     params["signature"] = _sign(params, api_secret)
-    headers = {"X-BX-APIKEY": api_key, "Content-Type": "application/json"}
+    headers = {"X-BX-APIKEY": api_key}
     url = f"{base_url}{endpoint}"
     try:
-        resp = requests.post(url, json=params, headers=headers, timeout=10)
+        resp = requests.post(url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
         return {"success": True, "data": resp.json(), "error": None}
     except requests.RequestException as e:
@@ -61,10 +64,10 @@ def _delete_order(endpoint: str, api_key: str, api_secret: str, base_url: str,
                   params: dict) -> dict:
     params["timestamp"] = str(int(time.time() * 1000))
     params["signature"] = _sign(params, api_secret)
-    headers = {"X-BX-APIKEY": api_key, "Content-Type": "application/json"}
+    headers = {"X-BX-APIKEY": api_key}
     url = f"{base_url}{endpoint}"
     try:
-        resp = requests.delete(url, json=params, headers=headers, timeout=10)
+        resp = requests.delete(url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
         return {"success": True, "data": resp.json(), "error": None}
     except requests.RequestException as e:
@@ -82,8 +85,12 @@ def _run_check(name: str) -> tuple[bool, str]:
             [sys.executable, "-m", f"production_replay.{name}"],
             capture_output=True, text=True, timeout=30,
         )
-        ok = "PASS" in r.stdout and "FAIL" not in r.stdout
-        return ok, r.stdout[:200] if not ok else ""
+        # Require a clean exit code (safety_lock/launch_check exit 0 only on
+        # PASS) AND the PASS/FAIL stdout markers to agree. Fail-closed on any
+        # mismatch, crash, or non-zero exit.
+        ok = (r.returncode == 0 and "PASS" in r.stdout and "FAIL" not in r.stdout)
+        detail = (r.stdout or r.stderr or "")[:200] if not ok else ""
+        return ok, detail
     except Exception as e:
         return False, str(e)
 
@@ -382,40 +389,47 @@ def run_live_micro_executor() -> dict:
             reasons.append(f"entry order failed: {entry_result['error']}")
             decision = "DO_NOT_EXECUTE"
         else:
-            # Step 2: place stop-loss
+            # Step 2: place stop-loss (reduce-only so it can only close the
+            # position, never open the opposite side).
             stop_side = "SELL" if direction == "LONG" else "BUY"
             stop_result = _signed_post(
                 "/openApi/swap/v2/trade/order",
                 creds["api_key"], creds["api_secret"], creds["base_url"],
                 {"symbol": symbol, "side": stop_side, "type": "STOP_MARKET",
                  "quantity": str(qty), "stopPrice": str(stop),
-                 "positionSide": "BOTH"},
+                 "positionSide": "BOTH", "reduceOnly": "true"},
             )
 
             if not stop_result["success"]:
-                # Cancel the entry order
-                reasons.append(f"stop-loss placement failed: {stop_result['error']}; cancelling entry")
-                cancel_data = entry_result["data"] or {}
-                order_id = ""
-                if isinstance(cancel_data, dict):
-                    order_id = str(cancel_data.get("orderId", ""))
-                if order_id:
-                    _delete_order(
-                        "/openApi/swap/v2/trade/order",
-                        creds["api_key"], creds["api_secret"], creds["base_url"],
-                        {"symbol": symbol, "orderId": order_id},
+                # The entry is a MARKET order that has already filled, so the
+                # position is live and cannot be "cancelled". Flatten it with a
+                # reduce-only market order so we are never left naked.
+                reasons.append(f"stop-loss placement failed: {stop_result['error']}; flattening entry")
+                flatten_side = "SELL" if direction == "LONG" else "BUY"
+                flatten_result = _signed_post(
+                    "/openApi/swap/v2/trade/order",
+                    creds["api_key"], creds["api_secret"], creds["base_url"],
+                    {"symbol": symbol, "side": flatten_side, "type": "MARKET",
+                     "quantity": str(qty), "positionSide": "BOTH",
+                     "reduceOnly": "true"},
+                )
+                if flatten_result["success"]:
+                    reasons.append("entry position flattened — stop-loss could not be guaranteed")
+                else:
+                    reasons.append(
+                        f"CRITICAL: could not flatten position ({flatten_result['error']}); "
+                        "NAKED POSITION OPEN — close it manually on BingX now"
                     )
-                reasons.append("entry cancelled — stop-loss could not be guaranteed")
                 decision = "DO_NOT_EXECUTE"
             else:
-                # Step 3: place take-profit
+                # Step 3: place take-profit (also reduce-only).
                 tp_side = "SELL" if direction == "LONG" else "BUY"
                 tp_result = _signed_post(
                     "/openApi/swap/v2/trade/order",
                     creds["api_key"], creds["api_secret"], creds["base_url"],
                     {"symbol": symbol, "side": tp_side, "type": "TAKE_PROFIT_MARKET",
                      "quantity": str(qty), "stopPrice": str(target),
-                     "positionSide": "BOTH"},
+                     "positionSide": "BOTH", "reduceOnly": "true"},
                 )
                 if not tp_result["success"]:
                     reasons.append(f"take-profit placement warning: {tp_result['error']}")
