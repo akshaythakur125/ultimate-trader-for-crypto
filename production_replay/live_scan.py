@@ -29,6 +29,13 @@ TARGET_MULTIPLIER = RISK_PCT * BB_RR_TARGET
 def _load_live_credentials() -> tuple[str | None, str | None]:
     api_key = os.environ.get("BINGX_API_KEY")
     api_secret = os.environ.get("BINGX_API_SECRET") or os.environ.get("BINGX_SECRET_KEY")
+    # Strip stray whitespace/newlines from pasted keys. A trailing space in the
+    # secret silently corrupts the HMAC signature (BingX 100001), and one in the
+    # key can read as an invalid apiKey (BingX 100413).
+    if api_key:
+        api_key = api_key.strip()
+    if api_secret:
+        api_secret = api_secret.strip()
     return api_key, api_secret
 
 
