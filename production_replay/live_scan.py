@@ -441,20 +441,13 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
             return False
 
+        # One-way mode wants side/positionSide "BOTH"; hedged mode wants LONG/SHORT.
+        position_side = s["direction"] if hedged_mode else "BOTH"
         try:
-            lev = ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
-            if lev is None:
-                print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
-                return False
-        except Exception:
-            try:
-                lev = ex_exec.set_leverage(2, sym)
-                if lev is None:
-                    print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
-                    return False
-            except Exception as e2:
-                print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
-                return False
+            ex_exec.set_leverage(2, sym, params={"side": position_side})
+        except Exception as e:
+            print(f"    >>> LEVERAGE FAILED: {sym} {e}")
+            return False
 
         entry_order = ex_exec.create_order(
             sym,
@@ -463,7 +456,7 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             qty,
             None,
             params={
-                "hedged": hedged_mode,
+                "positionSide": position_side,
                 "takeProfit": tp_payload,
                 "stopLoss": sl_payload,
             },

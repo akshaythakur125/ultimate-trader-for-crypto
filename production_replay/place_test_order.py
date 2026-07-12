@@ -27,6 +27,7 @@ import sys
 from production_replay.live_scan import (
     RISK_PCT,
     BB_RR_TARGET,
+    MAX_NOTIONAL_PER_TRADE,
     _get_hedged_mode,
     _load_live_credentials,
     _resolve_market_key,
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Entry~:   {sig['entry']:.6f}  (market)")
     print(f"  Stop:     {sig['stop']:.6f}")
     print(f"  Target:   {sig['target']:.6f}")
-    print(f"  Risk/unit:{risk:.6f}  (~$1 position, capped $5 notional)")
+    print(f"  Risk/unit:{risk:.6f}  (position capped at ${MAX_NOTIONAL_PER_TRADE:.0f} notional)")
     print("=" * 60)
 
     if not args.confirm:
