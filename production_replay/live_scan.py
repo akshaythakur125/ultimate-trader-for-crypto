@@ -72,6 +72,10 @@ def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
         report["error"] = f"position mode check failed: {e}"
         return False, report
 
+    # Margin mode is informational only — the order never sets it. Some symbols
+    # don't answer the margin-mode endpoint (BingX 109425), so never block a
+    # trade on it; set_leverage / create_order will still reject a genuinely
+    # untradeable symbol safely.
     try:
         margin_mode = ex_client.fetch_margin_mode(symbol) or {}
         raw_margin_mode = str(
@@ -82,13 +86,10 @@ def _check_symbol_modes(ex_client, symbol: str) -> tuple[bool, dict]:
         ).lower()
         if raw_margin_mode in ("cross", "crossed"):
             raw_margin_mode = "cross"
-        elif raw_margin_mode not in ("isolated", "cross"):
-            report["error"] = f"unsupported margin mode: {raw_margin_mode or 'unknown'}"
-            return False, report
-        report["margin_mode"] = raw_margin_mode
+        report["margin_mode"] = raw_margin_mode or "unknown"
     except Exception as e:
-        report["error"] = f"margin mode check failed: {e}"
-        return False, report
+        report["margin_mode"] = "unknown"
+        report["margin_warning"] = str(e)[:120]
 
     report["ok"] = True
     return True, report
