@@ -121,7 +121,7 @@ def run_breadwinner_daily() -> dict:
         "research_only": True,
         "live_trading_enabled": False,
         "real_order": False,
-        "final_decision": final_decision,
+        "final_decision": best_verdict,
         "edge_miner": {
             "symbols_scanned": edge_report.get("symbols_scanned", 0),
             "variants_tested": edge_report.get("variants_tested", 0),

@@ -7,7 +7,7 @@ Usage:
     python -m production_replay.hourly_alert
 """
 
-import json, os, sys
+import json, os, subprocess, sys
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -103,7 +103,6 @@ def run_hourly_alert() -> dict:
     except Exception:
         pass
     # Run paper execution ledger for fresh data (Phase 59)
-    import subprocess
     try:
         subprocess.run(
             [sys.executable, "-m", "production_replay.paper_execution_ledger"],
