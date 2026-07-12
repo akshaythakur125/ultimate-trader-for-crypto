@@ -131,7 +131,7 @@ def _resolve_market_key(raw_symbol: str, markets: dict) -> str | None:
 
 
 def _liquid_online_markets(ex) -> set:
-    """market_keys that are active USDT swaps with >= MIN_24H_VOLUME_USDT volume.
+    """market_keys that are USDT swaps with >= MIN_24H_VOLUME_USDT 24h volume.
 
     Filters out delisted/offline/dead microcaps (which have ~0 volume) so the
     scanner only trades real, executable markets. Returns an empty set if
@@ -140,25 +140,27 @@ def _liquid_online_markets(ex) -> set:
     try:
         tickers = ex.fetch_tickers()
     except Exception as e:
-        print(f"  (liquidity filter off — fetch_tickers failed: {e})")
+        print(f"  liquidity filter OFF — fetch_tickers failed: {type(e).__name__}: {str(e)[:100]}")
         return set()
     out = set()
+    checked = 0
     for key, t in tickers.items():
         m = ex.markets.get(key, {}) or {}
-        if not (m.get("swap") and m.get("quote") == "USDT" and m.get("active", True)):
+        if not (m.get("swap") and m.get("quote") == "USDT"):
             continue
+        checked += 1
         qv = t.get("quoteVolume")
         if not qv:
-            qv = (t.get("baseVolume") or 0) * (t.get("last") or 0)
+            qv = (t.get("baseVolume") or 0) * (t.get("last") or t.get("close") or 0)
         if qv and qv >= MIN_24H_VOLUME_USDT:
             out.add(key)
+    print(f"  liquidity: {len(tickers)} tickers, {checked} usdt-swaps, "
+          f"{len(out)} >= ${MIN_24H_VOLUME_USDT/1e6:.0f}M 24h vol")
     return out
 
 
 def _discover_symbols(ex) -> list[tuple[str, str]]:
     liquid = _liquid_online_markets(ex)
-    if liquid:
-        print(f"Liquidity filter: {len(liquid)} symbols >= ${MIN_24H_VOLUME_USDT/1e6:.0f}M 24h volume")
     pairs = []
     cached_files = [
         f for f in os.listdir(CACHE_DIR)
@@ -540,6 +542,7 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
 def main():
     print("Connecting to BingX...")
     ex = ccxt.bingx()
+    ex.options["defaultType"] = "swap"
     ex.load_markets()
     print(f"Markets loaded: {len(ex.markets)}")
 
