@@ -108,6 +108,14 @@ def _market_key_to_cache_symbol(market_key: str) -> str:
     return f"{base}{quote}"
 
 
+def _canon(sym: str) -> str:
+    """Canonical key for matching cache names, market keys, and ticker keys.
+
+    'ADA/USDT:USDT', 'ADA_USDT', and 'ADAUSDT' all normalize to 'ADAUSDT'.
+    """
+    return sym.split(":")[0].replace("/", "").replace("_", "").upper()
+
+
 def _resolve_market_key(raw_symbol: str, markets: dict) -> str | None:
     candidates = []
     if raw_symbol:
@@ -153,7 +161,7 @@ def _liquid_online_markets(ex) -> set:
         if not qv:
             qv = (t.get("baseVolume") or 0) * (t.get("last") or t.get("close") or 0)
         if qv and qv >= MIN_24H_VOLUME_USDT:
-            out.add(key)
+            out.add(_canon(key))
     print(f"  liquidity: {len(tickers)} tickers, {checked} usdt-swaps, "
           f"{len(out)} >= ${MIN_24H_VOLUME_USDT/1e6:.0f}M 24h vol")
     return out
@@ -170,14 +178,14 @@ def _discover_symbols(ex) -> list[tuple[str, str]]:
         for filename in sorted(cached_files):
             cache_sym = filename[:-8]
             market_key = _resolve_market_key(cache_sym, ex.markets)
-            if market_key and (not liquid or market_key in liquid):
+            if market_key and (not liquid or _canon(cache_sym) in liquid):
                 pairs.append((cache_sym, market_key))
         if pairs:
             return pairs
 
     for market_key, market in ex.markets.items():
         if market.get("swap") and market.get("quote") == "USDT" and market.get("active", True):
-            if liquid and market_key not in liquid:
+            if liquid and _canon(market_key) not in liquid:
                 continue
             pairs.append((_market_key_to_cache_symbol(market_key), market_key))
     return pairs[:200]
