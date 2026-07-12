@@ -26,6 +26,14 @@ FORBIDDEN_IMPORTS = [
     "api_key", "api_secret", "websocket", "stream",
 ]
 
+# Read-only research modules that are audited (see test_lockdown.py) to never
+# call place_order or set BINGX_EXECUTION_MODE. They may import a market-data
+# library (ccxt) purely to download historical OHLCV/funding. Keyed by
+# filename -> the specific import(s) allowed in that file only.
+IMPORT_ALLOWLIST = {
+    "historical_data_fetcher.py": {"ccxt"},
+}
+
 
 def check_config_locked() -> tuple[bool, str]:
     config = load_config()
@@ -66,16 +74,21 @@ def check_no_api_or_order_imports() -> tuple[bool, str]:
             tree = ast.parse(source)
         except SyntaxError:
             continue
+        allowed_here = IMPORT_ALLOWLIST.get(pyfile.name, set())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     top_module = alias.name.split(".")[0].lower()
+                    if top_module in allowed_here:
+                        continue
                     for forbidden in FORBIDDEN_IMPORTS:
                         if forbidden == top_module:
                             issues.append(f"{pyfile.name}: import {alias.name}")
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     top_module = node.module.split(".")[0].lower()
+                    if top_module in allowed_here:
+                        continue
                     for forbidden in FORBIDDEN_IMPORTS:
                         if forbidden == top_module:
                             issues.append(f"{pyfile.name}: from {node.module} import ...")

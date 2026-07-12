@@ -80,6 +80,9 @@ def run_shadow_executor() -> dict:
     decision = "DO_NOT_EXECUTE"
     show_reasons = []
     dux_decision = "N/A"
+    # Always defined so the report block below never hits UnboundLocalError on
+    # a no-trade cycle (it is overwritten when an order intent is built).
+    risk_usdt = 0.0
 
     # Shared risk/kill params
     risk_params = risk_plan.get("risk_parameters", {})
