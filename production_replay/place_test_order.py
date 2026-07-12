@@ -24,14 +24,13 @@ Usage:
 import argparse
 import sys
 
-import ccxt
-
 from production_replay.live_scan import (
     RISK_PCT,
     BB_RR_TARGET,
     _get_hedged_mode,
     _load_live_credentials,
     _resolve_market_key,
+    make_authed_client,
     place_bracket_order,
     safe_float,
 )
@@ -82,8 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Missing BINGX_API_KEY / BINGX_API_SECRET in environment.")
         return 1
 
-    ex = ccxt.bingx({"apiKey": api_key, "secret": api_secret})
-    ex.load_markets()
+    ex = make_authed_client(api_key, api_secret)
 
     sig = _build_signal(ex, args.symbol, args.side)
     if not sig:

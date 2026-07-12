@@ -29,6 +29,21 @@ def _load_live_credentials() -> tuple[str | None, str | None]:
     return api_key, api_secret
 
 
+def make_authed_client(apikey: str, apisec: str):
+    """Authenticated BingX swap client with markets loaded.
+
+    ccxt's load_markets() calls fetch_currencies(), which hits a spot-wallet
+    endpoint that a Futures-only API key cannot access (BingX 100413). We only
+    trade perps, so skip the currency fetch and load markets from the public
+    endpoint. This also populates .markets so symbol/limit lookups work.
+    """
+    ex = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+    ex.options["defaultType"] = "swap"
+    ex.has["fetchCurrencies"] = False
+    ex.load_markets()
+    return ex
+
+
 def _get_hedged_mode(ex_client) -> bool:
     try:
         mode = ex_client.fetch_position_mode() or {}
@@ -493,7 +508,7 @@ def main():
         apikey, apisec = _load_live_credentials()
         if apikey and apisec:
             print("Live mode: BingX credentials detected")
-            ex_client = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+            ex_client = make_authed_client(apikey, apisec)
             cancel_orphaned_orders(ex_client)
             open_orders = load_open_orders()
             if open_orders:
@@ -595,7 +610,7 @@ def main():
         if not apikey or not apisec:
             print("\n  LIVE mode set but missing BINGX_API_KEY/SECRET_KEY. Skipping orders.")
         else:
-            ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+            ex_exec = make_authed_client(apikey, apisec)
             hedged_mode = _get_hedged_mode(ex_exec)
             for s in signals:
                 place_bracket_order(ex_exec, s, hedged_mode)
