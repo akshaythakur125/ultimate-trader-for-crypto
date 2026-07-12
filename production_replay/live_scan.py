@@ -304,6 +304,185 @@ def cancel_orphaned_orders(ex_client):
         print(f"  Orders cleaned: {len(open_orders)} -> {len(updated)}")
 
 
+def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
+    """Place one live market entry with attached stop-loss and take-profit.
+
+    Single real-order code path: both the live scan loop and the manual test
+    order call this, so a test order exercises exactly what a real signal does.
+    Honors the same risk caps (MAX_TRADES / MAX_NOTIONAL_PER_TRADE /
+    MAX_TOTAL_NOTIONAL) and payload format. Returns True only when a real entry
+    order was placed.
+    """
+    try:
+        side = "buy" if s["direction"] == "LONG" else "sell"
+        risk_usdt = 1.00
+        diff = abs(s["entry"] - s["stop"])
+        if diff <= 0:
+            print(f"    >>> SKIPPED: {s['symbol']} — zero risk distance")
+            return False
+
+        current_price = s["current_price"]
+        if current_price <= 0:
+            print(f"    >>> SKIPPED: {s['symbol']} — zero current price")
+            return False
+
+        qty = round(risk_usdt / diff, 4)
+        if qty <= 0:
+            print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
+            return False
+
+        sym = s.get("market_key") or _resolve_market_key(s["symbol"], ex_exec.markets)
+        if not sym:
+            print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
+            return False
+
+        market_info = ex_exec.markets.get(sym, {}) or {}
+        limits = market_info.get("limits") or {}
+        amount_limits = limits.get("amount") or {}
+        cost_limits = limits.get("cost") or {}
+        min_qty = safe_float(amount_limits.get("min"), 0.001)
+        min_notional = safe_float(cost_limits.get("min"), MIN_NOTIONAL)
+
+        max_qty_for_notional = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
+        if min_qty * current_price > MAX_NOTIONAL_PER_TRADE:
+            print(f"    >>> SKIPPED: {sym} — min notional ${min_qty * current_price:.2f} > max ${MAX_NOTIONAL_PER_TRADE}")
+            return False
+
+        if qty < min_qty:
+            qty = min_qty
+
+        notional = qty * current_price
+        if notional < min_notional:
+            qty = round(min_notional / current_price, 4)
+            notional = qty * current_price
+
+        if qty < min_qty:
+            print(f"    >>> SKIPPED: {sym} — qty {qty} < min {min_qty} after notional adjustment")
+            return False
+
+        if notional > MAX_NOTIONAL_PER_TRADE:
+            qty = max_qty_for_notional
+            notional = qty * current_price
+            print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
+
+        mode_ok, mode_report = _check_symbol_modes(ex_exec, sym)
+        if not mode_ok:
+            print(f"    >>> MODE CHECK FAILED: {sym} {mode_report.get('error', 'unknown')}")
+            log_trade({
+                "event": "mode_check_failed",
+                "symbol": sym,
+                "direction": s["direction"],
+                "mode_report": mode_report,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            return False
+
+        print(
+            f"    >>> MODE CHECK: {sym} position={mode_report['position_mode']} "
+            f"margin={mode_report['margin_mode']}"
+        )
+
+        actual_stop = float(s["stop"])
+        actual_target = float(s["target"])
+
+        tp_payload = {
+            "triggerPrice": actual_target,
+            "workingType": "MARK_PRICE",
+            "type": "TAKE_PROFIT_MARKET",
+            "quantity": qty,
+        }
+        sl_payload = {
+            "triggerPrice": actual_stop,
+            "workingType": "MARK_PRICE",
+            "type": "STOP_MARKET",
+            "quantity": qty,
+        }
+
+        open_orders = load_open_orders()
+        if any(o["symbol"] == sym for o in open_orders):
+            print(f"    >>> SKIPPED: {sym} — already has open orders")
+            return False
+
+        if len(open_orders) >= MAX_TRADES:
+            print(f"    >>> SKIPPED: {sym} — max {MAX_TRADES} trades reached")
+            return False
+
+        total_notional = sum(
+            o.get("qty", 0) * o.get("entry", 0)
+            for o in open_orders
+            if o.get("entry", 0) > 0 and o.get("qty", 0) > 0
+        ) + notional
+        if total_notional > MAX_TOTAL_NOTIONAL:
+            print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
+            return False
+
+        try:
+            lev = ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
+            if lev is None:
+                print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
+                return False
+        except Exception:
+            try:
+                lev = ex_exec.set_leverage(2, sym)
+                if lev is None:
+                    print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
+                    return False
+            except Exception as e2:
+                print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
+                return False
+
+        entry_order = ex_exec.create_order(
+            sym,
+            "market",
+            side,
+            qty,
+            None,
+            params={
+                "hedged": hedged_mode,
+                "takeProfit": tp_payload,
+                "stopLoss": sl_payload,
+            },
+        )
+        if not entry_order or not entry_order.get("id"):
+            print(f"    >>> ENTRY FAILED: {sym} — no order ID returned")
+            return False
+
+        entry_order_id = entry_order.get("id")
+        actual_entry = safe_float(entry_order.get("average"), 0)
+        if actual_entry <= 0:
+            actual_entry = safe_float(entry_order.get("price"), 0)
+        if actual_entry <= 0:
+            actual_entry = current_price
+
+        log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
+                   "qty": qty, "entry": actual_entry, "stop": actual_stop,
+                   "target": actual_target, "entry_order_id": entry_order_id,
+                   "hedged_mode": hedged_mode,
+                   "sl_attached": True,
+                   "tp_attached": True,
+                   "timestamp": datetime.now(timezone.utc).isoformat()})
+        print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
+        print(f"    >>> BRACKET: SL @ {actual_stop} | TP @ {actual_target} | hedged={hedged_mode}")
+
+        open_orders.append({
+            "symbol": sym,
+            "direction": s["direction"],
+            "entry": actual_entry,
+            "stop": actual_stop,
+            "target": actual_target,
+            "qty": qty,
+            "entry_order_id": entry_order_id,
+            "hedged_mode": hedged_mode,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        save_open_orders(open_orders)
+        return True
+
+    except Exception as e:
+        print(f"    >>> ORDER FAILED: {s['symbol']} {type(e).__name__}: {e}")
+        return False
+
+
 def main():
     print("Connecting to BingX...")
     ex = ccxt.bingx()
@@ -418,180 +597,8 @@ def main():
         else:
             ex_exec = ccxt.bingx({"apiKey": apikey, "secret": apisec})
             hedged_mode = _get_hedged_mode(ex_exec)
-            open_orders = load_open_orders()
             for s in signals:
-                try:
-                    side = "buy" if s["direction"] == "LONG" else "sell"
-                    risk_usdt = 1.00
-                    diff = abs(s["entry"] - s["stop"])
-                    if diff <= 0:
-                        print(f"    >>> SKIPPED: {s['symbol']} — zero risk distance")
-                        continue
-
-                    current_price = s["current_price"]
-                    if current_price <= 0:
-                        print(f"    >>> SKIPPED: {s['symbol']} — zero current price")
-                        continue
-
-                    qty = round(risk_usdt / diff, 4)
-                    if qty <= 0:
-                        print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
-                        continue
-
-                    sym = s.get("market_key") or _resolve_market_key(s["symbol"], ex_exec.markets)
-                    if not sym:
-                        print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
-                        continue
-
-                    market_info = ex_exec.markets.get(sym, {}) or {}
-                    limits = market_info.get("limits") or {}
-                    amount_limits = limits.get("amount") or {}
-                    cost_limits = limits.get("cost") or {}
-                    min_qty = safe_float(amount_limits.get("min"), 0.001)
-                    min_notional = safe_float(cost_limits.get("min"), MIN_NOTIONAL)
-
-                    max_qty_for_notional = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
-                    if min_qty * current_price > MAX_NOTIONAL_PER_TRADE:
-                        print(f"    >>> SKIPPED: {sym} — min notional ${min_qty * current_price:.2f} > max ${MAX_NOTIONAL_PER_TRADE}")
-                        continue
-
-                    if qty < min_qty:
-                        qty = min_qty
-
-                    notional = qty * current_price
-                    if notional < min_notional:
-                        qty = round(min_notional / current_price, 4)
-                        notional = qty * current_price
-
-                    if qty < min_qty:
-                        print(f"    >>> SKIPPED: {sym} — qty {qty} < min {min_qty} after notional adjustment")
-                        continue
-
-                    if notional > MAX_NOTIONAL_PER_TRADE:
-                        qty = max_qty_for_notional
-                        notional = qty * current_price
-                        print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
-
-                    mode_ok, mode_report = _check_symbol_modes(ex_exec, sym)
-                    if not mode_ok:
-                        print(f"    >>> MODE CHECK FAILED: {sym} {mode_report.get('error', 'unknown')}")
-                        log_trade({
-                            "event": "mode_check_failed",
-                            "symbol": sym,
-                            "direction": s["direction"],
-                            "mode_report": mode_report,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        })
-                        continue
-
-                    print(
-                        f"    >>> MODE CHECK: {sym} position={mode_report['position_mode']} "
-                        f"margin={mode_report['margin_mode']}"
-                    )
-
-                    planned_stop = float(s["stop"])
-                    planned_target = float(s["target"])
-                    if s["direction"] == "LONG":
-                        actual_stop = planned_stop
-                        actual_target = planned_target
-                    else:
-                        actual_stop = planned_stop
-                        actual_target = planned_target
-
-                    tp_payload = {
-                        "triggerPrice": actual_target,
-                        "workingType": "MARK_PRICE",
-                        "type": "TAKE_PROFIT_MARKET",
-                        "quantity": qty,
-                    }
-                    sl_payload = {
-                        "triggerPrice": actual_stop,
-                        "workingType": "MARK_PRICE",
-                        "type": "STOP_MARKET",
-                        "quantity": qty,
-                    }
-
-                    open_orders = load_open_orders()
-                    if any(o["symbol"] == sym for o in open_orders):
-                        print(f"    >>> SKIPPED: {sym} — already has open orders")
-                        continue
-
-                    if len(open_orders) >= MAX_TRADES:
-                        print(f"    >>> SKIPPED: {sym} — max {MAX_TRADES} trades reached")
-                        continue
-
-                    total_notional = sum(
-                        o.get("qty", 0) * o.get("entry", 0)
-                        for o in open_orders
-                        if o.get("entry", 0) > 0 and o.get("qty", 0) > 0
-                    ) + notional
-                    if total_notional > MAX_TOTAL_NOTIONAL:
-                        print(f"    >>> SKIPPED: {sym} — total notional ${total_notional:.2f} > ${MAX_TOTAL_NOTIONAL}")
-                        continue
-
-                    try:
-                        lev = ex_exec.set_leverage(2, sym, params={"side": s["direction"]})
-                        if lev is None:
-                            print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
-                            continue
-                    except Exception as e:
-                        try:
-                            lev = ex_exec.set_leverage(2, sym)
-                            if lev is None:
-                                print(f"    >>> LEVERAGE FAILED: {sym} — returned None (market not supported?)")
-                                continue
-                        except Exception as e2:
-                            print(f"    >>> LEVERAGE FAILED: {sym} {e2}")
-                            continue
-
-                    entry_order = ex_exec.create_order(
-                        sym,
-                        "market",
-                        side,
-                        qty,
-                        None,
-                        params={
-                            "hedged": hedged_mode,
-                            "takeProfit": tp_payload,
-                            "stopLoss": sl_payload,
-                        },
-                    )
-                    if not entry_order or not entry_order.get("id"):
-                        print(f"    >>> ENTRY FAILED: {sym} — no order ID returned")
-                        continue
-
-                    entry_order_id = entry_order.get("id")
-                    actual_entry = safe_float(entry_order.get("average"), 0)
-                    if actual_entry <= 0:
-                        actual_entry = safe_float(entry_order.get("price"), 0)
-                    if actual_entry <= 0:
-                        actual_entry = current_price
-
-                    log_trade({"event": "entry", "symbol": sym, "direction": s["direction"],
-                               "qty": qty, "entry": actual_entry, "stop": actual_stop,
-                               "target": actual_target, "entry_order_id": entry_order_id,
-                               "hedged_mode": hedged_mode,
-                               "sl_attached": True,
-                               "tp_attached": True,
-                               "timestamp": datetime.now(timezone.utc).isoformat()})
-                    print(f"    >>> ENTRY: {sym} {side} {qty} @ {actual_entry} (order={entry_order_id})")
-                    print(f"    >>> BRACKET: SL @ {actual_stop} | TP @ {actual_target} | hedged={hedged_mode}")
-
-                    open_orders.append({
-                        "symbol": sym,
-                        "direction": s["direction"],
-                        "entry": actual_entry,
-                        "stop": actual_stop,
-                        "target": actual_target,
-                        "qty": qty,
-                        "entry_order_id": entry_order_id,
-                        "hedged_mode": hedged_mode,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
-                    save_open_orders(open_orders)
-
-                except Exception as e:
-                    print(f"    >>> ORDER FAILED: {s['symbol']} {type(e).__name__}: {e}")
+                place_bracket_order(ex_exec, s, hedged_mode)
 
 
 if __name__ == "__main__":
