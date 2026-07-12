@@ -9,9 +9,12 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 OPEN_ORDERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "open_orders.json")
 TRADE_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runtime_state", "trade_log.jsonl")
 
+# Pilot sizing for ~$20 capital at 2x leverage, max 3 concurrent trades.
+# Per-trade notional must exceed the exchange minimum order size (BTC ~ $6.39),
+# so keep it at/above ~$10. Total is kept <= ~1.5x capital of margin used.
 MAX_TRADES = 3
-MAX_NOTIONAL_PER_TRADE = 5.0
-MAX_TOTAL_NOTIONAL = 10.0
+MAX_NOTIONAL_PER_TRADE = 10.0
+MAX_TOTAL_NOTIONAL = 30.0
 MAX_RETRIES = 3
 MIN_NOTIONAL = 5.0
 BB_PERIOD = 15
