@@ -17,6 +17,11 @@ MAX_NOTIONAL_PER_TRADE = 10.0
 MAX_TOTAL_NOTIONAL = 30.0
 MAX_RETRIES = 3
 MIN_NOTIONAL = 5.0
+# Only scan/trade symbols with at least this much 24h quote volume. Excludes
+# delisted/offline/dead microcaps (which have ~0 volume) so signals land on
+# real, executable markets. Lower it for more (thinner) symbols, raise it for
+# only the most liquid names.
+MIN_24H_VOLUME_USDT = 3_000_000
 BB_PERIOD = 15
 BB_STD_MULT = 3.5
 BB_RR_TARGET = 10.0
@@ -125,7 +130,35 @@ def _resolve_market_key(raw_symbol: str, markets: dict) -> str | None:
     return None
 
 
+def _liquid_online_markets(ex) -> set:
+    """market_keys that are active USDT swaps with >= MIN_24H_VOLUME_USDT volume.
+
+    Filters out delisted/offline/dead microcaps (which have ~0 volume) so the
+    scanner only trades real, executable markets. Returns an empty set if
+    tickers can't be fetched, in which case no volume filter is applied.
+    """
+    try:
+        tickers = ex.fetch_tickers()
+    except Exception as e:
+        print(f"  (liquidity filter off — fetch_tickers failed: {e})")
+        return set()
+    out = set()
+    for key, t in tickers.items():
+        m = ex.markets.get(key, {}) or {}
+        if not (m.get("swap") and m.get("quote") == "USDT" and m.get("active", True)):
+            continue
+        qv = t.get("quoteVolume")
+        if not qv:
+            qv = (t.get("baseVolume") or 0) * (t.get("last") or 0)
+        if qv and qv >= MIN_24H_VOLUME_USDT:
+            out.add(key)
+    return out
+
+
 def _discover_symbols(ex) -> list[tuple[str, str]]:
+    liquid = _liquid_online_markets(ex)
+    if liquid:
+        print(f"Liquidity filter: {len(liquid)} symbols >= ${MIN_24H_VOLUME_USDT/1e6:.0f}M 24h volume")
     pairs = []
     cached_files = [
         f for f in os.listdir(CACHE_DIR)
@@ -135,13 +168,15 @@ def _discover_symbols(ex) -> list[tuple[str, str]]:
         for filename in sorted(cached_files):
             cache_sym = filename[:-8]
             market_key = _resolve_market_key(cache_sym, ex.markets)
-            if market_key:
+            if market_key and (not liquid or market_key in liquid):
                 pairs.append((cache_sym, market_key))
         if pairs:
             return pairs
 
     for market_key, market in ex.markets.items():
         if market.get("swap") and market.get("quote") == "USDT" and market.get("active", True):
+            if liquid and market_key not in liquid:
+                continue
             pairs.append((_market_key_to_cache_symbol(market_key), market_key))
     return pairs[:200]
 
