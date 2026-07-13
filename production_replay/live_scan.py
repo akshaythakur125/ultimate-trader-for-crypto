@@ -175,11 +175,18 @@ def _discover_symbols(ex) -> list[tuple[str, str]]:
         if f.endswith("_1h.json")
     ] if os.path.exists(CACHE_DIR) else []
     if cached_files:
+        best = {}  # canonical symbol -> (cache_sym, market_key)
         for filename in sorted(cached_files):
             cache_sym = filename[:-8]
             market_key = _resolve_market_key(cache_sym, ex.markets)
-            if market_key and (not liquid or _canon(cache_sym) in liquid):
-                pairs.append((cache_sym, market_key))
+            if not market_key or (liquid and _canon(cache_sym) not in liquid):
+                continue
+            c = _canon(cache_sym)
+            # Dedup coins that appear under two cache-name formats; prefer the
+            # underscore file, which holds the deep history.
+            if c not in best or ("_" in cache_sym and "_" not in best[c][0]):
+                best[c] = (cache_sym, market_key)
+        pairs = list(best.values())
         if pairs:
             return pairs
 
@@ -397,11 +404,6 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             print(f"    >>> SKIPPED: {s['symbol']} — zero current price")
             return False
 
-        qty = round(risk_usdt / diff, 4)
-        if qty <= 0:
-            print(f"    >>> SKIPPED: {s['symbol']} — qty too small")
-            return False
-
         sym = s.get("market_key") or _resolve_market_key(s["symbol"], ex_exec.markets)
         if not sym:
             print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
@@ -411,30 +413,57 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
         limits = market_info.get("limits") or {}
         amount_limits = limits.get("amount") or {}
         cost_limits = limits.get("cost") or {}
-        min_qty = safe_float(amount_limits.get("min"), 0.001)
+        min_qty = safe_float(amount_limits.get("min"), 0.0)
         min_notional = safe_float(cost_limits.get("min"), MIN_NOTIONAL)
+        contract_size = safe_float(market_info.get("contractSize"), 1.0) or 1.0
 
-        max_qty_for_notional = round(MAX_NOTIONAL_PER_TRADE / current_price, 4)
-        if min_qty * current_price > MAX_NOTIONAL_PER_TRADE:
-            print(f"    >>> SKIPPED: {sym} — min notional ${min_qty * current_price:.2f} > max ${MAX_NOTIONAL_PER_TRADE}")
+        # USDT value of ONE contract at the current price. Using contractSize is
+        # essential: some perps are more than one token per contract, and
+        # ignoring it makes the order many times larger than intended.
+        unit_value = current_price * contract_size
+        if unit_value <= 0:
+            print(f"    >>> SKIPPED: {sym} — bad unit value")
             return False
 
-        if qty < min_qty:
+        # Size for ~$1 risk, then bound by the per-trade notional cap and the
+        # exchange minimums.
+        qty = risk_usdt / (diff * contract_size)
+        max_qty = MAX_NOTIONAL_PER_TRADE / unit_value
+        if qty > max_qty:
+            qty = max_qty
+        if min_qty and qty < min_qty:
             qty = min_qty
+        if min_notional and qty * unit_value < min_notional:
+            qty = min_notional / unit_value
 
-        notional = qty * current_price
-        if notional < min_notional:
-            qty = round(min_notional / current_price, 4)
-            notional = qty * current_price
-
-        if qty < min_qty:
-            print(f"    >>> SKIPPED: {sym} — qty {qty} < min {min_qty} after notional adjustment")
+        # Round to the exchange's amount precision — the size that is actually sent.
+        try:
+            qty = float(ex_exec.amount_to_precision(sym, qty))
+        except Exception:
+            qty = round(qty, 6)
+        if qty <= 0:
+            print(f"    >>> SKIPPED: {sym} — qty rounds to 0")
             return False
 
-        if notional > MAX_NOTIONAL_PER_TRADE:
-            qty = max_qty_for_notional
-            notional = qty * current_price
-            print(f"    >>> QTY CAPPED: {sym} notional=${notional:.2f}")
+        notional = qty * unit_value
+
+        # HARD GUARD 1: never place an order materially larger than the design
+        # cap (protects against min-size / contract-size quirks).
+        if notional > MAX_NOTIONAL_PER_TRADE * 1.5:
+            print(f"    >>> SKIPPED: {sym} — min order ${notional:.2f} exceeds ${MAX_NOTIONAL_PER_TRADE} cap")
+            return False
+
+        # HARD GUARD 2: never place an order the account can't afford.
+        try:
+            free_usdt = safe_float(ex_exec.fetch_balance().get("USDT", {}).get("free"), 0.0)
+        except Exception:
+            free_usdt = 0.0
+        required_margin = notional / 2.0  # 2x leverage
+        if free_usdt and required_margin > free_usdt * 0.95:
+            print(f"    >>> SKIPPED: {sym} — need ~${required_margin:.2f} margin, only ${free_usdt:.2f} free")
+            return False
+        print(f"    >>> SIZE: {sym} qty={qty} notional=${notional:.2f} "
+              f"margin~${required_margin:.2f} (free ${free_usdt:.2f})")
 
         mode_ok, mode_report = _check_symbol_modes(ex_exec, sym)
         if not mode_ok:
