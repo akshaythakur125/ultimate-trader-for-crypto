@@ -272,6 +272,36 @@ def safe_float(val, default=0.0):
         return default
 
 
+def _ensure_leverage(ex_exec, sym: str, target: int, position_side: str) -> bool:
+    """Set leverage to `target`x; return True when it's safe to trade.
+
+    Leverage persists on BingX, so a set failure is not automatically fatal: if
+    the symbol already sits at <= target leverage, we proceed. We only skip when
+    the symbol is offline/invalid or we can't confirm a safe leverage — so a
+    transient or 'already set' hiccup never blocks a valid trade.
+    """
+    try:
+        ex_exec.set_leverage(target, sym, params={"side": position_side})
+        return True
+    except Exception as e:
+        msg = str(e).lower()
+        if any(k in msg for k in ("offline", "not exist", "109418", "109425", "delist")):
+            print(f"    >>> SKIPPED: {sym} — symbol offline/invalid")
+            return False
+        # Set failed for another reason; check the leverage already in place.
+        try:
+            cur = ex_exec.fetch_leverage(sym) or {}
+            cur_lev = max(safe_float(cur.get("longLeverage")), safe_float(cur.get("shortLeverage")))
+            if 0 < cur_lev <= target:
+                print(f"    >>> leverage already {cur_lev:.0f}x (set skipped: {str(e)[:50]})")
+                return True
+            print(f"    >>> SKIPPED: {sym} — leverage {cur_lev:.0f}x > {target}x and set failed")
+            return False
+        except Exception:
+            print(f"    >>> LEVERAGE FAILED: {sym} {str(e)[:80]}")
+            return False
+
+
 def close_position_market(ex_client, sym, side, qty):
     close_side = "sell" if side == "LONG" else "buy"
     try:
@@ -518,10 +548,7 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
 
         # One-way mode wants side/positionSide "BOTH"; hedged mode wants LONG/SHORT.
         position_side = s["direction"] if hedged_mode else "BOTH"
-        try:
-            ex_exec.set_leverage(2, sym, params={"side": position_side})
-        except Exception as e:
-            print(f"    >>> LEVERAGE FAILED: {sym} {e}")
+        if not _ensure_leverage(ex_exec, sym, 2, position_side):
             return False
 
         entry_order = ex_exec.create_order(
