@@ -22,8 +22,11 @@ VENV="${VENV:-$HOME/trader-venv}"
 INTERVAL="${INTERVAL:-3600}"
 ENV_FILE="${ENV_FILE:-$HOME/.bbv1.env}"
 PY="$VENV/bin/python"
+# Persistent history log that survives restarts (unlike the nohup stdout file).
+LOG="${LOG:-$REPO_DIR/runtime_state/live_history.log}"
 
 cd "$REPO_DIR" || exit 1
+mkdir -p "$(dirname "$LOG")"
 
 if [ -f "$ENV_FILE" ]; then
   set -a; . "$ENV_FILE"; set +a
@@ -36,9 +39,13 @@ fi
 
 echo "bb v1 live loop starting | repo=$REPO_DIR | mode=${BINGX_EXECUTION_MODE:-unset} | interval=${INTERVAL}s"
 
+echo "persistent history: $LOG"
+
 while true; do
-  echo "===== $(date -u +%Y-%m-%dT%H:%M:%SZ) cycle start ====="
-  "$PY" -m production_replay.operator || echo "operator exited non-zero (continuing)"
-  echo "===== cycle done, sleeping ${INTERVAL}s ====="
+  {
+    echo "===== $(date -u +%Y-%m-%dT%H:%M:%SZ) cycle start ====="
+    "$PY" -m production_replay.operator || echo "operator exited non-zero (continuing)"
+    echo "===== cycle done, sleeping ${INTERVAL}s ====="
+  } 2>&1 | tee -a "$LOG"
   sleep "$INTERVAL"
 done
