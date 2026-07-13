@@ -29,6 +29,8 @@ BB_MIN_ENTRY_VOL_RATIO = 1.5
 RISK_PCT = 0.005
 STOP_MULTIPLIER = RISK_PCT
 TARGET_MULTIPLIER = RISK_PCT * BB_RR_TARGET
+CAPITAL_USDT = 20.0
+RISK_PER_TRADE_PCT = 0.04  # 4% of capital per trade
 
 
 def _load_live_credentials() -> tuple[str | None, str | None]:
@@ -423,7 +425,7 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
     """
     try:
         side = "buy" if s["direction"] == "LONG" else "sell"
-        risk_usdt = 1.00
+        risk_usdt = round(CAPITAL_USDT * RISK_PER_TRADE_PCT, 2)  # 4% of capital
         diff = abs(s["entry"] - s["stop"])
         if diff <= 0:
             print(f"    >>> SKIPPED: {s['symbol']} — zero risk distance")
