@@ -1,5 +1,5 @@
 """Fetch fresh 1h candles from BingX, scan for BB Bounce v1 signals live."""
-import json, os, sys, time, ccxt
+import json, math, os, sys, time, ccxt
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -12,9 +12,11 @@ TRADE_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 # Pilot sizing for ~$20 capital at 2x leverage, max 3 concurrent trades.
 # Per-trade notional must exceed the exchange minimum order size (BTC ~ $6.39),
 # so keep it at/above ~$10. Total is kept <= ~1.5x capital of margin used.
-MAX_TRADES = 3
-MAX_NOTIONAL_PER_TRADE = 10.0
-MAX_TOTAL_NOTIONAL = 30.0
+# 4% capital risk per trade with a 0.5% stop needs ~8x capital in notional, so
+# only one such trade fits on ~$18. Concurrency is intentionally 1.
+MAX_TRADES = 1
+MAX_NOTIONAL_PER_TRADE = 10.0  # legacy; sizing is risk-based (see place_bracket_order)
+MAX_TOTAL_NOTIONAL = 216.0
 MAX_RETRIES = 3
 MIN_NOTIONAL = 5.0
 # Only scan/trade symbols with at least this much 24h quote volume. Excludes
@@ -29,8 +31,9 @@ BB_MIN_ENTRY_VOL_RATIO = 1.5
 RISK_PCT = 0.005
 STOP_MULTIPLIER = RISK_PCT
 TARGET_MULTIPLIER = RISK_PCT * BB_RR_TARGET
-CAPITAL_USDT = 20.0
-RISK_PER_TRADE_PCT = 0.04  # 4% of capital per trade
+CAPITAL_USDT = 18.0
+RISK_PER_TRADE_PCT = 0.04  # 4% of capital risked per trade (enforced via the stop)
+LEVERAGE_CAP = 12          # max leverage the sizer will use to afford a trade
 
 
 def _load_live_credentials() -> tuple[str | None, str | None]:
@@ -457,18 +460,21 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             print(f"    >>> SKIPPED: {sym} — bad unit value")
             return False
 
-        # Size for ~$1 risk, then bound by the per-trade notional cap and the
-        # exchange minimums.
+        # Available margin first — leverage is derived to fit it.
+        try:
+            free_usdt = safe_float(ex_exec.fetch_balance().get("USDT", {}).get("free"), 0.0)
+        except Exception:
+            free_usdt = 0.0
+
+        # Size so a stop-out loses exactly risk_usdt (4% of capital). No notional
+        # cap — the stop distance and the risk budget set the size.
         qty = risk_usdt / (diff * contract_size)
-        max_qty = MAX_NOTIONAL_PER_TRADE / unit_value
-        if qty > max_qty:
-            qty = max_qty
         if min_qty and qty < min_qty:
             qty = min_qty
         if min_notional and qty * unit_value < min_notional:
             qty = min_notional / unit_value
 
-        # Round to the exchange's amount precision — the size that is actually sent.
+        # Round to the exchange's amount precision — the size actually sent.
         try:
             qty = float(ex_exec.amount_to_precision(sym, qty))
         except Exception:
@@ -478,24 +484,28 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             return False
 
         notional = qty * unit_value
+        actual_risk = qty * diff * contract_size
 
-        # HARD GUARD 1: never place an order materially larger than the design
-        # cap (protects against min-size / contract-size quirks).
-        if notional > MAX_NOTIONAL_PER_TRADE * 1.5:
-            print(f"    >>> SKIPPED: {sym} — min order ${notional:.2f} exceeds ${MAX_NOTIONAL_PER_TRADE} cap")
+        # Leverage needed to afford this notional, within the smaller of the
+        # per-trade capital share and 90% of free balance; capped for safety and
+        # by the symbol's own maximum.
+        budget = min(CAPITAL_USDT / max(1, MAX_TRADES), (free_usdt or CAPITAL_USDT) * 0.90)
+        if budget <= 0:
+            print(f"    >>> SKIPPED: {sym} — no free margin")
             return False
+        sym_max_lev = int(safe_float((limits.get("leverage") or {}).get("max"), LEVERAGE_CAP)) or LEVERAGE_CAP
+        leverage = max(1, min(LEVERAGE_CAP, sym_max_lev, math.ceil(notional / budget)))
+        required_margin = notional / leverage
 
-        # HARD GUARD 2: never place an order the account can't afford.
-        try:
-            free_usdt = safe_float(ex_exec.fetch_balance().get("USDT", {}).get("free"), 0.0)
-        except Exception:
-            free_usdt = 0.0
-        required_margin = notional / 2.0  # 2x leverage
+        # Guards: never exceed buying power, never place what we can't margin.
+        if notional > CAPITAL_USDT * LEVERAGE_CAP * 1.2:
+            print(f"    >>> SKIPPED: {sym} — notional ${notional:.2f} beyond max buying power")
+            return False
         if free_usdt and required_margin > free_usdt * 0.95:
             print(f"    >>> SKIPPED: {sym} — need ~${required_margin:.2f} margin, only ${free_usdt:.2f} free")
             return False
-        print(f"    >>> SIZE: {sym} qty={qty} notional=${notional:.2f} "
-              f"margin~${required_margin:.2f} (free ${free_usdt:.2f})")
+        print(f"    >>> SIZE: {sym} qty={qty} notional=${notional:.2f} lev={leverage}x "
+              f"risk=${actual_risk:.2f} margin~${required_margin:.2f} (free ${free_usdt:.2f})")
 
         mode_ok, mode_report = _check_symbol_modes(ex_exec, sym)
         if not mode_ok:
@@ -550,7 +560,7 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
 
         # One-way mode wants side/positionSide "BOTH"; hedged mode wants LONG/SHORT.
         position_side = s["direction"] if hedged_mode else "BOTH"
-        if not _ensure_leverage(ex_exec, sym, 2, position_side):
+        if not _ensure_leverage(ex_exec, sym, leverage, position_side):
             return False
 
         entry_order = ex_exec.create_order(
