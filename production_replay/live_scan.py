@@ -122,23 +122,38 @@ def _canon(sym: str) -> str:
 
 
 def _resolve_market_key(raw_symbol: str, markets: dict) -> str | None:
+    """Resolve a signal symbol to its BingX linear-USDT SWAP market key.
+
+    THIS IS A FUTURES BOT — it must resolve to the perpetual swap
+    ('BTC/USDT:USDT'), never the spot market ('BTC/USDT'). BingX lists BOTH,
+    and a signal symbol like 'COW_USDT' matches the spot key first. Sending the
+    order to the spot market routes it at the empty spot wallet, so BingX
+    rejects it with avail:0 InsufficientFunds even though the futures wallet is
+    funded. We therefore only ever return a market whose 'swap' flag is set;
+    swap-form candidates are tried first, and a match is accepted only if it is
+    actually a swap. If no swap market exists for the symbol we return None so
+    the trade is skipped rather than mis-routed to spot.
+    """
+    if not raw_symbol:
+        return None
+    cleaned = raw_symbol.replace("_", "/")
+    base = cleaned.split(":")[0]  # strip any existing :USDT suffix
     candidates = []
-    if raw_symbol:
-        candidates.append(raw_symbol)
-        cleaned = raw_symbol.replace("_", "/")
+    if cleaned.endswith(":USDT"):
         candidates.append(cleaned)
-        if cleaned.endswith("/USDT"):
-            candidates.append(f"{cleaned}:USDT")
-        if cleaned.endswith("USDT") and "/" not in cleaned:
-            candidates.append(f"{cleaned[:-4]}/USDT:USDT")
-        if cleaned.endswith(":USDT"):
-            candidates.append(cleaned)
+    if base.endswith("/USDT"):
+        candidates.append(f"{base}:USDT")
+    if base.endswith("USDT") and "/" not in base:
+        candidates.append(f"{base[:-4]}/USDT:USDT")
+    # Non-swap forms last, and only accepted below if they are actually swaps.
+    candidates.extend([raw_symbol, cleaned, base])
     seen = set()
     for candidate in candidates:
-        if candidate in seen:
+        if not candidate or candidate in seen:
             continue
         seen.add(candidate)
-        if candidate in markets:
+        market = markets.get(candidate)
+        if market and market.get("swap"):
             return candidate
     return None
 
