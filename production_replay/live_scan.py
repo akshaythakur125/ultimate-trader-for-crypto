@@ -277,6 +277,23 @@ def safe_float(val, default=0.0):
         return default
 
 
+def _ensure_margin_mode(ex_exec, sym: str, mode: str = "cross") -> None:
+    """Best-effort set margin mode; ignore 'no change needed' errors.
+
+    Cross margin lets the set leverage actually reduce the order's required
+    margin against the whole balance. In isolated mode BingX can demand
+    near-full notional to open a position, which makes a leveraged order
+    unaffordable even with leverage set.
+    """
+    try:
+        ex_exec.set_margin_mode(mode, sym)
+    except Exception as e:
+        msg = str(e).lower()
+        if any(k in msg for k in ("no need", "not modified", "already", "no change")):
+            return
+        print(f"    >>> margin-mode note: {sym} {str(e)[:80]}")
+
+
 def _ensure_leverage(ex_exec, sym: str, target: int, position_side: str) -> bool:
     """Set leverage to `target`x; return True when it's safe to trade.
 
@@ -560,6 +577,8 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
 
         # One-way mode wants side/positionSide "BOTH"; hedged mode wants LONG/SHORT.
         position_side = s["direction"] if hedged_mode else "BOTH"
+        # Cross margin so the set leverage actually reduces the required margin.
+        _ensure_margin_mode(ex_exec, sym, "cross")
         if not _ensure_leverage(ex_exec, sym, leverage, position_side):
             return False
 
