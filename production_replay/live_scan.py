@@ -57,7 +57,7 @@ def make_authed_client(apikey: str, apisec: str):
     trade perps, so skip the currency fetch and load markets from the public
     endpoint. This also populates .markets so symbol/limit lookups work.
     """
-    ex = ccxt.bingx({"apiKey": apikey, "secret": apisec})
+    ex = ccxt.bingx({"apiKey": apikey, "secret": apisec, "enableRateLimit": True})
     ex.options["defaultType"] = "swap"
     ex.has["fetchCurrencies"] = False
     ex.load_markets()
@@ -295,33 +295,39 @@ def _ensure_margin_mode(ex_exec, sym: str, mode: str = "cross") -> None:
 
 
 def _ensure_leverage(ex_exec, sym: str, target: int, position_side: str) -> bool:
-    """Set leverage to `target`x; return True when it's safe to trade.
+    """Set leverage to `target`x and CONFIRM it stuck; only then is it safe to trade.
 
-    Leverage persists on BingX, so a set failure is not automatically fatal: if
-    the symbol already sits at <= target leverage, we proceed. We only skip when
-    the symbol is offline/invalid or we can't confirm a safe leverage — so a
-    transient or 'already set' hiccup never blocks a valid trade.
+    This is the crux of the `avail:0` bug: sizing computes a notional that is only
+    affordable at `target`x leverage. If `set_leverage` silently no-ops (throttled,
+    stale session, race with a prior cycle) the symbol can still sit at 1x, where
+    BingX demands ~full notional as margin and rejects the order with
+    InsufficientFunds. A bare `set_leverage(...)` that raises no exception does NOT
+    prove the leverage changed — so we always read it back with `fetch_leverage`
+    and require `cur_lev >= target` before returning True. We retry a few times to
+    ride out transient throttling, and skip cleanly (never place at the wrong
+    leverage) when we can't confirm it.
     """
-    try:
-        ex_exec.set_leverage(target, sym, params={"side": position_side})
-        return True
-    except Exception as e:
-        msg = str(e).lower()
-        if any(k in msg for k in ("offline", "not exist", "109418", "109425", "delist")):
-            print(f"    >>> SKIPPED: {sym} — symbol offline/invalid")
-            return False
-        # Set failed for another reason; check the leverage already in place.
+    last = ""
+    for _ in range(3):
+        try:
+            ex_exec.set_leverage(target, sym, params={"side": position_side})
+        except Exception as e:
+            last = str(e)
+            if any(k in last.lower() for k in ("offline", "not exist", "109418", "109425", "delist")):
+                print(f"    >>> SKIPPED: {sym} — symbol offline/invalid")
+                return False
+            # "already set / no change" is fine — the read-back below is the judge.
         try:
             cur = ex_exec.fetch_leverage(sym) or {}
             cur_lev = max(safe_float(cur.get("longLeverage")), safe_float(cur.get("shortLeverage")))
-            if 0 < cur_lev <= target:
-                print(f"    >>> leverage already {cur_lev:.0f}x (set skipped: {str(e)[:50]})")
+            if cur_lev >= target:
                 return True
-            print(f"    >>> SKIPPED: {sym} — leverage {cur_lev:.0f}x > {target}x and set failed")
-            return False
-        except Exception:
-            print(f"    >>> LEVERAGE FAILED: {sym} {str(e)[:80]}")
-            return False
+            last = f"leverage is {cur_lev:.0f}x, wanted {target}x"
+        except Exception as e:
+            last = str(e)
+        time.sleep(0.5)
+    print(f"    >>> SKIPPED: {sym} — leverage not confirmed at {target}x ({last[:60]})")
+    return False
 
 
 def close_position_market(ex_client, sym, side, qty):
