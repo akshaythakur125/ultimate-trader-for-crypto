@@ -461,6 +461,20 @@ def place_bracket_order(ex_exec, s: dict, hedged_mode: bool) -> bool:
             print(f"    >>> SKIPPED: {s['symbol']} — not available on BingX")
             return False
 
+        # One trade at a time: check the EXCHANGE for any open position (the
+        # balance 'free' field is unreliable and reports full balance even when
+        # a position holds the margin). A single 4% position uses ~80% of an $18
+        # account, so a second can't be funded and would just fail with avail:0.
+        try:
+            open_pos = [p for p in ex_exec.fetch_positions()
+                        if abs(safe_float(p.get("contracts"), 0)) > 0]
+        except Exception:
+            open_pos = []
+        if open_pos:
+            held = ", ".join(str(p.get("symbol", "?")) for p in open_pos)
+            print(f"    >>> SKIPPED: {sym} — position already open ({held}); one trade at a time")
+            return False
+
         market_info = ex_exec.markets.get(sym, {}) or {}
         limits = market_info.get("limits") or {}
         amount_limits = limits.get("amount") or {}
